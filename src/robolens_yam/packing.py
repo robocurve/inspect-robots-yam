@@ -15,8 +15,6 @@ and tests anywhere.
 
 from __future__ import annotations
 
-from typing import Any
-
 import numpy as np
 import numpy.typing as npt
 from robolens.spaces import StateField, StateSpec
@@ -38,7 +36,7 @@ STATE_SPEC = StateSpec(
     fields=(StateField(key=STATE_KEY, shape=(TOTAL_DIM,), unit="rad+normalized"),)
 )
 
-Vec = npt.NDArray[np.floating[Any]]
+Vec = npt.NDArray[np.float64]
 
 
 def validate_dim(vec: npt.ArrayLike, n: int = TOTAL_DIM) -> Vec:

@@ -15,9 +15,14 @@ from typing import Any, TypeVar
 
 import numpy as np
 import numpy.typing as npt
-from robolens.spaces import CameraSpec
+from robolens.spaces import (
+    ActionSemantics,
+    Box,
+    CameraSpec,
+    ObservationSpace,
+)
 
-from robolens_yam.packing import ARM_DOF, TOTAL_DIM
+from robolens_yam.packing import ARM_DOF, STATE_KEY, STATE_SPEC, TOTAL_DIM
 
 _T = TypeVar("_T", bound="_FromKwargs")
 
@@ -95,7 +100,35 @@ class MolmoActConfig(_FromKwargs):
 
 DEFAULT_CAMERAS: tuple[str, ...] = ("top_cam", "left_cam", "right_cam")
 
+# The action *semantics* both the policy and the embodiment declare. Compatibility
+# checking compares control_mode + rotation_repr (errors) and gripper + frame
+# (warnings); declaring this single constant on both sides guarantees a clean check.
+ACTION_SEMANTICS = ActionSemantics(
+    control_mode="joint_pos",
+    rotation_repr="none",
+    gripper="continuous",
+    frame="base",
+)
+
 
 def camera_specs(height: int, width: int, names: tuple[str, ...]) -> tuple[CameraSpec, ...]:
     """Build CameraSpecs for the given names at one resolution (single source of truth)."""
     return tuple(CameraSpec(name=n, height=height, width=width, channels=3) for n in names)
+
+
+def action_box(
+    low: npt.NDArray[np.float64] | None = None,
+    high: npt.NDArray[np.float64] | None = None,
+) -> Box:
+    """The shared 14-D joint-position action space. ``low``/``high`` are optional
+    safety limits (the embodiment supplies them; the policy leaves them unset)."""
+    return Box(shape=(TOTAL_DIM,), low=low, high=high, semantics=ACTION_SEMANTICS)
+
+
+def observation_space(height: int, width: int, names: tuple[str, ...]) -> ObservationSpace:
+    """The shared observation space: three cameras + the packed 14-D ``joint_pos`` state."""
+    return ObservationSpace(
+        cameras=camera_specs(height, width, names),
+        state_keys=frozenset({STATE_KEY}),
+        state=STATE_SPEC,
+    )
