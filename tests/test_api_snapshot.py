@@ -1,0 +1,42 @@
+"""Guard the public API surface so changes to __all__ are deliberate."""
+
+from __future__ import annotations
+
+import robolens_yam
+
+EXPECTED_API = {
+    "STATE_KEY",
+    "TOTAL_DIM",
+    "MolmoAct2Policy",
+    "MolmoActConfig",
+    "OperatorIO",
+    "YAMEmbodiment",
+    "YamConfig",
+    "build",
+    "pack",
+    "run_preflight",
+    "split",
+}
+
+
+def test_public_api_matches_all() -> None:
+    assert set(robolens_yam.__all__) == EXPECTED_API
+
+
+def test_all_names_are_importable() -> None:
+    for name in robolens_yam.__all__:
+        assert hasattr(robolens_yam, name), name
+
+
+def test_version() -> None:
+    assert robolens_yam.__version__ == "0.1.0"
+
+
+def test_entry_points_resolve_via_registry() -> None:
+    # The installed entry points must resolve to our classes.
+    from robolens.registry import resolve
+
+    pol = resolve("policy", "molmoact2")
+    emb = resolve("embodiment", "yam_arms")
+    assert pol.info.name == "molmoact2"
+    assert emb.info.name == "yam_arms"
