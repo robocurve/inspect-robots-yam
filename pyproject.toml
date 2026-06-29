@@ -1,0 +1,110 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "robolens-yam"
+version = "0.1.0"
+description = "RoboLens adapters for I2RT YAM bimanual arms driven by MolmoAct2."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "RoboCurve" }]
+keywords = ["robotics", "vla", "yam", "molmoact", "bimanual", "robolens"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = ["robolens>=0.1", "numpy>=1.24"]
+
+[project.optional-dependencies]
+# Real /act transport (the model runs in MolmoAct2's own server process).
+client = ["requests>=2.31", "json-numpy>=2.1"]
+# Real YAM arm driver — not on PyPI; resolved from git (see [tool.uv.sources]).
+yam = ["i2rt"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pre-commit>=3.5",
+    "kitchenbench",
+    # numpy 2.5.0's type stubs use 3.12-only syntax that mypy (python_version 3.10)
+    # rejects; pin the 2.4.x line for a deterministic dev/CI gate (runtime is free).
+    "numpy<2.5",
+]
+
+[project.urls]
+Homepage = "https://github.com/robocurve/robolens-yam"
+Framework = "https://github.com/robocurve/robolens"
+Collection = "https://github.com/robocurve/worldevals"
+
+# robolens/kitchenbench aren't on PyPI yet — resolve from tagged GitHub releases.
+# i2rt is GitHub-only. This is uv-only metadata (stripped from the published wheel).
+# For local dev against sibling checkouts: uv pip install -e ../robolens -e ../kitchenbench
+[tool.uv.sources]
+robolens = { git = "https://github.com/robocurve/robolens", tag = "v0.1.0" }
+kitchenbench = { git = "https://github.com/robocurve/kitchenbench", tag = "v0.1.0" }
+i2rt = { git = "https://github.com/i2rt-robotics/i2rt" }
+
+# RoboLens discovers these by entry point — no import needed for `robolens list`.
+[project.entry-points."robolens.embodiments"]
+yam_arms = "robolens_yam.embodiment:YAMEmbodiment"
+
+[project.entry-points."robolens.policies"]
+molmoact2 = "robolens_yam.policy:MolmoAct2Policy"
+
+[project.scripts]
+robolens-yam-preflight = "robolens_yam.preflight:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/robolens_yam"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["robolens_yam"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src/robolens_yam"]
+
+# Hardware/client deps are lazily imported behind pragma'd seams and are not test
+# deps; silence mypy's missing-import errors for them (mirrors robolens' rerun override).
+[[tool.mypy.overrides]]
+module = ["requests.*", "json_numpy.*", "i2rt.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.coverage.run]
+branch = true
+source = ["robolens_yam"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "@(abc\\.)?abstractmethod",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "^\\s*\\.\\.\\.$",
+    ": \\.\\.\\.$",
+    "pragma: no cover",
+]
