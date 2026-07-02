@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 
 import pytest
-from roboinspect.compat import CompatibilityReport, CompatIssue
-from roboinspect.policy import PolicyConfig, PolicyInfo
-from roboinspect.spaces import ActionSemantics, Box
+from inspect_robots.compat import CompatibilityReport, CompatIssue
+from inspect_robots.policy import PolicyConfig, PolicyInfo
+from inspect_robots.spaces import ActionSemantics, Box
 
-from robolens_yam import preflight
-from robolens_yam.embodiment import YAMEmbodiment
+from inspect_robots_yam import preflight
+from inspect_robots_yam.embodiment import YAMEmbodiment
 
 
 class _WrongDimPolicy:

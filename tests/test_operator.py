@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from robolens_yam.operator import OperatorIO, default_poll_end
+from inspect_robots_yam.operator import OperatorIO, default_poll_end
 
 
 def _scripted(answers: list[str]):

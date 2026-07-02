@@ -1,9 +1,9 @@
-"""``YAMEmbodiment`` — RoboInspect embodiment for I2RT YAM bimanual arms.
+"""``YAMEmbodiment`` — Inspect Robots embodiment for I2RT YAM bimanual arms.
 
 Wraps the i2rt joint-position driver. Designed for real-robot reality:
 
 * **Safety backstop** — every command is clamped to the configured joint limits
-  inside :meth:`step`, *independently* of any RoboInspect ``Approver`` (so unclamped
+  inside :meth:`step`, *independently* of any Inspect Robots ``Approver`` (so unclamped
   model outputs can never reach the motors).
 * **Operator-in-the-loop success** — there is no privileged oracle; when the
   operator signals end-of-episode the embodiment returns
@@ -26,13 +26,13 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
-from roboinspect.embodiment import SELF_PACED, EmbodimentInfo
-from roboinspect.scene import Scene
-from roboinspect.types import Action, Observation, StepResult
+from inspect_robots.embodiment import SELF_PACED, EmbodimentInfo
+from inspect_robots.scene import Scene
+from inspect_robots.types import Action, Observation, StepResult
 
-from robolens_yam import packing
-from robolens_yam.config import DEFAULT_CAMERAS, YamConfig, action_box, observation_space
-from robolens_yam.operator import OperatorIO, default_poll_end
+from inspect_robots_yam import packing
+from inspect_robots_yam.config import DEFAULT_CAMERAS, YamConfig, action_box, observation_space
+from inspect_robots_yam.operator import OperatorIO, default_poll_end
 
 ImageMap = Mapping[str, npt.NDArray[np.uint8]]
 Vec = npt.NDArray[np.float64]
@@ -84,7 +84,7 @@ def _default_camera_reader(cfg: YamConfig) -> ImageMap:
 
 
 class YAMEmbodiment:
-    """RoboInspect embodiment for bimanual YAM arms (joint-position control)."""
+    """Inspect Robots embodiment for bimanual YAM arms (joint-position control)."""
 
     def __init__(
         self,

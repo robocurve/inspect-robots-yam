@@ -3,8 +3,8 @@
 Both configs are frozen dataclasses with defaults that match MolmoAct2's
 first-party bimanual-YAM server, so zero-arg construction "just works". Each
 exposes :meth:`from_kwargs` so the adapters can accept flat scalar keyword
-arguments — this is what lets ``roboinspect run -P server_url=... -E left_channel=...``
-configure them, since the RoboInspect CLI only forwards scalar ``key=value`` pairs.
+arguments — this is what lets ``inspect-robots run -P server_url=... -E left_channel=...``
+configure them, since the Inspect Robots CLI only forwards scalar ``key=value`` pairs.
 """
 
 from __future__ import annotations
@@ -15,14 +15,14 @@ from typing import Any, TypeVar
 
 import numpy as np
 import numpy.typing as npt
-from roboinspect.spaces import (
+from inspect_robots.spaces import (
     ActionSemantics,
     Box,
     CameraSpec,
     ObservationSpace,
 )
 
-from robolens_yam.packing import ARM_DOF, STATE_KEY, STATE_SPEC, TOTAL_DIM
+from inspect_robots_yam.packing import ARM_DOF, STATE_KEY, STATE_SPEC, TOTAL_DIM
 
 _T = TypeVar("_T", bound="_FromKwargs")
 

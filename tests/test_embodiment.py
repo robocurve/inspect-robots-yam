@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from roboinspect.embodiment import SELF_PACED
-from roboinspect.scene import Scene
-from roboinspect.types import Action
+from inspect_robots.embodiment import SELF_PACED
+from inspect_robots.scene import Scene
+from inspect_robots.types import Action
 
-from robolens_yam.config import YamConfig
-from robolens_yam.embodiment import YAMEmbodiment
-from robolens_yam.operator import OperatorIO
+from inspect_robots_yam.config import YamConfig
+from inspect_robots_yam.embodiment import YAMEmbodiment
+from inspect_robots_yam.operator import OperatorIO
 
 
 class FakeDriver:
@@ -195,7 +195,7 @@ def test_close_idempotent_and_releases() -> None:
 
 
 def test_default_camera_reader_not_implemented() -> None:
-    from robolens_yam.embodiment import _default_camera_reader
+    from inspect_robots_yam.embodiment import _default_camera_reader
 
     with pytest.raises(NotImplementedError, match="camera_reader"):
         _default_camera_reader(YamConfig())

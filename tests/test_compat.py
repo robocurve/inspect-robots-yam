@@ -1,17 +1,17 @@
-"""Goal-closing test: RoboInspect + KitchenBench are provably compatible with
+"""Goal-closing test: Inspect Robots + KitchenBench are provably compatible with
 YAM arms + MolmoAct2 — zero errors, zero warnings, all 10 tasks realizable."""
 
 from __future__ import annotations
 
 import pytest
-from roboinspect.compat import check_compatibility
-from roboinspect.policy import PolicyConfig, PolicyInfo
-from roboinspect.registry import resolve
-from roboinspect.spaces import ActionSemantics, Box
+from inspect_robots.compat import check_compatibility
+from inspect_robots.policy import PolicyConfig, PolicyInfo
+from inspect_robots.registry import resolve
+from inspect_robots.spaces import ActionSemantics, Box
 
-from robolens_yam.config import action_box, observation_space
-from robolens_yam.embodiment import YAMEmbodiment
-from robolens_yam.policy import MolmoAct2Policy
+from inspect_robots_yam.config import action_box, observation_space
+from inspect_robots_yam.embodiment import YAMEmbodiment
+from inspect_robots_yam.policy import MolmoAct2Policy
 
 KITCHENBENCH_TASKS = [
     "kitchenbench/place_cutlery",

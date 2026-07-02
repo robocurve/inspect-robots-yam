@@ -5,12 +5,12 @@ wiring and chunk replay compose (the static compat test cannot show this)."""
 from __future__ import annotations
 
 import numpy as np
-from roboinspect import eval as rl_eval
+from inspect_robots import eval as rl_eval
 
-from robolens_yam.config import MolmoActConfig, YamConfig
-from robolens_yam.embodiment import YAMEmbodiment
-from robolens_yam.operator import OperatorIO
-from robolens_yam.policy import MolmoAct2Policy
+from inspect_robots_yam.config import MolmoActConfig, YamConfig
+from inspect_robots_yam.embodiment import YAMEmbodiment
+from inspect_robots_yam.operator import OperatorIO
+from inspect_robots_yam.policy import MolmoAct2Policy
 
 
 class _FakeDriver:

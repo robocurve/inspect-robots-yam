@@ -1,7 +1,7 @@
 """Preflight: prove a YAM + MolmoAct2 pairing is compatible *before any motion*.
 
-``robolens-yam-preflight`` constructs the policy and embodiment (no hardware
-connection, no server call — only their declared ``.info``), runs RoboInspect's
+``inspect-robots-yam-preflight`` constructs the policy and embodiment (no hardware
+connection, no server call — only their declared ``.info``), runs Inspect Robots's
 compatibility check, prints the report, and exits non-zero on any error. Pass
 ``--task kitchenbench/pour_pasta`` to also verify every scene is realizable.
 
@@ -17,13 +17,13 @@ import argparse
 import json
 from collections.abc import Callable
 
-from roboinspect.compat import CompatibilityReport, check_compatibility
-from roboinspect.registry import resolve
-from roboinspect.task import Task
+from inspect_robots.compat import CompatibilityReport, check_compatibility
+from inspect_robots.registry import resolve
+from inspect_robots.task import Task
 
-from robolens_yam.config import MolmoActConfig, YamConfig
-from robolens_yam.embodiment import YAMEmbodiment
-from robolens_yam.policy import MolmoAct2Policy
+from inspect_robots_yam.config import MolmoActConfig, YamConfig
+from inspect_robots_yam.embodiment import YAMEmbodiment
+from inspect_robots_yam.policy import MolmoAct2Policy
 
 CheckFn = Callable[..., CompatibilityReport]
 
@@ -67,7 +67,7 @@ def _format_human(report: CompatibilityReport, *, dry_run: bool) -> str:
 
 def main(argv: list[str] | None = None, *, run: CheckFn | None = None) -> int:
     """CLI entry point. Returns a process exit code (non-zero on compat errors)."""
-    parser = argparse.ArgumentParser(prog="robolens-yam-preflight")
+    parser = argparse.ArgumentParser(prog="inspect-robots-yam-preflight")
     parser.add_argument(
         "--task", default=None, help="optional task name to check scene realizability"
     )
