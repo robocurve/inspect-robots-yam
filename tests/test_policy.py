@@ -6,12 +6,12 @@ from typing import Any
 
 import numpy as np
 import pytest
-from roboinspect.scene import Scene
-from roboinspect.types import Observation
+from inspect_robots.scene import Scene
+from inspect_robots.types import Observation
 
-from robolens_yam import packing
-from robolens_yam.config import MolmoActConfig
-from robolens_yam.policy import MolmoAct2Policy
+from inspect_robots_yam import packing
+from inspect_robots_yam.config import MolmoActConfig
+from inspect_robots_yam.policy import MolmoAct2Policy
 
 
 def _obs(instruction: str | None = "do it") -> Observation:

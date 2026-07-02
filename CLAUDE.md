@@ -1,14 +1,14 @@
-# robolens-yam — agent guide
+# inspect-robots-yam — agent guide
 
-RoboInspect adapters that let evals (e.g. [KitchenBench](https://github.com/robocurve/kitchenbench))
+Inspect Robots adapters that let evals (e.g. [KitchenBench](https://github.com/robocurve/kitchenbench))
 run on real **I2RT YAM bimanual arms** driven by **MolmoAct2**. This is a
-**plugin package** in the RoboInspect ecosystem — the framework lives in
-[roboinspect](https://github.com/robocurve/roboinspect); benchmarks are separate repos
+**plugin package** in the Inspect Robots ecosystem — the framework lives in
+[inspect-robots](https://github.com/robocurve/inspect-robots); benchmarks are separate repos
 indexed by [WorldEvals](https://github.com/robocurve/worldevals).
 
 ## The one big idea
 
-RoboInspect evals swap two inputs: a `Policy` (VLA brain) and an `Embodiment` (robot
+Inspect Robots evals swap two inputs: a `Policy` (VLA brain) and an `Embodiment` (robot
 body + world). We ship both for one real stack:
 
 - **`molmoact2` policy** — a thin HTTP client for MolmoAct2's first-party
@@ -18,12 +18,12 @@ body + world). We ship both for one real stack:
 
 Both declare the **same 14-D `joint_pos` contract** (2 arms × [6 joints +
 gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
-`roboinspect.compat.check_compatibility` pass with zero errors **and** zero warnings
+`inspect_robots.compat.check_compatibility` pass with zero errors **and** zero warnings
 — the property `tests/test_compat.py` locks down.
 
 ## Layout
 
-- `src/robolens_yam/` — the package (see `src/robolens_yam/CLAUDE.md`).
+- `src/inspect_robots_yam/` — the package (see `src/inspect_robots_yam/CLAUDE.md`).
 - `tests/` — pytest; everything (driver, cameras, `/act`, clock, operator stdin)
   is injected, so the suite needs **no hardware, no server, no stdin**.
 - `plans/0001-yam-molmoact2-design.md` — the design + plan (approved after two
@@ -33,10 +33,10 @@ gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
 
 - Dev loop: `uv venv && uv pip install -e ".[dev]"`, `uv run pre-commit install`,
   then `uv run pytest --cov`.
-- **Local install gotcha:** `uv pip install -e ".[dev]"` resolves roboinspect +
+- **Local install gotcha:** `uv pip install -e ".[dev]"` resolves inspect-robots +
   kitchenbench from git tags. To work against sibling checkouts instead:
-  `uv pip install -e ../roboinspect && uv pip install --no-deps -e ../kitchenbench`
-  (the `--no-deps` avoids a roboinspect URL conflict with kitchenbench's own
+  `uv pip install -e ../inspect-robots && uv pip install --no-deps -e ../kitchenbench`
+  (the `--no-deps` avoids an inspect-robots URL conflict with kitchenbench's own
   `tool.uv.sources`).
 - Gates (all blocking in CI): `ruff check .`, `ruff format --check .`,
   `mypy` (strict), `pytest --cov` at **100%**.
@@ -45,7 +45,7 @@ gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
 - **No torch.** The model lives in the MolmoAct2 server. Hardware/client deps
   (`requests`, `json_numpy`, `i2rt`) are optional extras, lazily imported behind
   `# pragma: no cover` seams; the `import-hygiene` CI job enforces that
-  `import robolens_yam` works with only roboinspect + numpy.
+  `import inspect_robots_yam` works with only inspect_robots + numpy.
 
 ## Safety invariants (do not weaken)
 
@@ -54,7 +54,7 @@ gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
 - The declared `control_mode` is `joint_pos` (absolute). Delta checkpoints are
   converted to absolute *inside* `step()` (`joints_are_delta=True`) so the
   declared semantics stay honest. There is no `joint_delta` control mode in
-  RoboInspect, so compat cannot verify abs-vs-delta — that's a hardware check.
+  Inspect Robots, so compat cannot verify abs-vs-delta — that's a hardware check.
 - Success reaches the scorer **only** via `StepResult.termination_reason="success"`
   (stock `rollout` never sets `operator_judgement`).
 

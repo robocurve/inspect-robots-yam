@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from roboinspect.spaces import CameraSpec
+from inspect_robots.spaces import CameraSpec
 
-from robolens_yam.config import (
+from inspect_robots_yam.config import (
     DEFAULT_CAMERAS,
     MolmoActConfig,
     YamConfig,

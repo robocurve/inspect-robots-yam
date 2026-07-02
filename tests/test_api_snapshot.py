@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import robolens_yam
+import inspect_robots_yam
 
 EXPECTED_API = {
     "STATE_KEY",
@@ -20,21 +20,21 @@ EXPECTED_API = {
 
 
 def test_public_api_matches_all() -> None:
-    assert set(robolens_yam.__all__) == EXPECTED_API
+    assert set(inspect_robots_yam.__all__) == EXPECTED_API
 
 
 def test_all_names_are_importable() -> None:
-    for name in robolens_yam.__all__:
-        assert hasattr(robolens_yam, name), name
+    for name in inspect_robots_yam.__all__:
+        assert hasattr(inspect_robots_yam, name), name
 
 
 def test_version() -> None:
-    assert robolens_yam.__version__ == "0.2.0"
+    assert inspect_robots_yam.__version__ == "0.3.0"
 
 
 def test_entry_points_resolve_via_registry() -> None:
     # The installed entry points must resolve to our classes.
-    from roboinspect.registry import resolve
+    from inspect_robots.registry import resolve
 
     pol = resolve("policy", "molmoact2")
     emb = resolve("embodiment", "yam_arms")

@@ -3,15 +3,15 @@ requires = ["hatchling>=1.18"]
 build-backend = "hatchling.build"
 
 [project]
-name = "robolens-yam"
-version = "0.2.0"
-description = "RoboInspect adapters for I2RT YAM bimanual arms driven by MolmoAct2."
+name = "inspect-robots-yam"
+version = "0.3.0"
+description = "Inspect Robots adapters for I2RT YAM bimanual arms driven by MolmoAct2."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "RoboCurve" }]
-keywords = ["robotics", "vla", "yam", "molmoact", "bimanual", "roboinspect"]
+keywords = ["robotics", "vla", "yam", "molmoact", "bimanual", "inspect-robots"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
-dependencies = ["roboinspect>=0.2", "numpy>=1.24"]
+dependencies = ["inspect-robots>=0.3", "numpy>=1.24"]
 
 [project.optional-dependencies]
 # Real /act transport (the model runs in MolmoAct2's own server process).
@@ -40,30 +40,30 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/robocurve/robolens-yam"
-Framework = "https://github.com/robocurve/roboinspect"
+Homepage = "https://github.com/robocurve/inspect-robots-yam"
+Framework = "https://github.com/robocurve/inspect-robots"
 Collection = "https://github.com/robocurve/worldevals"
 
-# roboinspect/kitchenbench aren't on PyPI yet — resolve from tagged GitHub releases.
+# inspect_robots/kitchenbench aren't on PyPI yet — resolve from tagged GitHub releases.
 # i2rt is GitHub-only. This is uv-only metadata (stripped from the published wheel).
-# For local dev against sibling checkouts: uv pip install -e ../roboinspect -e ../kitchenbench
+# For local dev against sibling checkouts: uv pip install -e ../inspect-robots -e ../kitchenbench
 [tool.uv.sources]
-roboinspect = { git = "https://github.com/robocurve/roboinspect", tag = "v0.2.0" }
-kitchenbench = { git = "https://github.com/robocurve/kitchenbench", tag = "v0.2.0" }
+inspect-robots = { git = "https://github.com/robocurve/inspect-robots", tag = "v0.3.0" }
+kitchenbench = { git = "https://github.com/robocurve/kitchenbench", tag = "v0.3.0" }
 i2rt = { git = "https://github.com/i2rt-robotics/i2rt" }
 
-# RoboInspect discovers these by entry point — no import needed for `roboinspect list`.
-[project.entry-points."roboinspect.embodiments"]
-yam_arms = "robolens_yam.embodiment:YAMEmbodiment"
+# Inspect Robots discovers these by entry point — no import needed for `inspect-robots list`.
+[project.entry-points."inspect_robots.embodiments"]
+yam_arms = "inspect_robots_yam.embodiment:YAMEmbodiment"
 
-[project.entry-points."roboinspect.policies"]
-molmoact2 = "robolens_yam.policy:MolmoAct2Policy"
+[project.entry-points."inspect_robots.policies"]
+molmoact2 = "inspect_robots_yam.policy:MolmoAct2Policy"
 
 [project.scripts]
-robolens-yam-preflight = "robolens_yam.preflight:main"
+inspect-robots-yam-preflight = "inspect_robots_yam.preflight:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/robolens_yam"]
+packages = ["src/inspect_robots_yam"]
 
 [tool.ruff]
 line-length = 100
@@ -74,15 +74,15 @@ src = ["src", "tests"]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["robolens_yam"]
+known-first-party = ["inspect_robots_yam"]
 
 [tool.mypy]
 python_version = "3.10"
 strict = true
-files = ["src/robolens_yam"]
+files = ["src/inspect_robots_yam"]
 
 # Hardware/client deps are lazily imported behind pragma'd seams and are not test
-# deps; silence mypy's missing-import errors for them (mirrors roboinspect' rerun override).
+# deps; silence mypy's missing-import errors for them (mirrors inspect_robots' rerun override).
 [[tool.mypy.overrides]]
 module = ["requests.*", "json_numpy.*", "i2rt.*"]
 ignore_missing_imports = true
@@ -94,7 +94,7 @@ addopts = "-ra --strict-markers"
 
 [tool.coverage.run]
 branch = true
-source = ["robolens_yam"]
+source = ["inspect_robots_yam"]
 
 [tool.coverage.report]
 fail_under = 100
