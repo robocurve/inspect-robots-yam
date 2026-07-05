@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from inspect_robots.embodiment import SELF_PACED
+from inspect_robots.errors import ConfigError
 from inspect_robots.scene import Scene
 from inspect_robots.types import Action
 
@@ -256,6 +257,62 @@ def test_close_idempotent_and_releases() -> None:
     emb.close()
     assert drv.closed is True
     emb.close()  # second close: no error
+
+
+def test_step_before_reset_raises() -> None:
+    emb, _, _ = _build()
+    with pytest.raises(RuntimeError, match="before reset"):
+        emb.step(Action(data=np.zeros(14)))
+
+
+def test_reset_default_camera_reader_fails_fast_before_connect() -> None:
+    calls = {"n": 0}
+
+    def _factory(_c):
+        calls["n"] += 1
+        return FakeDriver()
+
+    emb = YAMEmbodiment(
+        YamConfig(home_pose=(0.0,) * 14),
+        driver_factory=_factory,  # no camera_reader: the unusable default remains
+        operator=_operator(),
+        poll_end=lambda: False,
+        sleep_fn=lambda _d: None,
+        clock=lambda: 0.0,
+    )
+    with pytest.raises(ConfigError, match="camera_reader"):
+        emb.reset(Scene(id="s", instruction="x"))
+    assert calls["n"] == 0  # raised BEFORE any driver connect / homing motion
+
+
+def test_reset_non_callable_camera_reader_fails_fast() -> None:
+    # The CLI can only bind scalars, so `-E camera_reader=...` would arrive as a str.
+    emb = YAMEmbodiment(
+        YamConfig(),
+        driver_factory=lambda _c: FakeDriver(),
+        camera_reader="my_cams",  # type: ignore[arg-type]
+        operator=_operator(),
+        poll_end=lambda: False,
+        sleep_fn=lambda _d: None,
+        clock=lambda: 0.0,
+    )
+    with pytest.raises(ConfigError, match="CLI cannot inject"):
+        emb.reset(Scene(id="s", instruction="x"))
+
+
+def test_unattended_skips_operator_prompts() -> None:
+    prompts: list[str] = []
+
+    def _input(prompt: str) -> str:
+        prompts.append(prompt)
+        return "y"
+
+    op = OperatorIO(input_fn=_input, output_fn=lambda _m: None)
+    emb, _, _ = _build(YamConfig(unattended=True), poll_end_seq=[True], operator=op)
+    emb.reset(Scene(id="s", instruction="x"))
+    result = emb.step(Action(data=np.zeros(14)))
+    assert prompts == []  # neither wait_ready nor confirm_success ran
+    assert result.terminated is False  # the end poll is skipped entirely
 
 
 def test_default_camera_reader_not_implemented() -> None:
