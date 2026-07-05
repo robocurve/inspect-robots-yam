@@ -142,7 +142,11 @@ class YAMEmbodiment:
         self.num_steps += 1
         cmd = packing.validate_dim(action.data)
         if self._cfg.joints_are_delta:
-            cmd = packing.validate_dim(driver.get_joint_pos()) + cmd
+            # Normalize the gripper slots of the current position first, so the
+            # delta is applied in policy units (a fraction of the gripper stroke)
+            # and the sum re-enters _send() in the same units as absolute mode.
+            base = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+            cmd = base + cmd
         self._send(cmd)
         self._pace()
 
@@ -183,6 +187,18 @@ class YAMEmbodiment:
             out[idx] = self._cfg.gripper_open + cmd[idx] * span
         return out
 
+    def _norm_grippers(self, physical: Vec) -> Vec:
+        """Exact inverse of :meth:`_denorm_grippers` (driver units -> normalized 0-1).
+
+        ``YamConfig.__post_init__`` guarantees ``gripper_open != gripper_closed``,
+        so the span is never zero.
+        """
+        out: Vec = physical.copy()
+        span = self._cfg.gripper_closed - self._cfg.gripper_open
+        for idx in (packing.ARM_DOF, packing.ARM_WIDTH + packing.ARM_DOF):  # 6, 13
+            out[idx] = (physical[idx] - self._cfg.gripper_open) / span
+        return out
+
     def _pace(self) -> None:
         hz = self._cfg.control_hz
         if hz and hz > 0:
@@ -192,7 +208,10 @@ class YAMEmbodiment:
 
     def _observe(self, instruction: str | None) -> Observation:
         driver = self._require_driver()
-        state = packing.validate_dim(driver.get_joint_pos())
+        # Normalize the gripper slots back to 0-1 so the observed state is in the
+        # exact units STATE_SPEC declares (and _send() accepts) — the inverse of
+        # the de-normalization applied to outgoing commands.
+        state = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
         return Observation(
             images=dict(self._camera_reader(self._cfg)),
             state={packing.STATE_KEY: state},

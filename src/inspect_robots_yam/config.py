@@ -70,6 +70,11 @@ class YamConfig(_FromKwargs):
                 raise ValueError(f"{name} must have {TOTAL_DIM} entries")
         if self.home_pose is not None and len(self.home_pose) != TOTAL_DIM:
             raise ValueError(f"home_pose must have {TOTAL_DIM} entries")
+        if self.gripper_open == self.gripper_closed:
+            raise ValueError(
+                "gripper_open and gripper_closed must differ (the gripper stroke "
+                "would be zero and observations could not be normalized)"
+            )
 
     @property
     def low(self) -> npt.NDArray[np.float64]:

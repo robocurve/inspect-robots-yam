@@ -66,6 +66,11 @@ def test_yam_rejects_bad_home_pose() -> None:
         YamConfig(home_pose=(0.0,) * 10)
 
 
+def test_yam_rejects_equal_gripper_calibration() -> None:
+    with pytest.raises(ValueError, match="gripper_open and gripper_closed must differ"):
+        YamConfig(gripper_open=0.5, gripper_closed=0.5)
+
+
 def test_yam_accepts_valid_home_pose() -> None:
     cfg = YamConfig(home_pose=(0.0,) * 14)
     assert cfg.home_pose is not None and len(cfg.home_pose) == 14
