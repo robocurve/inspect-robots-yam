@@ -32,6 +32,12 @@ before any motion.
 inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2 --embodiment yam_arms
 ```
 
+> **Note:** the CLI forwards scalar `key=value` knobs only — it cannot inject a
+> `camera_reader`, which hardware runs require. Launch from Python (see *Run on
+> hardware*) or register your own entry-point factory that bundles the cameras;
+> otherwise `yam_arms` fails fast with a `ConfigError` at `reset()`, before any
+> driver connect or motion.
+
 ## Install (on the robot/GPU machine)
 
 ```bash
@@ -83,29 +89,63 @@ print(log.status, log.results.metrics)
 
 At each episode end the embodiment asks the operator (y/N); a `yes` records
 `termination_reason="success"`, which KitchenBench's `task_success` scorer reads.
-Unattended runs simply run to `max_steps` and score as failures.
+The operator prompts need an interactive terminal — a dead stdin raises
+`EmbodimentFault` (the framework's always-halt path). For runs with no operator,
+set `YamConfig(unattended=True)` (CLI: `-E unattended=true`): all operator
+prompts are skipped and every episode runs to `max_steps`, scoring as a failure.
 
 ## Safety
 
 - **Hard clamp backstop.** Every command is clipped to `YamConfig.joint_low/high`
   *inside* `step()`, independent of any Inspect Robots `Approver` — unclamped model
-  outputs can never reach the motors. **Set these to your real YAM joint limits**
-  (the defaults are conservative placeholders: joints ±π, gripper 0–1).
+  outputs can never reach the motors. **Set the arm slots to your real YAM joint
+  limits** (the defaults are conservative placeholders: joints ±π, gripper 0–1) —
+  but note the limits are in *policy units* per the table below: gripper slots 6
+  and 13 stay normalized 0–1, only slots 0–5 and 7–12 are radians.
 - **Use `ClampApprover`** on hardware for a second layer.
+- **Zero-gravity handoff jump.** The arms connect in zero-gravity mode by default
+  (`YamConfig(zero_gravity_mode=True)`, passed through to the i2rt driver), so the
+  first stiff PD command — homing or the first action — can jump from wherever the
+  arm was idling. Nothing bounds the per-step joint delta yet (tracked as a known
+  issue); stand clear at `reset()` and prefer a `home_pose` near the resting pose.
 - **Absolute vs. delta joints — verify first.** MolmoAct2's YAM `actions` are
   treated as **absolute** joint targets by default. If your checkpoint emits
   deltas, set `YamConfig(joints_are_delta=True)` (the embodiment converts to
   absolute internally so the declared `joint_pos` stays honest). Inspect Robots's
   compat check *cannot* tell these apart — confirm with `--dry-run` and a single
   slow jog before running a task.
-- **Gripper calibration.** Map MolmoAct2's normalized gripper to your hardware via
-  `YamConfig(gripper_open=..., gripper_closed=...)`.
+- **Gripper polarity/trim.** The i2rt driver already exposes the YAM gripper as
+  normalized 0–1 in both directions, so the defaults (`gripper_open=0.0`,
+  `gripper_closed=1.0`) are an identity map and correct for standard grippers.
+  `YamConfig(gripper_open=..., gripper_closed=...)` is a polarity/trim remap over
+  that already-normalized range — its main use is a gripper wired with inverted
+  polarity (`gripper_open=1.0, gripper_closed=0.0`). The remap is a bijection:
+  commands are de-normalized on the way out and observations are re-normalized on
+  the way back, so the model always sees 0–1. **Warning:** values outside [0, 1]
+  are forwarded on a path i2rt does *not* clip — avoid them unless you have
+  verified your firmware's behavior.
 
 ## Configuration
 
-`YamConfig`: `left_channel`, `right_channel`, `gripper_type`, `control_hz`,
-`cam_height/width`, `joint_low/high`, `home_pose`, `gripper_open/closed`,
-`joints_are_delta`.
+### Units — every 14-D vector uses the same layout
+
+`joint_low`/`joint_high`, `home_pose`, actions, and the observed `joint_pos`
+state all use *policy units*:
+
+| Slots | Meaning | Unit |
+|-------|---------|------|
+| 0–5, 7–12 | left / right arm revolute joints | radians |
+| 6, 13 | left / right gripper | normalized 0–1 (0 = open, 1 = closed) |
+
+Hardware gripper units (via `gripper_open`/`gripper_closed`) exist only at the
+driver boundary; nothing you configure here is in hardware gripper units.
+
+`YamConfig`: `left_channel`, `right_channel`, `gripper_type` (i2rt `GripperType`
+enum *name*, e.g. `LINEAR_4310`; grippers only — `NO_GRIPPER`/`YAM_TEACHING_HANDLE`
+would break the 14-D packing and are rejected), `control_hz`, `cam_height/width`,
+`joint_low/high`, `home_pose`, `gripper_open/closed`, `joints_are_delta`,
+`zero_gravity_mode` (default `True`; see *Safety*), `unattended` (default `False`;
+skip operator prompts).
 `MolmoActConfig`: `server_url`, `endpoint`, `num_steps`, `timeout_s`,
 `camera_order`, `state_key`, `cam_height/width`.
 

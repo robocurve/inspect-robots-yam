@@ -27,6 +27,7 @@ from typing import Any, Protocol, runtime_checkable
 import numpy as np
 import numpy.typing as npt
 from inspect_robots.embodiment import SELF_PACED, EmbodimentInfo
+from inspect_robots.errors import ConfigError
 from inspect_robots.scene import Scene
 from inspect_robots.types import Action, Observation, StepResult
 
@@ -55,9 +56,22 @@ CameraReader = Callable[[YamConfig], ImageMap]
 
 def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cover - real hardware
     from i2rt.robots.get_robot import get_yam_robot
+    from i2rt.robots.utils import GripperType
 
-    left = get_yam_robot(channel=cfg.left_channel)
-    right = get_yam_robot(channel=cfg.right_channel)
+    # NAME lookup (GripperType["LINEAR_4310"]) — the enum *values* are lowercase
+    # strings, so GripperType(...)/from_string_name would reject the config names.
+    # YamConfig.__post_init__ already validated the name against the supported set.
+    gripper = GripperType[cfg.gripper_type]
+    left = get_yam_robot(
+        channel=cfg.left_channel,
+        gripper_type=gripper,
+        zero_gravity_mode=cfg.zero_gravity_mode,
+    )
+    right = get_yam_robot(
+        channel=cfg.right_channel,
+        gripper_type=gripper,
+        zero_gravity_mode=cfg.zero_gravity_mode,
+    )
 
     class _Real:
         def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]:
@@ -126,11 +140,21 @@ class YAMEmbodiment:
 
     def reset(self, scene: Scene, *, seed: int | None = None) -> Observation:
         """Connect (if needed), drive to home, and block on operator readiness."""
+        # Fail fast on an unusable camera_reader BEFORE connecting the driver or
+        # commanding any motion: this is a pure configuration error. `not callable`
+        # also catches a CLI-injected scalar (`-E camera_reader=...` binds a str).
+        if self._camera_reader is _default_camera_reader or not callable(self._camera_reader):
+            raise ConfigError(
+                "yam_arms has no usable camera_reader (there is no universal camera "
+                "API). Provide camera_reader= via the Python API or a custom "
+                "entry-point factory; the CLI cannot inject one."
+            )
         if self._driver is None:
             self._driver = self._driver_factory(self._cfg)
         if self._cfg.home_pose is not None:
             self._send(np.asarray(self._cfg.home_pose, dtype=np.float64))
-        self._operator.wait_ready()
+        if not self._cfg.unattended:
+            self._operator.wait_ready()
         self._instruction = scene.instruction
         self.num_steps = 0
         self._t_last = self._clock()
@@ -142,12 +166,18 @@ class YAMEmbodiment:
         self.num_steps += 1
         cmd = packing.validate_dim(action.data)
         if self._cfg.joints_are_delta:
-            cmd = packing.validate_dim(driver.get_joint_pos()) + cmd
+            # Normalize the gripper slots of the current position first, so the
+            # delta is applied in policy units (a fraction of the gripper stroke)
+            # and the sum re-enters _send() in the same units as absolute mode.
+            base = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+            cmd = base + cmd
         self._send(cmd)
         self._pace()
 
         obs = self._observe(self._instruction)
-        if self._poll_end():
+        # Unattended runs have no operator: skip the end poll and its success
+        # prompt entirely; the episode runs to the framework's max_steps.
+        if not self._cfg.unattended and self._poll_end():
             success = self._operator.confirm_success()
             return StepResult(
                 observation=obs,
@@ -166,8 +196,9 @@ class YAMEmbodiment:
     # -- internals ---------------------------------------------------------
 
     def _require_driver(self) -> BimanualDriver:
-        if self._driver is None:  # pragma: no cover - reset() always connects first
-            raise RuntimeError("step() called before reset()")
+        # Reachable: step() before the first reset(), or after close().
+        if self._driver is None:
+            raise RuntimeError("step() called before reset() (or after close())")
         return self._driver
 
     def _send(self, cmd: Vec) -> None:
@@ -183,6 +214,18 @@ class YAMEmbodiment:
             out[idx] = self._cfg.gripper_open + cmd[idx] * span
         return out
 
+    def _norm_grippers(self, physical: Vec) -> Vec:
+        """Exact inverse of :meth:`_denorm_grippers` (driver units -> normalized 0-1).
+
+        ``YamConfig.__post_init__`` guarantees ``gripper_open != gripper_closed``,
+        so the span is never zero.
+        """
+        out: Vec = physical.copy()
+        span = self._cfg.gripper_closed - self._cfg.gripper_open
+        for idx in (packing.ARM_DOF, packing.ARM_WIDTH + packing.ARM_DOF):  # 6, 13
+            out[idx] = (physical[idx] - self._cfg.gripper_open) / span
+        return out
+
     def _pace(self) -> None:
         hz = self._cfg.control_hz
         if hz and hz > 0:
@@ -192,7 +235,10 @@ class YAMEmbodiment:
 
     def _observe(self, instruction: str | None) -> Observation:
         driver = self._require_driver()
-        state = packing.validate_dim(driver.get_joint_pos())
+        # Normalize the gripper slots back to 0-1 so the observed state is in the
+        # exact units STATE_SPEC declares (and _send() accepts) — the inverse of
+        # the de-normalization applied to outgoing commands.
+        state = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
         return Observation(
             images=dict(self._camera_reader(self._cfg)),
             state={packing.STATE_KEY: state},

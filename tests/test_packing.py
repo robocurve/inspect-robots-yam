@@ -21,13 +21,19 @@ def test_state_spec_keys_match_state_key() -> None:
     assert packing.STATE_SPEC.keys == frozenset({"joint_pos"})
 
 
+def test_state_spec_derives_field_key_from_argument() -> None:
+    spec = packing.state_spec("proprio")
+    assert spec.keys == frozenset({"proprio"})
+    assert spec.fields[0].shape == (packing.TOTAL_DIM,)
+
+
 def test_validate_dim_accepts_correct_length() -> None:
     out = packing.validate_dim(list(range(14)))
     assert out.shape == (14,)
     assert out.dtype == np.float64
 
 
-def test_validate_dim_flattens() -> None:
+def test_validate_dim_accepts_custom_length() -> None:
     out = packing.validate_dim(np.zeros((7,)), n=7)
     assert out.shape == (7,)
 
@@ -35,6 +41,13 @@ def test_validate_dim_flattens() -> None:
 def test_validate_dim_rejects_wrong_length() -> None:
     with pytest.raises(ValueError, match="expected a 14-D vector"):
         packing.validate_dim(np.zeros(8))
+
+
+def test_validate_dim_rejects_2d_same_size() -> None:
+    # A (7, 2) array has 14 elements but flattening it would interleave-scramble
+    # the left/right arm packing — it must be rejected, not reshaped.
+    with pytest.raises(ValueError, match=r"got shape \(7, 2\)"):
+        packing.validate_dim(np.zeros((7, 2)))
 
 
 def test_pack_concatenates() -> None:
