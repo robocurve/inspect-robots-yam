@@ -166,6 +166,21 @@ driver, cameras, the `/act` transport, the clock, and operator I/O are all
 injected. The default hardware seams are excluded from coverage (`# pragma: no
 cover`).
 
+## Citation
+
+If you use Inspect Robots YAM in your research, please cite it:
+
+```bibtex
+@software{inspect-robots-yam,
+  author  = {Robocurve},
+  title   = {Inspect Robots YAM: Adapters for I2RT YAM bimanual arms},
+  year    = {2026},
+  url     = {https://github.com/robocurve/inspect-robots-yam},
+  version = {0.3.0},
+  license = {MIT}
+}
+```
+
 ## License
 
 [MIT](LICENSE)

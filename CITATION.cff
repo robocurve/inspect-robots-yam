@@ -1,0 +1,9 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Inspect Robots YAM: Adapters for I2RT YAM bimanual arms"
+authors:
+  - name: "Robocurve"
+type: software
+license: MIT
+repository-code: "https://github.com/robocurve/inspect-robots-yam"
+version: "0.3.0"
