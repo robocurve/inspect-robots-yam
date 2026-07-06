@@ -82,6 +82,22 @@ def test_act_dt_ms_zero_gives_no_chunk_hz() -> None:
     assert pol.act(_obs()).control_hz is None
 
 
+def test_act_negative_dt_ms_raises() -> None:
+    post, _ = _fake_post(np.zeros((1, 14)), dt_ms=-5.0)
+    pol = MolmoAct2Policy(post_fn=post)
+    pol.reset(Scene(id="s", instruction="x"))
+    with pytest.raises(ValueError, match="negative dt_ms"):
+        pol.act(_obs())
+
+
+def test_state_key_drives_observation_space() -> None:
+    pol = MolmoAct2Policy(MolmoActConfig(state_key="proprio"))
+    space = pol.info.observation_space
+    assert space.state_keys == frozenset({"proprio"})
+    assert space.state is not None
+    assert space.state.keys == frozenset({"proprio"})  # StateSpec field key too
+
+
 def test_act_empty_actions_raises() -> None:
     post, _ = _fake_post(np.zeros((0, 14)))
     pol = MolmoAct2Policy(post_fn=post)

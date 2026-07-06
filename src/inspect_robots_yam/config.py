@@ -22,9 +22,15 @@ from inspect_robots.spaces import (
     ObservationSpace,
 )
 
-from inspect_robots_yam.packing import ARM_DOF, STATE_KEY, STATE_SPEC, TOTAL_DIM
+from inspect_robots_yam.packing import ARM_DOF, STATE_KEY, TOTAL_DIM, state_spec
 
 _T = TypeVar("_T", bound="_FromKwargs")
+
+# The i2rt gripper variants this adapter supports. i2rt also defines NO_GRIPPER and
+# YAM_TEACHING_HANDLE, but those change the per-arm DOF and would silently break the
+# 7-D-per-arm / 14-D packing contract, so they are rejected eagerly. Names match the
+# ``i2rt.robots.utils.GripperType`` enum *names* (the enum values are lowercase).
+SUPPORTED_GRIPPER_TYPES = frozenset({"CRANK_4310", "LINEAR_3507", "LINEAR_4310", "FLEXIBLE_4310"})
 
 # Conservative default action limits: revolute joints in [-pi, pi], gripper in
 # [0, 1]. These are SAFETY limits — override with the real YAM joint limits before
@@ -63,8 +69,15 @@ class YamConfig(_FromKwargs):
     gripper_open: float = 0.0
     gripper_closed: float = 1.0
     joints_are_delta: bool = False
+    zero_gravity_mode: bool = True
+    unattended: bool = False
 
     def __post_init__(self) -> None:
+        if self.gripper_type not in SUPPORTED_GRIPPER_TYPES:
+            raise ValueError(
+                f"gripper_type {self.gripper_type!r} is not supported; expected one of "
+                f"{sorted(SUPPORTED_GRIPPER_TYPES)} (i2rt GripperType enum names)"
+            )
         for name in ("joint_low", "joint_high"):
             if len(getattr(self, name)) != TOTAL_DIM:
                 raise ValueError(f"{name} must have {TOTAL_DIM} entries")
@@ -100,7 +113,7 @@ class MolmoActConfig(_FromKwargs):
 
     @property
     def url(self) -> str:
-        return self.server_url.rstrip("/") + self.endpoint
+        return self.server_url.rstrip("/") + "/" + self.endpoint.lstrip("/")
 
 
 DEFAULT_CAMERAS: tuple[str, ...] = ("top_cam", "left_cam", "right_cam")
@@ -130,10 +143,16 @@ def action_box(
     return Box(shape=(TOTAL_DIM,), low=low, high=high, semantics=ACTION_SEMANTICS)
 
 
-def observation_space(height: int, width: int, names: tuple[str, ...]) -> ObservationSpace:
-    """The shared observation space: three cameras + the packed 14-D ``joint_pos`` state."""
+def observation_space(
+    height: int, width: int, names: tuple[str, ...], state_key: str = STATE_KEY
+) -> ObservationSpace:
+    """The shared observation space: three cameras + the packed 14-D state.
+
+    ``state_key`` drives *both* ``state_keys`` and the ``StateSpec`` field key so
+    the space stays internally consistent for any configured key.
+    """
     return ObservationSpace(
         cameras=camera_specs(height, width, names),
-        state_keys=frozenset({STATE_KEY}),
-        state=STATE_SPEC,
+        state_keys=frozenset({state_key}),
+        state=state_spec(state_key),
     )

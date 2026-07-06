@@ -39,6 +39,11 @@ def test_molmo_url_strips_trailing_slash() -> None:
     assert cfg.url == "http://host:9000/act"
 
 
+def test_molmo_url_adds_missing_endpoint_slash() -> None:
+    cfg = MolmoActConfig(server_url="http://host:9000", endpoint="act")
+    assert cfg.url == "http://host:9000/act"  # not "http://host:9000act"
+
+
 def test_from_kwargs_populates_scalars() -> None:
     cfg = MolmoActConfig.from_kwargs(server_url="http://gpu:8202", num_steps=20)
     assert cfg.server_url == "http://gpu:8202"
@@ -64,6 +69,26 @@ def test_yam_rejects_bad_joint_limits() -> None:
 def test_yam_rejects_bad_home_pose() -> None:
     with pytest.raises(ValueError, match="home_pose must have 14 entries"):
         YamConfig(home_pose=(0.0,) * 10)
+
+
+def test_yam_operational_defaults() -> None:
+    cfg = YamConfig()
+    assert cfg.gripper_type == "LINEAR_4310"  # i2rt GripperType enum *name*
+    assert cfg.zero_gravity_mode is True
+    assert cfg.unattended is False
+
+
+def test_yam_rejects_unsupported_gripper_type() -> None:
+    # NO_GRIPPER / YAM_TEACHING_HANDLE would break the 7-D-per-arm packing contract.
+    with pytest.raises(ValueError, match="gripper_type 'NO_GRIPPER' is not supported"):
+        YamConfig(gripper_type="NO_GRIPPER")
+
+
+def test_yam_rejects_gripper_type_enum_value_spelling() -> None:
+    # The seam does a GripperType[...] NAME lookup; lowercase enum *values* must
+    # be rejected here rather than exploding at driver-connect time.
+    with pytest.raises(ValueError, match="not supported"):
+        YamConfig(gripper_type="linear_4310")
 
 
 def test_yam_rejects_equal_gripper_calibration() -> None:

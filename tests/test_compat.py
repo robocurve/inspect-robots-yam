@@ -42,6 +42,21 @@ def test_every_kitchenbench_task_is_realizable(task_name: str) -> None:
     assert report.errors == []
 
 
+def test_state_key_mismatch_trips_state_error() -> None:
+    # A non-default state_key must surface in compat (the policy would KeyError in
+    # act() otherwise), and disappear again when both sides agree.
+    from inspect_robots_yam.config import MolmoActConfig
+
+    mismatched = MolmoAct2Policy(MolmoActConfig(state_key="proprio"))
+    report = check_compatibility(mismatched, YAMEmbodiment())
+    assert report.ok is False
+    assert any(i.code == "missing_state" for i in report.errors)
+
+    matched = MolmoAct2Policy(MolmoActConfig(state_key="joint_pos"))
+    ok_report = check_compatibility(matched, YAMEmbodiment())
+    assert ok_report.ok is True and ok_report.errors == []
+
+
 def test_negative_wrong_dim_policy_trips_action_dim_error() -> None:
     bad = PolicyInfo(
         name="bad",
