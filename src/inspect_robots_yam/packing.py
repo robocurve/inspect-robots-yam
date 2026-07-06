@@ -32,20 +32,32 @@ RIGHT = slice(ARM_WIDTH, TOTAL_DIM)  # indices 7..13
 # we model it as a single field so ``StateSpec.keys == {"joint_pos"}`` stays
 # consistent with the ``state_keys`` both components declare for compatibility.
 STATE_KEY = "joint_pos"
-STATE_SPEC = StateSpec(
-    fields=(StateField(key=STATE_KEY, shape=(TOTAL_DIM,), unit="rad+normalized"),)
-)
+
+
+def state_spec(key: str = STATE_KEY) -> StateSpec:
+    """A single-field flat 14-D ``StateSpec`` under ``key`` (rad + normalized grippers).
+
+    Deriving the spec from the key keeps ``state_keys`` and the ``StateField`` key
+    consistent for any configured ``state_key`` — ``ObservationSpace`` rejects them
+    if they disagree.
+    """
+    return StateSpec(fields=(StateField(key=key, shape=(TOTAL_DIM,), unit="rad+normalized"),))
+
+
+STATE_SPEC = state_spec()
 
 Vec = npt.NDArray[np.float64]
 
 
 def validate_dim(vec: npt.ArrayLike, n: int = TOTAL_DIM) -> Vec:
-    """Return ``vec`` as a 1-D float array, raising ``ValueError`` if not length ``n``."""
-    arr = np.asarray(vec, dtype=np.float64).reshape(-1)
-    if arr.shape[0] != n:
-        raise ValueError(
-            f"expected a {n}-D vector, got shape {np.shape(vec)} ({arr.shape[0]} elems)"
-        )
+    """Return ``vec`` as a 1-D float array of length ``n``, raising ``ValueError`` otherwise.
+
+    Requires ``ndim == 1`` outright — flattening a same-size 2-D array (e.g.
+    ``(7, 2)``) would silently interleave-scramble the arm packing.
+    """
+    arr = np.asarray(vec, dtype=np.float64)
+    if arr.ndim != 1 or arr.shape[0] != n:
+        raise ValueError(f"expected a {n}-D vector, got shape {np.shape(vec)}")
     return arr
 
 

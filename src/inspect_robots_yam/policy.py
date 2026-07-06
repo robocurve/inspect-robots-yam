@@ -59,7 +59,10 @@ class MolmoAct2Policy:
             name="molmoact2",
             action_space=action_box(),  # semantics only; the embodiment owns limits
             observation_space=observation_space(
-                self._cfg.cam_height, self._cfg.cam_width, self._cfg.camera_order
+                self._cfg.cam_height,
+                self._cfg.cam_width,
+                self._cfg.camera_order,
+                state_key=self._cfg.state_key,
             ),
             # Intentionally None: advertising a rate would trip a (harmless) compat
             # control_rate warning. The trained rate rides on the returned chunk.
@@ -105,6 +108,9 @@ class MolmoAct2Policy:
             raise ValueError("/act returned an empty action chunk")
 
         dt_ms = resp.get("dt_ms")
+        if dt_ms is not None and dt_ms < 0:
+            raise ValueError(f"/act returned negative dt_ms: {dt_ms!r}")
+        # 0/None deliberately mean "no advertised rate" (falsy), not an error.
         chunk_hz = 1000.0 / dt_ms if dt_ms else None
         self.num_inferences += 1
         return ActionChunk(
