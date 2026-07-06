@@ -1,5 +1,14 @@
 # 0001 — `robolens-yam`: YAM arms + MolmoAct2 adapters
 
+> **Superseded naming.** This document predates the framework rename and is kept
+> verbatim as the approved design record. Read the old names as follows:
+> package `robolens-yam` → **`inspect-robots-yam`** (module `inspect_robots_yam`);
+> framework `robolens`/`RoboInspect`/`roboinspect` → **Inspect Robots**
+> (`inspect-robots`, module `inspect_robots`); entry-point groups
+> `roboinspect.*` → **`inspect_robots.*`**; CLI `roboinspect run` →
+> **`inspect-robots run`**; `robolens-yam-preflight` →
+> **`inspect-robots-yam-preflight`**. The design itself is unchanged and current.
+
 **Status:** design + implementation plan (rev 2 — addresses critique round 1)
 **Goal:** make RoboInspect + KitchenBench runnable on **I2RT YAM bimanual arms** driven by
 **MolmoAct2**, with `(policy, embodiment)` compatibility guaranteed — and motion made
