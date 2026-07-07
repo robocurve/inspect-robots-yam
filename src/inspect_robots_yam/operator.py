@@ -41,11 +41,28 @@ class OperatorIO:
                 "working input_fn, or set YamConfig(unattended=True) "
                 "(CLI: -E unattended=true) to skip operator prompts."
             ) from exc
+        # Discard anything still buffered on stdin (e.g. an extra newline from the
+        # start prompt). Otherwise default_poll_end's select() reads it as an
+        # "end episode" keypress on the first step and terminates immediately.
+        _drain_stdin()
 
     def confirm_success(self, prompt: str = "Did the robot succeed? [y/N]: ") -> bool:
         """Return the operator's success verdict (affirmative answers → True)."""
         answer = self.input_fn(prompt)
         return answer.strip().lower() in _AFFIRMATIVE
+
+
+def _drain_stdin() -> None:
+    """Discard buffered stdin so a stale newline (e.g. from the start prompt)
+    doesn't immediately trip :func:`default_poll_end`. No-op off a real TTY."""
+    import sys
+
+    if not sys.stdin.isatty():
+        return
+    import select  # pragma: no cover - TTY-bound
+
+    while select.select([sys.stdin], [], [], 0)[0]:  # pragma: no cover - TTY-bound
+        sys.stdin.readline()  # pragma: no cover - TTY-bound
 
 
 def default_poll_end() -> bool:  # pragma: no cover - requires a real TTY
