@@ -29,6 +29,7 @@ def test_yam_defaults() -> None:
 def test_molmo_defaults_and_url() -> None:
     cfg = MolmoActConfig()
     assert cfg.num_steps == 10
+    assert cfg.action_horizon == 30
     assert cfg.state_key == "joint_pos"
     assert cfg.camera_order == DEFAULT_CAMERAS
     assert cfg.url == "http://127.0.0.1:8202/act"

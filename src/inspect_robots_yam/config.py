@@ -100,11 +100,22 @@ class YamConfig(_FromKwargs):
 
 @dataclass(frozen=True)
 class MolmoActConfig(_FromKwargs):
-    """Static configuration for the MolmoAct2 ``/act`` client."""
+    """Static configuration for the MolmoAct2 ``/act`` client.
+
+    ``num_steps`` is the wire-protocol field of the same name: the number of
+    flow-matching **denoising steps** the server runs per inference
+    (``predict_action(num_steps=...)`` → ``flow_matching_num_steps``). It does
+    NOT control how many actions come back — the chunk length is fixed by the
+    checkpoint's norm stats (``action_horizon``/``n_action_steps``, 30 for
+    ``yam_dual_molmoact2``). ``action_horizon`` here is that advertised chunk
+    length, surfaced as :class:`~inspect_robots.policy.PolicyConfig` metadata;
+    the actual length is always taken from the server's response.
+    """
 
     server_url: str = "http://127.0.0.1:8202"
     endpoint: str = "/act"
     num_steps: int = 10
+    action_horizon: int = 30
     timeout_s: float = 30.0
     camera_order: tuple[str, ...] = ("top_cam", "left_cam", "right_cam")
     state_key: str = "joint_pos"

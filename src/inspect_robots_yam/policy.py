@@ -3,8 +3,10 @@
 MolmoAct2 runs as a separate FastAPI process (it owns the GPU + weights). This
 policy is a stateless client: each :meth:`act` packs the three cameras, the
 language instruction, and the packed 14-D ``state`` into the ``/act`` request,
-POSTs it, and turns the returned ``(num_steps, 14)`` array into a Inspect Robots
-:class:`~inspect_robots.types.ActionChunk`.
+POSTs it, and turns the returned ``(N, 14)`` array into a Inspect Robots
+:class:`~inspect_robots.types.ActionChunk`. ``N`` is fixed by the checkpoint's
+norm stats (30 for the bimanual-YAM tag) — the request's ``num_steps`` field
+sets the server's flow-matching denoising steps, not the chunk length.
 
 The HTTP transport is injected (``post_fn``) so the whole policy is testable with
 no server and no network; the real transport (`requests` + `json_numpy`) is a
@@ -68,7 +70,7 @@ class MolmoAct2Policy:
             # control_rate warning. The trained rate rides on the returned chunk.
             control_hz=None,
         )
-        self.config = PolicyConfig(action_horizon=self._cfg.num_steps)
+        self.config = PolicyConfig(action_horizon=self._cfg.action_horizon)
 
     def reset(self, scene: Scene) -> None:
         """Stash the scene's instruction (fed to the VLA verbatim)."""
