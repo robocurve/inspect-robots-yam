@@ -27,11 +27,11 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          cache-dependency-glob: "**/pyproject.toml"
-      - name: Create venv
-        run: uv venv --python 3.11
-      - name: Install (dev extras; inspect_robots + kitchenbench from git tags)
-        run: uv pip install -e ".[dev]"
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+      - name: Install from uv.lock (dev extras)
+        run: uv sync --locked --python 3.11 --extra dev
       - name: Ruff (lint)
         run: uv run ruff check .
       - name: Ruff (format check)
@@ -55,11 +55,11 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          cache-dependency-glob: "**/pyproject.toml"
-      - name: Create venv (py${{ matrix.python-version }})
-        run: uv venv --python ${{ matrix.python-version }}
-      - name: Install (dev extras)
-        run: uv pip install -e ".[dev]"
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+      - name: Install from uv.lock (dev extras)
+        run: uv sync --locked --python ${{ matrix.python-version }} --extra dev
       - name: Pytest (100% coverage)
         run: uv run pytest --cov --cov-report=term-missing
 
@@ -75,11 +75,11 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          cache-dependency-glob: "**/pyproject.toml"
-      - name: Create venv
-        run: uv venv --python 3.12
-      - name: Install runtime only (no extras)
-        run: uv pip install -e .
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+      - name: Install runtime only from uv.lock (no extras)
+        run: uv sync --locked --python 3.12
       - name: Assert optional deps absent, then import
         run: |
           uv run python - <<'PY'
