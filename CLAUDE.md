@@ -78,6 +78,10 @@ non-YAM I2RT robots, and model fine-tuning.
 - **CI installs from `uv.lock`** (`uv sync --locked`). After changing
   dependencies in `pyproject.toml`, run `uv lock` and commit the lockfile —
   otherwise CI fails with "the lockfile needs to be updated".
+- A weekly **canary** (`canary.yml`) does the opposite: it installs the latest
+  dependency versions the pyproject ranges allow (ignoring the lockfile), runs
+  the tests, and opens an issue on failure — catching ecosystem breakage that
+  locked CI can't see. A green canary means `uv lock --upgrade` is safe.
 - The `i2rt` driver is GitHub-only; `uv.lock` pins it to a commit. To advance
   it, run `uv lock --upgrade-package i2rt`.
 - **Releases are one-click**: Actions → Release → Run workflow → pick
