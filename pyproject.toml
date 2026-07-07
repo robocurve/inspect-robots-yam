@@ -44,12 +44,11 @@ Homepage = "https://github.com/robocurve/inspect-robots-yam"
 Framework = "https://github.com/robocurve/inspect-robots"
 Collection = "https://github.com/robocurve/worldevals"
 
-# inspect_robots/kitchenbench aren't on PyPI yet — resolve from tagged GitHub releases.
-# i2rt is GitHub-only. This is uv-only metadata (stripped from the published wheel).
+# inspect_robots/kitchenbench resolve from PyPI. i2rt is GitHub-only. This is
+# uv-only metadata (stripped from the published wheel), so a plain PyPI install
+# cannot resolve the [yam] extra — install i2rt directly from git (see README).
 # For local dev against sibling checkouts: uv pip install -e ../inspect-robots -e ../kitchenbench
 [tool.uv.sources]
-inspect-robots = { git = "https://github.com/robocurve/inspect-robots", tag = "v0.3.0" }
-kitchenbench = { git = "https://github.com/robocurve/kitchenbench", tag = "v0.3.0" }
 i2rt = { git = "https://github.com/i2rt-robotics/i2rt" }
 
 # Inspect Robots discovers these by entry point — no import needed for `inspect-robots list`.
