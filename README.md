@@ -7,6 +7,7 @@
 [MolmoAct2](https://github.com/allenai/molmoact2).**
 
 [![CI](https://github.com/robocurve/inspect-robots-yam/actions/workflows/ci.yml/badge.svg)](https://github.com/robocurve/inspect-robots-yam/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/inspect-robots-yam)](https://pypi.org/project/inspect-robots-yam/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/robocurve/inspect-robots-yam/actions/workflows/ci.yml)
 [![Built on Inspect Robots](https://img.shields.io/badge/built%20on-Inspect%20Robots-indigo)](https://github.com/robocurve/inspect-robots)
@@ -41,12 +42,16 @@ inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2 --embodimen
 ## Install (on the robot/GPU machine)
 
 ```bash
-# Inspect Robots isn't on PyPI yet; uv resolves it (and the optional i2rt driver) from git.
-uv pip install "inspect-robots-yam[client,yam] @ git+https://github.com/robocurve/inspect-robots-yam"
+uv pip install "inspect-robots-yam[client]"
+# The i2rt driver is GitHub-only (not on PyPI), so the [yam] hardware extra
+# can't resolve from PyPI — install the driver directly instead:
+uv pip install "i2rt @ git+https://github.com/i2rt-robotics/i2rt"
 ```
 
 - `client` → `requests` + `json-numpy` (the `/act` transport).
-- `yam` → the I2RT `i2rt` driver (GitHub-only).
+- `i2rt` → the I2RT YAM arm driver, required for real hardware (the `[yam]`
+  extra declares it, but only resolves in a git/dev install where
+  `[tool.uv.sources]` applies — from PyPI, install it directly as above).
 
 Then download the model weights (needs a Hugging Face token) and start the server,
 from the [MolmoAct2 repo](https://github.com/allenai/molmoact2):
@@ -155,7 +160,7 @@ Scalar knobs are settable from the CLI:
 ## Development
 
 ```bash
-uv venv && uv pip install -e ".[dev]"     # inspect_robots + kitchenbench from git tags
+uv venv && uv pip install -e ".[dev]"     # inspect_robots + kitchenbench from PyPI
 uv run pre-commit install
 uv run pytest --cov                        # 100% coverage required
 uv run ruff check . && uv run mypy
