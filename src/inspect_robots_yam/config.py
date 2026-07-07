@@ -66,6 +66,10 @@ class YamConfig(_FromKwargs):
     joint_low: tuple[float, ...] = _DEFAULT_LOW
     joint_high: tuple[float, ...] = _DEFAULT_HIGH
     home_pose: tuple[float, ...] | None = None
+    # Pose the arms ramp to on close() BEFORE torque is released, so they don't
+    # fall. Same units as home_pose/actions: gripper slots normalized 0-1.
+    rest_pose: tuple[float, ...] | None = None
+    rest_secs: float = 3.0
     gripper_open: float = 0.0
     gripper_closed: float = 1.0
     joints_are_delta: bool = False
@@ -83,6 +87,10 @@ class YamConfig(_FromKwargs):
                 raise ValueError(f"{name} must have {TOTAL_DIM} entries")
         if self.home_pose is not None and len(self.home_pose) != TOTAL_DIM:
             raise ValueError(f"home_pose must have {TOTAL_DIM} entries")
+        if self.rest_pose is not None and len(self.rest_pose) != TOTAL_DIM:
+            raise ValueError(f"rest_pose must have {TOTAL_DIM} entries")
+        if self.rest_secs <= 0:
+            raise ValueError("rest_secs must be > 0")
         if self.gripper_open == self.gripper_closed:
             raise ValueError(
                 "gripper_open and gripper_closed must differ (the gripper stroke "
