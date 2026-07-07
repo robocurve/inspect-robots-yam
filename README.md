@@ -75,8 +75,41 @@ same way** — see *Safety* below.
 
 ## Run on hardware
 
-You must provide a `camera_reader` (there is no universal camera API) returning
-`{"top_cam", "left_cam", "right_cam": HxWx3 uint8}`. From Python:
+You must provide a `camera_reader` (there is no universal camera API). It is a
+`Callable[[YamConfig], dict]` — called once per step with the config — returning
+`{"top_cam", "left_cam", "right_cam": HxWx3 uint8}` at the config's
+`cam_height`×`cam_width`. Here is a concrete reader for Intel RealSense cameras
+over V4L2/OpenCV that opens each device once and reuses the handle:
+
+```python
+import cv2
+import numpy as np
+from inspect_robots_yam import YamConfig
+
+def make_realsense_reader(devices: dict[str, str]):
+    """devices maps cam name -> V4L2 path, e.g.
+    {"top_cam": "/dev/video0", "left_cam": "/dev/video6", "right_cam": "/dev/video12"}."""
+    caps: dict[str, cv2.VideoCapture] = {}
+
+    def reader(cfg: YamConfig) -> dict[str, np.ndarray]:
+        for name, dev in devices.items():
+            caps.setdefault(name, cv2.VideoCapture(dev, cv2.CAP_V4L2))
+        frames: dict[str, np.ndarray] = {}
+        for name, cap in caps.items():
+            ok, bgr = cap.read()
+            if not ok or bgr is None:
+                raise RuntimeError(f"camera read failed: {name} ({devices[name]})")
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            frames[name] = cv2.resize(rgb, (cfg.cam_width, cfg.cam_height)).astype(np.uint8)
+        return frames
+
+    return reader
+```
+
+> RealSense `/dev/videoN` numbers reshuffle on replug; pin each camera with a
+> `udev` rule keyed on its firmware serial so the paths above stay stable.
+
+Then wire it up and run:
 
 ```python
 from inspect_robots import eval
@@ -84,13 +117,19 @@ from inspect_robots.approver import ClampApprover
 from inspect_robots_yam import MolmoAct2Policy, YAMEmbodiment, YamConfig
 
 emb = YAMEmbodiment(YamConfig(left_channel="can0", right_channel="can1"),
-                    camera_reader=my_camera_reader)
+                    camera_reader=make_realsense_reader({...}))
 pol = MolmoAct2Policy(server_url="http://127.0.0.1:8202")
 
 (log,) = eval("kitchenbench/pour_pasta", pol, emb,
               approver=ClampApprover(emb.info.action_space))  # defense in depth
 print(log.status, log.results.metrics)
 ```
+
+> **Validate before you move.** A run with a dead `/act` server or a mis-wired
+> camera should fail at setup, not mid-motion. Before the first real run, confirm
+> the reader returns three `(cam_height, cam_width, 3)` `uint8` frames and that
+> the server answers at `server_url` — then keep [preflight](#preflight--prove-compatibility-before-any-motion)
+> green and clear the workspace.
 
 At each episode end the embodiment asks the operator (y/N); a `yes` records
 `termination_reason="success"`, which KitchenBench's `task_success` scorer reads.
