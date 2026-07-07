@@ -152,7 +152,7 @@ class YAMEmbodiment:
         if self._driver is None:
             self._driver = self._driver_factory(self._cfg)
         if self._cfg.home_pose is not None:
-            self._send(np.asarray(self._cfg.home_pose, dtype=np.float64))
+            self._ramp_to(np.asarray(self._cfg.home_pose, dtype=np.float64))
         if not self._cfg.unattended:
             self._operator.wait_ready()
         self._instruction = scene.instruction
@@ -200,17 +200,18 @@ class YAMEmbodiment:
             return
         try:
             if self._cfg.rest_pose is not None:
-                self._go_to_rest(np.asarray(self._cfg.rest_pose, dtype=np.float64))
+                self._ramp_to(np.asarray(self._cfg.rest_pose, dtype=np.float64))
         finally:
             self._driver.close()
             self._driver = None
 
-    def _go_to_rest(self, target: Vec) -> None:
+    def _ramp_to(self, target: Vec) -> None:
         """Linearly ramp from the current pose to ``target`` over ``rest_secs``.
 
-        Each waypoint goes through :meth:`_send`, so the joint-limit clamp and
-        gripper de-normalization apply to the rest motion exactly as they do to
-        policy actions.
+        Used for both homing (reset) and parking (close): a single raw jump to
+        a distant pose is violent on real arms. Each waypoint goes through
+        :meth:`_send`, so the joint-limit clamp and gripper de-normalization
+        apply to these motions exactly as they do to policy actions.
         """
         driver = self._require_driver()
         start = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))

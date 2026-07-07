@@ -86,16 +86,21 @@ def test_zero_arg_info_no_hardware() -> None:
 
 
 def test_reset_returns_observation_and_homes() -> None:
-    cfg = YamConfig(home_pose=(0.1,) * 14, gripper_open=10.0, gripper_closed=20.0)
-    emb, drv, _ = _build(cfg)
+    # Homing is a smooth ramp (like the rest-pose motion), NOT a single jump:
+    # rest_secs=2.0 at 10 Hz -> 20 interpolated commands ending at home.
+    cfg = YamConfig(home_pose=(0.1,) * 14, rest_secs=2.0, gripper_open=10.0, gripper_closed=20.0)
+    drv = EchoDriver()
+    emb, _, _ = _build(cfg, driver=drv)
     obs = emb.reset(Scene(id="s", instruction="pour"))
     assert set(obs.images) == {"top_cam", "left_cam", "right_cam"}
     assert obs.state["joint_pos"].shape == (14,)
     assert obs.instruction == "pour"
     # The home pose is in policy units and goes through the same clamp+denorm
     # path as actions: joints pass through, gripper slots are de-normalized.
-    assert len(drv.commands) == 1  # homing command issued
-    home_cmd = drv.commands[0]
+    assert len(drv.commands) == 20  # interpolated homing ramp
+    j0 = [c[0] for c in drv.commands]
+    assert all(b >= a for a, b in itertools.pairwise(j0))  # monotonic, no jump
+    home_cmd = drv.commands[-1]
     assert home_cmd[0] == pytest.approx(0.1)
     assert home_cmd[6] == pytest.approx(11.0)  # 10 + 0.1 * (20 - 10)
     assert home_cmd[13] == pytest.approx(11.0)
