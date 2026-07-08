@@ -14,6 +14,8 @@
 
 </div>
 
+> **⚠️ Early alpha.** Under active development. APIs, data formats, and results may change without notice.
+
 Inspect Robots has **two** swappable inputs: a `Policy` (the VLA brain) and an
 `Embodiment` (the robot body + world). This package provides both for the
 YAM + MolmoAct2 stack, so any embodiment-agnostic Inspect Robots task — e.g. all of
