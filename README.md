@@ -6,6 +6,7 @@
 [I2RT YAM](https://i2rt.com/products/yam-6-dof-arm) bimanual arms driven by
 [MolmoAct2](https://github.com/allenai/molmoact2).**
 
+![Status: alpha](https://img.shields.io/badge/status-alpha-blue)
 [![CI](https://github.com/robocurve/inspect-robots-yam/actions/workflows/ci.yml/badge.svg)](https://github.com/robocurve/inspect-robots-yam/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/inspect-robots-yam)](https://pypi.org/project/inspect-robots-yam/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -14,7 +15,8 @@
 
 </div>
 
-> **⚠️ Early alpha.** Under active development. APIs, data formats, and results may change without notice.
+> [!NOTE]
+> This project is in early development. The API may change between releases, so pin a version before depending on it.
 
 Inspect Robots has **two** swappable inputs: a `Policy` (the VLA brain) and an
 `Embodiment` (the robot body + world). This package provides both for the
