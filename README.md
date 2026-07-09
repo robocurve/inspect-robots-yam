@@ -30,8 +30,8 @@ YAM + MolmoAct2 stack, so any embodiment-agnostic Inspect Robots task (e.g. all 
 
 Both declare the same 14-D joint-position contract (2 arms × [6 joints +
 gripper], cameras `top/left/right`, packed `joint_pos` state), so Inspect Robots's
-compatibility check passes with zero errors and zero warnings, verifiable
-before any motion.
+compatibility check passes with zero errors and zero warnings. This is
+verifiable before any motion.
 
 ```bash
 inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2 --embodiment yam_arms
@@ -107,8 +107,8 @@ prompts are skipped and every episode runs to `max_steps`, scoring as a failure.
 
 - **Hard clamp backstop.** Every command is clipped to `YamConfig.joint_low/high`
   *inside* `step()`, independent of any Inspect Robots `Approver`: unclamped model
-  outputs can never reach the motors. Set the arm slots to your real YAM joint
-  limits (the defaults are conservative placeholders: joints ±π, gripper 0–1).
+  outputs can never reach the motors. **Set the arm slots to your real YAM joint
+  limits** (the defaults are conservative placeholders: joints ±π, gripper 0–1).
   But note the limits are in *policy units* per the table below: gripper slots 6
   and 13 stay normalized 0–1, only slots 0–5 and 7–12 are radians.
 - **Use `ClampApprover`** on hardware for a second layer.
@@ -130,7 +130,7 @@ prompts are skipped and every episode runs to `max_steps`, scoring as a failure.
   that already-normalized range. Its main use is a gripper wired with inverted
   polarity (`gripper_open=1.0, gripper_closed=0.0`). The remap is a bijection:
   commands are de-normalized on the way out and observations are re-normalized on
-  the way back, so the model always sees 0–1. Warning: values outside [0, 1]
+  the way back, so the model always sees 0–1. **Warning:** values outside [0, 1]
   are forwarded on a path i2rt does *not* clip. Avoid them unless you have
   verified your firmware's behavior.
 
