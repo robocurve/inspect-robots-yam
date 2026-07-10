@@ -145,36 +145,6 @@ pol = MolmoAct2Policy(server_url="http://127.0.0.1:8202")
 print(log.status, log.results.metrics)
 ```
 
-### Zero-config CLI
-
-`inspect-robots "place the fork on the plate"` works once two pieces are in
-place. First, a small entry-point factory that bakes in your rig's camera
-reader (the CLI cannot inject one) and, ideally, a rest pose:
-
-```python
-# my_rig/__init__.py, registered under [project.entry-points."inspect_robots.embodiments"]
-def make_yam_arms(**flat):
-    flat.setdefault("rest_pose", MY_REST_POSE)  # park here before torque-off
-    return YAMEmbodiment(YamConfig.from_kwargs(**flat), camera_reader=my_camera_reader)
-```
-
-Second, write your defaults once:
-
-```bash
-mkdir -p ~/.config/inspect-robots && cat > ~/.config/inspect-robots/config.ini <<'EOF'
-[defaults]
-policy = molmoact2
-embodiment = my_yam_arms   # your factory's entry-point name
-scorer = success_at_end    # scores the operator's y/N answer at episode end
-max_steps = 1200           # 120 s at 10 Hz
-rerun = true               # live viewer of cams/state/actions (inspect-robots[rerun])
-store_frames = true        # keep the policy's camera frames per run
-EOF
-```
-
-Any language instruction then runs the full attended flow: position the scene,
-press Enter to start, press any key to end the episode, answer y/N to score.
-
 At each episode end the embodiment asks the operator (y/N); a `yes` records
 `termination_reason="success"`, which KitchenBench's `task_success` scorer reads.
 The operator prompts need an interactive terminal: a dead stdin raises
@@ -238,7 +208,10 @@ than jumping), `rest_pose` (close ramps here before torque is released, so the
 arms never fall; default `None` keeps the old release-in-place behavior),
 `rest_secs` (ramp duration, default 3.0), `gripper_open/closed`,
 `joints_are_delta`, `zero_gravity_mode` (default `True`; see *Safety*),
-`unattended` (default `False`; skip operator prompts).
+`unattended` (default `False`; skip operator prompts),
+`top/left/right_cam_device` (V4L2 paths for the builtin camera reader; all
+three or none), `max_steps_hint` (display-only horizon for the operator
+status line; bounds nothing).
 `MolmoActConfig`: `server_url`, `endpoint`, `num_steps` (the wire field: the
 server's flow-matching denoising steps, *not* the chunk length),
 `action_horizon` (the checkpoint's advertised chunk length, 30 for the bimanual
