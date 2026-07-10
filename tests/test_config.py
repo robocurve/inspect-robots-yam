@@ -149,3 +149,47 @@ def test_yam_camera_devices_all_or_none() -> None:
         right_cam_device="/dev/video4",
     )
     assert cfg.left_cam_device == "/dev/video2"
+
+
+def test_action_semantics_is_config_dependent_with_labels() -> None:
+    from inspect_robots_yam.config import action_semantics
+    from inspect_robots_yam.packing import DIM_LABELS
+
+    absolute = action_semantics(joints_are_delta=False)
+    assert absolute.control_mode == "joint_pos"
+    assert absolute.dim_labels == DIM_LABELS
+    delta = action_semantics(joints_are_delta=True)
+    assert delta.control_mode == "joint_delta"
+    assert delta.dim_labels == DIM_LABELS
+
+
+def test_dim_labels_shape_and_order() -> None:
+    from inspect_robots_yam.packing import DIM_LABELS, TOTAL_DIM
+
+    assert len(DIM_LABELS) == TOTAL_DIM
+    assert DIM_LABELS[0] == "left_j0"
+    assert DIM_LABELS[6] == "left_gripper"
+    assert DIM_LABELS[7] == "right_j0"
+    assert DIM_LABELS[13] == "right_gripper"
+
+
+def test_step_limits_default_and_validation() -> None:
+    import numpy as np
+
+    cfg = YamConfig()
+    assert len(cfg.step_limits) == 14
+    assert cfg.step_limits[0] == pytest.approx(0.2)  # rad per step, per joint
+    assert cfg.step_limits[6] == pytest.approx(1.0)  # normalized gripper stroke
+    assert np.allclose(cfg.delta_low, -np.asarray(cfg.step_limits))
+    assert np.allclose(cfg.delta_high, np.asarray(cfg.step_limits))
+    with pytest.raises(ValueError, match="step_limits"):
+        YamConfig(step_limits=(0.1,) * 13)
+    with pytest.raises(ValueError, match="step_limits"):
+        YamConfig(step_limits=(0.1,) * 13 + (-0.1,))
+
+
+def test_molmoact_config_gains_delta_flag() -> None:
+    from inspect_robots_yam.config import MolmoActConfig
+
+    assert MolmoActConfig().joints_are_delta is False
+    assert MolmoActConfig(joints_are_delta=True).joints_are_delta is True

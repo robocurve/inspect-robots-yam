@@ -152,6 +152,55 @@ The operator prompts need an interactive terminal: a dead stdin raises
 set `YamConfig(unattended=True)` (CLI: `-E unattended=true`): all operator
 prompts are skipped and every episode runs to `max_steps`, scoring as a failure.
 
+## Drive the arms with an LLM (agent mode)
+
+With the [inspect-robots-agent](https://github.com/robocurve/inspect-robots/tree/main/plugins/inspect-robots-agent)
+plugin installed, a frontier LLM can drive the arms directly: it sees the
+cameras and the labeled 14-D state, and moves joints by name
+(`left_j0`..`left_gripper`, `right_j0`..`right_gripper`) through smooth,
+approver-checked motions.
+
+```bash
+uv pip install inspect-robots-agent "inspect-robots-yam[cameras]"
+inspect-robots config set embodiment yam_arms     # once, per machine
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Cameras come from the builtin reader: set the three *_cam_device paths in
+# ~/.config/inspect-robots/config.ini (see Quickstart above) or pass them as
+# -E flags per run.
+inspect-robots "place the fork on the plate" --policy agent \
+    -P model=anthropic/claude-fable-5
+```
+
+Safety guardrails (a bounds clamp plus a per-step delta limit derived from the
+declared action space) are wired in by default for every CLI run; turning them
+off requires an explicit `--disable-guardrails`.
+
+> [!WARNING]
+> Before any unattended agent run, verify on your rig that the arms hold
+> position while the LLM thinks (seconds between action chunks). Run the
+> bundled check per arm and per mode, arms mid-workspace, e-stop in hand:
+>
+> ```bash
+> inspect-robots-yam-holdcheck can_left --zero-gravity true
+> inspect-robots-yam-holdcheck can_right --zero-gravity true
+> ```
+>
+> (Channel names match your rig's CAN interfaces; `can0`/`can1` on default
+> setups.) PASS in the mode you run agents in closes the verification. The
+> default `zero_gravity_mode=true` puts the i2rt driver in a
+> gravity-compensated, compliant mode; if it drifts but `--zero-gravity
+> false` holds, run agents with `-E zero_gravity_mode=false`. If both drift,
+> file an issue with the numbers. Keep a hand on the e-stop for the first
+> runs.
+
+In delta mode (`-E joints_are_delta=true`) the declared action space is the
+per-step displacement box (`YamConfig.step_limits`, default 0.2 rad per joint
+and a full gripper stroke per step); the absolute joint limits still clamp the
+summed command inside the embodiment as a backstop. A delta-configured rig
+must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
+`molmoact2`); a mismatch fails the compatibility check before any motion.
+
 ## Safety
 
 - **Hard clamp backstop.** Every command is clipped to `YamConfig.joint_low/high`

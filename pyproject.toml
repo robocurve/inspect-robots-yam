@@ -19,7 +19,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
-dependencies = ["inspect-robots>=0.3", "numpy>=1.24"]
+dependencies = ["inspect-robots>=0.6", "numpy>=1.24"]
 
 [project.optional-dependencies]
 # Real /act transport (the model runs in MolmoAct2's own server process).
@@ -60,6 +60,7 @@ molmoact2 = "inspect_robots_yam.policy:MolmoAct2Policy"
 
 [project.scripts]
 inspect-robots-yam-preflight = "inspect_robots_yam.preflight:main"
+inspect-robots-yam-holdcheck = "inspect_robots_yam.hold_check:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/inspect_robots_yam"]

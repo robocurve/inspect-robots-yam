@@ -27,6 +27,15 @@ TOTAL_DIM = ARM_WIDTH * 2  # 14-D bimanual
 LEFT = slice(0, ARM_WIDTH)  # indices 0..6
 RIGHT = slice(ARM_WIDTH, TOTAL_DIM)  # indices 7..13
 
+# Human-readable names for the 14 dims, in packing order. Carried on
+# ActionSemantics.dim_labels so label-addressed tooling (the LLM agent
+# policy, logging, visualization) can name joints instead of indices.
+DIM_LABELS: tuple[str, ...] = tuple(
+    f"{side}_{part}"
+    for side in ("left", "right")
+    for part in (*(f"j{i}" for i in range(ARM_DOF)), "gripper")
+)
+
 # The canonical proprioception key MolmoAct2's YAM server expects as a flat 14-D
 # ``state``. Joints are radians, the trailing gripper of each arm is normalized;
 # we model it as a single field so ``StateSpec.keys == {"joint_pos"}`` stays
