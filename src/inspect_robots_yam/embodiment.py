@@ -99,6 +99,59 @@ def _default_status(line: str | None) -> None:  # pragma: no cover - real TTY ou
         print(f"\r  {line}   ", end="", flush=True)
 
 
+def _opencv_camera_reader(cfg: YamConfig) -> CameraReader:
+    """Builtin V4L2 reader for rigs configured via ``*_cam_device`` (YamConfig).
+
+    cv2 is imported lazily on the first frame read, so construction stays inert
+    and the package still imports without OpenCV installed. Negotiates YUYV at
+    640x480 explicitly (RealSense D435s return empty frames on cv2 defaults)
+    and resizes to ``cam_width`` x ``cam_height`` RGB.
+    """
+    devices = {
+        "top_cam": cfg.top_cam_device,
+        "left_cam": cfg.left_cam_device,
+        "right_cam": cfg.right_cam_device,
+    }
+    caps: dict[str, Any] = {}
+
+    def reader(cfg: YamConfig) -> ImageMap:  # pragma: no cover - real cameras
+        import time as _time
+
+        import cv2
+
+        if not caps:
+            for name, dev in devices.items():
+                cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
+                if not cap.isOpened():
+                    raise RuntimeError(f"cannot open {name} at {dev}")
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)
+                cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000)
+                for _ in range(10):  # warm up: first frames can be empty
+                    if cap.read()[0]:
+                        break
+                    _time.sleep(0.1)
+                caps[name] = cap
+        out: dict[str, npt.NDArray[np.uint8]] = {}
+        for name, cap in caps.items():
+            frame = None
+            for _ in range(10):
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    break
+                _time.sleep(0.05)
+            if frame is None:
+                raise RuntimeError(f"frame read failed for {name} ({devices[name]})")
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame = cv2.resize(frame, (cfg.cam_width, cfg.cam_height))
+            out[name] = frame.astype(np.uint8)
+        return out
+
+    return reader
+
+
 def _default_camera_reader(cfg: YamConfig) -> ImageMap:
     raise NotImplementedError(
         "provide a camera_reader returning {'top_cam','left_cam','right_cam': HxWx3 uint8}"
@@ -123,6 +176,10 @@ class YAMEmbodiment:
     ) -> None:
         self._cfg = config if config is not None else YamConfig.from_kwargs(**flat)
         self._driver_factory: DriverFactory = driver_factory or _default_driver_factory
+        if camera_reader is None and self._cfg.top_cam_device is not None:
+            # All three device paths are set (YamConfig validates all-or-none):
+            # use the builtin OpenCV reader, so config/CLI-only setups work.
+            camera_reader = _opencv_camera_reader(self._cfg)
         self._camera_reader: CameraReader = camera_reader or _default_camera_reader
         self._operator = operator if operator is not None else OperatorIO()
         self._poll_end: Callable[[], bool] = poll_end or default_poll_end
@@ -155,9 +212,11 @@ class YAMEmbodiment:
         # also catches a CLI-injected scalar (`-E camera_reader=...` binds a str).
         if self._camera_reader is _default_camera_reader or not callable(self._camera_reader):
             raise ConfigError(
-                "yam_arms has no usable camera_reader (there is no universal camera "
-                "API). Provide camera_reader= via the Python API or a custom "
-                "entry-point factory; the CLI cannot inject one."
+                "yam_arms has no cameras configured. Set the three V4L2 device "
+                "paths - top/left/right_cam_device - in YamConfig, config.ini "
+                "([embodiment.args]) or the CLI (-E top_cam_device=/dev/video0 "
+                "...) to use the builtin OpenCV reader, or provide a custom "
+                "camera_reader= via the Python API."
             )
         if self._driver is None:
             self._driver = self._driver_factory(self._cfg)

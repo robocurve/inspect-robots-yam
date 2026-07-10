@@ -24,6 +24,7 @@ dependencies = ["inspect-robots>=0.3", "numpy>=1.24"]
 [project.optional-dependencies]
 # Real /act transport (the model runs in MolmoAct2's own server process).
 client = ["requests>=2.31", "json-numpy>=2.1"]
+cameras = ["opencv-python-headless>=4.8"]
 # Real YAM arm driver — not on PyPI; resolved from git (see [tool.uv.sources]).
 yam = ["i2rt"]
 dev = [
@@ -95,7 +96,7 @@ files = ["src/inspect_robots_yam"]
 # Hardware/client deps are lazily imported behind pragma'd seams and are not test
 # deps; silence mypy's missing-import errors for them (mirrors inspect_robots' rerun override).
 [[tool.mypy.overrides]]
-module = ["requests.*", "json_numpy.*", "i2rt.*"]
+module = ["requests.*", "json_numpy.*", "i2rt.*", "cv2.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
