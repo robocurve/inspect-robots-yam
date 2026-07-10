@@ -64,6 +64,7 @@ molmoact2 = "inspect_robots_yam.policy:MolmoAct2Policy"
 
 [project.scripts]
 inspect-robots-yam-preflight = "inspect_robots_yam.preflight:main"
+inspect-robots-yam-holdcheck = "inspect_robots_yam.hold_check:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/inspect_robots_yam"]

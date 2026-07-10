@@ -150,6 +150,7 @@ def test_yam_camera_devices_all_or_none() -> None:
     )
     assert cfg.left_cam_device == "/dev/video2"
 
+
 def test_action_semantics_is_config_dependent_with_labels() -> None:
     from inspect_robots_yam.config import action_semantics
     from inspect_robots_yam.packing import DIM_LABELS

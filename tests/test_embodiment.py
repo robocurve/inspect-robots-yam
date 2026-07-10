@@ -486,6 +486,7 @@ def test_no_cameras_configured_keeps_fail_fast_reader_with_device_hint() -> None
         emb.reset(Scene(id="s", instruction="x"))
     assert drv.commands == []  # fail-fast happened before any driver connect
 
+
 def test_delta_mode_declares_joint_delta_and_per_step_box() -> None:
     import numpy as np
 

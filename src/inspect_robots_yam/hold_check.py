@@ -1,0 +1,178 @@
+"""``inspect-robots-yam-holdcheck`` — the on-rig hold-behavior verification.
+
+Slow policies (VLA servers, LLM agents) leave multi-second gaps between
+action chunks; during a gap no command reaches the motors, and the arm must
+hold its last commanded pose. This script measures exactly that: it commands
+the arm's *current* pose once (so no motion is expected), then samples joint
+positions for a while and reports the drift.
+
+Run it per arm and per mode, arms mid-workspace, e-stop in hand::
+
+    inspect-robots-yam-holdcheck can0 --zero-gravity false
+    inspect-robots-yam-holdcheck can1 --zero-gravity false
+    inspect-robots-yam-holdcheck can0 --zero-gravity true
+    inspect-robots-yam-holdcheck can1 --zero-gravity true
+
+PASS in the mode you run agents in closes verification item 6.4 of the
+inspect-robots plan-0008 quickstart. If gravity-comp mode (``true``) drifts
+but stiff mode (``false``) holds, run agents with
+``-E zero_gravity_mode=false``. If both drift, file an issue with the
+numbers: the embodiment needs a hold heartbeat.
+
+The robot handle, sleep, and output are injected so the whole module tests
+without hardware; the real i2rt connection is a pragma'd default.
+"""
+
+from __future__ import annotations
+
+import argparse
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+import numpy as np
+import numpy.typing as npt
+
+DEFAULT_THRESHOLD_RAD = 0.01
+DEFAULT_DURATION_S = 60.0
+DEFAULT_INTERVAL_S = 5.0
+
+
+class SingleArm(Protocol):
+    """The one-arm slice of the i2rt driver this check needs."""
+
+    def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]: ...
+
+    def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None: ...
+
+
+RobotFactory = Callable[[str, bool], SingleArm]
+EmitFn = Callable[[str], None]
+
+
+def _default_robot_factory(  # pragma: no cover - real hardware
+    channel: str, zero_gravity_mode: bool
+) -> SingleArm:
+    from i2rt.robots.get_robot import get_yam_robot
+    from i2rt.robots.utils import GripperType
+
+    robot: SingleArm = get_yam_robot(
+        channel=channel,
+        gripper_type=GripperType["LINEAR_4310"],
+        zero_gravity_mode=zero_gravity_mode,
+    )
+    return robot
+
+
+@dataclass(frozen=True)
+class HoldResult:
+    """The verdict plus the per-interval drift history for the report."""
+
+    max_drift: float
+    worst_joint: int
+    threshold_rad: float
+    samples: tuple[tuple[float, float], ...]  # (elapsed_s, max_abs_drift)
+
+    @property
+    def passed(self) -> bool:
+        return self.max_drift <= self.threshold_rad
+
+
+def run_hold_check(
+    robot: SingleArm,
+    *,
+    duration_s: float = DEFAULT_DURATION_S,
+    interval_s: float = DEFAULT_INTERVAL_S,
+    threshold_rad: float = DEFAULT_THRESHOLD_RAD,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    emit: EmitFn = print,
+) -> HoldResult:
+    """Command the current pose once, then watch drift for ``duration_s``."""
+    pose = np.asarray(robot.get_joint_pos(), dtype=np.float64)
+    emit(f"start pose: {np.round(pose, 3).tolist()}")
+    robot.command_joint_pos(pose)  # one command, like a chunk ending
+
+    samples: list[tuple[float, float]] = []
+    max_drift = 0.0
+    worst_joint = 0
+    elapsed = 0.0
+    while elapsed < duration_s:
+        sleep_fn(interval_s)
+        elapsed += interval_s
+        drift = np.asarray(robot.get_joint_pos(), dtype=np.float64) - pose
+        step_max = float(np.abs(drift).max())
+        samples.append((elapsed, step_max))
+        if step_max > max_drift:
+            max_drift = step_max
+            worst_joint = int(np.argmax(np.abs(drift)))
+        emit(
+            f"{elapsed:5.0f}s  max |drift| = {step_max:.4f} rad"
+            f"  (joint {int(np.argmax(np.abs(drift)))}: {drift[np.argmax(np.abs(drift))]:+.4f})"
+        )
+    return HoldResult(
+        max_drift=max_drift,
+        worst_joint=worst_joint,
+        threshold_rad=threshold_rad,
+        samples=tuple(samples),
+    )
+
+
+def _parse_bool(text: str) -> bool:
+    low = text.lower()
+    if low in ("true", "false"):
+        return low == "true"
+    raise argparse.ArgumentTypeError(f"expected true or false, got {text!r}")
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    robot_factory: RobotFactory | None = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    emit: EmitFn = print,
+) -> int:
+    """CLI entry point. Exit 0 on PASS, 1 on FAIL."""
+    parser = argparse.ArgumentParser(
+        prog="inspect-robots-yam-holdcheck",
+        description="Verify the arm holds position between action chunks (item 6.4).",
+    )
+    parser.add_argument("channel", help="CAN channel of the arm to test (can0 / can1)")
+    parser.add_argument(
+        "--zero-gravity",
+        type=_parse_bool,
+        required=True,
+        metavar="true|false",
+        help="driver mode to test; run both, agent runs use whichever passes",
+    )
+    parser.add_argument("--duration-s", type=float, default=DEFAULT_DURATION_S)
+    parser.add_argument("--interval-s", type=float, default=DEFAULT_INTERVAL_S)
+    parser.add_argument(
+        "--threshold-rad",
+        type=float,
+        default=DEFAULT_THRESHOLD_RAD,
+        help="max acceptable drift on any joint over the whole window",
+    )
+    args = parser.parse_args(argv)
+
+    factory = robot_factory if robot_factory is not None else _default_robot_factory
+    emit(f"{args.channel} zero_gravity={args.zero_gravity}: watching for {args.duration_s:.0f}s")
+    robot = factory(args.channel, args.zero_gravity)
+    result = run_hold_check(
+        robot,
+        duration_s=args.duration_s,
+        interval_s=args.interval_s,
+        threshold_rad=args.threshold_rad,
+        sleep_fn=sleep_fn,
+        emit=emit,
+    )
+    verdict = "PASS" if result.passed else "FAIL"
+    emit(
+        f"{verdict}: max drift {result.max_drift:.4f} rad on joint {result.worst_joint} "
+        f"(threshold {result.threshold_rad} rad)"
+    )
+    return 0 if result.passed else 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
