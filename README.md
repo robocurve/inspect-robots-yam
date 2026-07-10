@@ -67,10 +67,22 @@ python examples/yam/host_server_yam.py          # serves /act on :8202
 
 ## Preflight: prove compatibility before any motion
 
+Check dims, semantics, cameras, and state keys:
+
 ```bash
-inspect-robots-yam-preflight                                  # dims/semantics/cameras/state
-inspect-robots-yam-preflight --task kitchenbench/pour_pasta   # + scene realizability
-inspect-robots-yam-preflight --dry-run                        # affirm no motion
+inspect-robots-yam-preflight
+```
+
+Also check a specific task's scenes are realizable:
+
+```bash
+inspect-robots-yam-preflight --task kitchenbench/pour_pasta
+```
+
+Affirm that no motion will occur:
+
+```bash
+inspect-robots-yam-preflight --dry-run
 ```
 
 A green preflight means action dim (14), control mode (`joint_pos`), cameras, and
@@ -109,9 +121,10 @@ def make_yam_arms(**flat):
     return YAMEmbodiment(YamConfig.from_kwargs(**flat), camera_reader=my_camera_reader)
 ```
 
-Second, defaults in `~/.config/inspect-robots/config.ini`:
+Second, write your defaults once:
 
-```ini
+```bash
+mkdir -p ~/.config/inspect-robots && cat > ~/.config/inspect-robots/config.ini <<'EOF'
 [defaults]
 policy = molmoact2
 embodiment = my_yam_arms   # your factory's entry-point name
@@ -119,6 +132,7 @@ scorer = success_at_end    # scores the operator's y/N answer at episode end
 max_steps = 1200           # 120 s at 10 Hz
 rerun = true               # live viewer of cams/state/actions (inspect-robots[rerun])
 store_frames = true        # keep the policy's camera frames per run
+EOF
 ```
 
 Any language instruction then runs the full attended flow: position the scene,
