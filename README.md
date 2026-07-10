@@ -194,6 +194,15 @@ off requires an explicit `--disable-guardrails`.
 > file an issue with the numbers. Keep a hand on the e-stop for the first
 > runs.
 
+Set a resting pose so runs end with a gentle 3-second park instead of the
+arms going limp mid-air (pose fields accept comma-separated values from the
+CLI and config.ini):
+
+```ini
+[embodiment.args]
+rest_pose = -0.002,0.002,0.002,-0.089,0.007,-0.026,1.0,-0.006,0.002,0.001,-0.087,-0.007,-0.019,1.0
+```
+
 In delta mode (`-E joints_are_delta=true`) the declared action space is the
 per-step displacement box (`YamConfig.step_limits`, default 0.2 rad per joint
 and a full gripper stroke per step); the absolute joint limits still clamp the
