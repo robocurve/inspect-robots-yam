@@ -43,7 +43,7 @@ def test_info_and_config_zero_arg() -> None:
     assert pol.info.action_space.semantics.control_mode == "joint_pos"
     assert pol.info.control_hz is None  # load-bearing: keeps compat warning-free
     assert pol.info.observation_space.state_keys == frozenset({"joint_pos"})
-    assert pol.config.action_horizon == 10
+    assert pol.config.action_horizon == 30
 
 
 def test_act_builds_request_and_chunk() -> None:
@@ -146,6 +146,7 @@ def test_act_missing_state_raises() -> None:
 
 
 def test_config_object_overrides_flat() -> None:
-    pol = MolmoAct2Policy(MolmoActConfig(num_steps=3))
-    assert pol.config.action_horizon == 3
+    # num_steps is the denoising-step count; it must NOT leak into action_horizon.
+    pol = MolmoAct2Policy(MolmoActConfig(num_steps=3, action_horizon=5))
+    assert pol.config.action_horizon == 5
     assert packing.TOTAL_DIM == 14  # sanity

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 import pytest
 from inspect_robots.embodiment import SELF_PACED
@@ -84,16 +86,21 @@ def test_zero_arg_info_no_hardware() -> None:
 
 
 def test_reset_returns_observation_and_homes() -> None:
-    cfg = YamConfig(home_pose=(0.1,) * 14, gripper_open=10.0, gripper_closed=20.0)
-    emb, drv, _ = _build(cfg)
+    # Homing is a smooth ramp (like the rest-pose motion), NOT a single jump:
+    # rest_secs=2.0 at 10 Hz -> 20 interpolated commands ending at home.
+    cfg = YamConfig(home_pose=(0.1,) * 14, rest_secs=2.0, gripper_open=10.0, gripper_closed=20.0)
+    drv = EchoDriver()
+    emb, _, _ = _build(cfg, driver=drv)
     obs = emb.reset(Scene(id="s", instruction="pour"))
     assert set(obs.images) == {"top_cam", "left_cam", "right_cam"}
     assert obs.state["joint_pos"].shape == (14,)
     assert obs.instruction == "pour"
     # The home pose is in policy units and goes through the same clamp+denorm
     # path as actions: joints pass through, gripper slots are de-normalized.
-    assert len(drv.commands) == 1  # homing command issued
-    home_cmd = drv.commands[0]
+    assert len(drv.commands) == 20  # interpolated homing ramp
+    j0 = [c[0] for c in drv.commands]
+    assert all(b >= a for a, b in itertools.pairwise(j0))  # monotonic, no jump
+    home_cmd = drv.commands[-1]
     assert home_cmd[0] == pytest.approx(0.1)
     assert home_cmd[6] == pytest.approx(11.0)  # 10 + 0.1 * (20 - 10)
     assert home_cmd[13] == pytest.approx(11.0)
@@ -320,3 +327,72 @@ def test_default_camera_reader_not_implemented() -> None:
 
     with pytest.raises(NotImplementedError, match="camera_reader"):
         _default_camera_reader(YamConfig())
+
+
+def test_close_ramps_to_rest_pose_then_releases() -> None:
+    # 2 s at 10 Hz -> 20 waypoints from 0 to the rest pose, then torque-off.
+    cfg = YamConfig(rest_pose=(0.5,) * 14, rest_secs=2.0)
+    drv = EchoDriver()
+    emb, _, sleeps = _build(cfg, driver=drv)
+    emb.reset(Scene(id="s", instruction="x"))
+    emb.close()
+    assert len(drv.commands) == 20
+    assert drv.commands[-1] == pytest.approx(np.full(14, 0.5))
+    j0 = [c[0] for c in drv.commands]
+    assert all(b >= a for a, b in itertools.pairwise(j0))  # monotonic ramp, no jump
+    assert drv.commands[0][0] == pytest.approx(0.5 / 20)  # first step is 1/n of the way
+    assert drv.closed is True
+    assert sleeps[-1] == pytest.approx(0.1)  # paced at 1/control_hz
+
+
+def test_close_rest_pose_goes_through_clamp_and_denorm() -> None:
+    # Out-of-range joints clamp to +/-pi; gripper slots de-normalize like actions.
+    cfg = YamConfig(
+        rest_pose=(100.0,) * 6 + (0.5,) + (100.0,) * 6 + (0.5,),
+        rest_secs=0.1,  # 1 waypoint
+        gripper_open=10.0,
+        gripper_closed=20.0,
+    )
+    emb, drv, _ = _build(cfg)
+    emb.reset(Scene(id="s", instruction="x"))
+    emb.close()
+    cmd = drv.commands[-1]
+    assert cmd[0] == pytest.approx(np.pi)
+    assert cmd[6] == pytest.approx(15.0)  # 10 + 0.5 * (20 - 10)
+
+
+def test_close_without_rest_pose_sends_nothing() -> None:
+    emb, drv, _ = _build()
+    emb.reset(Scene(id="s", instruction="x"))
+    emb.close()
+    assert drv.commands == []
+    assert drv.closed is True
+
+
+def test_close_before_connect_skips_rest_motion() -> None:
+    emb, drv, _ = _build(YamConfig(rest_pose=(0.0,) * 14))
+    emb.close()  # never connected: no motion, no close
+    assert drv.commands == []
+    assert drv.closed is False
+
+
+def test_close_rest_fault_still_releases_driver() -> None:
+    class FaultyDriver(FakeDriver):
+        def command_joint_pos(self, target: np.ndarray) -> None:
+            raise RuntimeError("CAN fault")
+
+    drv = FaultyDriver()
+    emb, _, _ = _build(YamConfig(rest_pose=(0.0,) * 14), driver=drv)
+    emb.reset(Scene(id="s", instruction="x"))
+    with pytest.raises(RuntimeError, match="CAN fault"):
+        emb.close()
+    assert drv.closed is True  # handles released despite the fault
+    emb.close()  # and close() stays idempotent afterwards
+
+
+def test_close_rest_pose_zero_hz_falls_back_to_10hz() -> None:
+    cfg = YamConfig(rest_pose=(0.1,) * 14, rest_secs=1.0, control_hz=0.0)
+    emb, drv, _ = _build(cfg)
+    emb.reset(Scene(id="s", instruction="x"))
+    emb.close()
+    assert len(drv.commands) == 10  # 1 s at the 10 Hz fallback

@@ -29,6 +29,7 @@ def test_yam_defaults() -> None:
 def test_molmo_defaults_and_url() -> None:
     cfg = MolmoActConfig()
     assert cfg.num_steps == 10
+    assert cfg.action_horizon == 30
     assert cfg.state_key == "joint_pos"
     assert cfg.camera_order == DEFAULT_CAMERAS
     assert cfg.url == "http://127.0.0.1:8202/act"
@@ -107,3 +108,19 @@ def test_camera_specs() -> None:
     assert all(isinstance(s, CameraSpec) for s in specs)
     assert specs[0].name == "top_cam"
     assert specs[0].height == 224 and specs[0].width == 224
+
+
+def test_yam_rest_defaults() -> None:
+    cfg = YamConfig()
+    assert cfg.rest_pose is None
+    assert cfg.rest_secs == 3.0
+
+
+def test_yam_rejects_bad_rest_pose() -> None:
+    with pytest.raises(ValueError, match="rest_pose must have 14 entries"):
+        YamConfig(rest_pose=(0.0,) * 3)
+
+
+def test_yam_rejects_nonpositive_rest_secs() -> None:
+    with pytest.raises(ValueError, match="rest_secs must be > 0"):
+        YamConfig(rest_secs=0.0)

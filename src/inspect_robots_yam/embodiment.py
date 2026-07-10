@@ -152,7 +152,7 @@ class YAMEmbodiment:
         if self._driver is None:
             self._driver = self._driver_factory(self._cfg)
         if self._cfg.home_pose is not None:
-            self._send(np.asarray(self._cfg.home_pose, dtype=np.float64))
+            self._ramp_to(np.asarray(self._cfg.home_pose, dtype=np.float64))
         if not self._cfg.unattended:
             self._operator.wait_ready()
         self._instruction = scene.instruction
@@ -188,10 +188,39 @@ class YAMEmbodiment:
         return StepResult(observation=obs, terminated=False)
 
     def close(self) -> None:
-        """Release the driver handles (no-op if never connected)."""
-        if self._driver is not None:
+        """Park at ``rest_pose`` (if configured), then release the driver handles.
+
+        Releasing the driver zeroes motor torque, so whatever pose the arms are
+        in when it happens is the pose they fall from — the rest ramp runs
+        first so torque-off is harmless. The release lives in a ``finally`` so
+        a driver fault mid-ramp can never leave the handles held. No-op if
+        never connected.
+        """
+        if self._driver is None:
+            return
+        try:
+            if self._cfg.rest_pose is not None:
+                self._ramp_to(np.asarray(self._cfg.rest_pose, dtype=np.float64))
+        finally:
             self._driver.close()
             self._driver = None
+
+    def _ramp_to(self, target: Vec) -> None:
+        """Linearly ramp from the current pose to ``target`` over ``rest_secs``.
+
+        Used for both homing (reset) and parking (close): a single raw jump to
+        a distant pose is violent on real arms. Each waypoint goes through
+        :meth:`_send`, so the joint-limit clamp and gripper de-normalization
+        apply to these motions exactly as they do to policy actions.
+        """
+        driver = self._require_driver()
+        start = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+        hz = self._cfg.control_hz if self._cfg.control_hz > 0 else 10.0
+        n = max(1, round(self._cfg.rest_secs * hz))
+        for i in range(1, n + 1):
+            alpha = i / n
+            self._send((1.0 - alpha) * start + alpha * target)
+            self._sleep(1.0 / hz)
 
     # -- internals ---------------------------------------------------------
 
