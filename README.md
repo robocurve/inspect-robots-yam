@@ -37,11 +37,11 @@ verifiable before any motion.
 inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2 --embodiment yam_arms
 ```
 
-> **Note:** the CLI forwards scalar `key=value` knobs only. It cannot inject a
-> `camera_reader`, which hardware runs require. Launch from Python (see *Run on
-> hardware*) or register your own entry-point factory that bundles the cameras;
-> otherwise `yam_arms` fails fast with a `ConfigError` at `reset()`, before any
-> driver connect or motion.
+> **Note:** cameras are configured with three plain device paths
+> (`top/left/right_cam_device`), so the whole rig is drivable from config.ini
+> or `-E key=value` flags with no custom code. A Python `camera_reader` remains
+> available for exotic camera stacks. With neither configured, `yam_arms` fails
+> fast with a `ConfigError` at `reset()`, before any driver connect or motion.
 
 ## Install (on the robot/GPU machine)
 
@@ -79,8 +79,45 @@ same way. See *Safety* below.
 
 ## Run on hardware
 
-You must provide a `camera_reader` (there is no universal camera API) returning
-`{"top_cam", "left_cam", "right_cam": HxWx3 uint8}`. From Python:
+Install the builtin camera reader's dependency:
+
+```bash
+uv pip install "inspect-robots-yam[cameras]"
+```
+
+Write your defaults once, replacing the three camera paths with your rig's
+V4L2 color nodes (use stable `/dev/v4l/by-id/...` or udev-symlink paths;
+bare `/dev/videoN` numbers reshuffle on every replug):
+
+```bash
+mkdir -p ~/.config/inspect-robots && cat > ~/.config/inspect-robots/config.ini <<'EOF'
+[defaults]
+policy = molmoact2
+embodiment = yam_arms
+scorer = success_at_end    # scores the operator's y/N answer at episode end
+max_steps = 1200           # 120 s at 10 Hz
+rerun = true               # live viewer of cams/state/actions (inspect-robots[rerun])
+store_frames = true        # keep the policy's camera frames per run
+
+[embodiment.args]
+top_cam_device = /dev/v4l/by-id/YOUR-TOP-CAM
+left_cam_device = /dev/v4l/by-id/YOUR-LEFT-CAM
+right_cam_device = /dev/v4l/by-id/YOUR-RIGHT-CAM
+EOF
+```
+
+Then tell the robot what to do:
+
+```bash
+uv run inspect-robots "place the fork on the plate"
+```
+
+The attended flow: position the scene, press Enter to start, press any key to
+end the episode, answer y/N to score.
+
+For exotic camera stacks (or full programmatic control), the Python API takes
+a custom `camera_reader` returning
+`{"top_cam", "left_cam", "right_cam": HxWx3 uint8}`:
 
 ```python
 from inspect_robots import eval

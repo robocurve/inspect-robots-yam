@@ -131,3 +131,21 @@ def test_yam_max_steps_hint_default_and_validation() -> None:
     assert YamConfig(max_steps_hint=1200).max_steps_hint == 1200
     with pytest.raises(ValueError, match="max_steps_hint must be >= 1"):
         YamConfig(max_steps_hint=0)
+
+
+def test_yam_camera_devices_default_none() -> None:
+    cfg = YamConfig()
+    assert cfg.top_cam_device is None
+    assert cfg.left_cam_device is None
+    assert cfg.right_cam_device is None
+
+
+def test_yam_camera_devices_all_or_none() -> None:
+    with pytest.raises(ValueError, match="all three or none"):
+        YamConfig(top_cam_device="/dev/video0")
+    cfg = YamConfig(
+        top_cam_device="/dev/video0",
+        left_cam_device="/dev/video2",
+        right_cam_device="/dev/video4",
+    )
+    assert cfg.left_cam_device == "/dev/video2"

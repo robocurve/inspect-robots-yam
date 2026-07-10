@@ -79,6 +79,14 @@ class YamConfig(_FromKwargs):
     # the real max_steps): lets the operator status line show elapsed/total.
     # Bounds nothing.
     max_steps_hint: int | None = None
+    # Builtin OpenCV camera reader: set ALL THREE to your rig's V4L2 color
+    # nodes (stable udev paths recommended; /dev/videoN reshuffles on replug)
+    # and yam_arms works from the CLI/config with no custom camera factory.
+    # Plain strings, so `-E top_cam_device=...` and config.ini can carry them.
+    # Needs opencv-python-headless (the [cameras] extra).
+    top_cam_device: str | None = None
+    left_cam_device: str | None = None
+    right_cam_device: str | None = None
 
     def __post_init__(self) -> None:
         if self.gripper_type not in SUPPORTED_GRIPPER_TYPES:
@@ -97,6 +105,12 @@ class YamConfig(_FromKwargs):
             raise ValueError("rest_secs must be > 0")
         if self.max_steps_hint is not None and self.max_steps_hint < 1:
             raise ValueError("max_steps_hint must be >= 1")
+        devices = (self.top_cam_device, self.left_cam_device, self.right_cam_device)
+        if any(d is not None for d in devices) and not all(d is not None for d in devices):
+            raise ValueError(
+                "camera devices must be set all three or none "
+                "(top_cam_device, left_cam_device, right_cam_device)"
+            )
         if self.gripper_open == self.gripper_closed:
             raise ValueError(
                 "gripper_open and gripper_closed must differ (the gripper stroke "
