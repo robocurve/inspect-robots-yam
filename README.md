@@ -67,10 +67,22 @@ python examples/yam/host_server_yam.py          # serves /act on :8202
 
 ## Preflight: prove compatibility before any motion
 
+Check dims, semantics, cameras, and state keys:
+
 ```bash
-inspect-robots-yam-preflight                                  # dims/semantics/cameras/state
-inspect-robots-yam-preflight --task kitchenbench/pour_pasta   # + scene realizability
-inspect-robots-yam-preflight --dry-run                        # affirm no motion
+inspect-robots-yam-preflight
+```
+
+Also check a specific task's scenes are realizable:
+
+```bash
+inspect-robots-yam-preflight --task kitchenbench/pour_pasta
+```
+
+Affirm that no motion will occur:
+
+```bash
+inspect-robots-yam-preflight --dry-run
 ```
 
 A green preflight means action dim (14), control mode (`joint_pos`), cameras, and
@@ -150,10 +162,12 @@ prompts are skipped and every episode runs to `max_steps`, scoring as a failure.
   and 13 stay normalized 0–1, only slots 0–5 and 7–12 are radians.
 - **Use `ClampApprover`** on hardware for a second layer.
 - **Zero-gravity handoff jump.** The arms connect in zero-gravity mode by default
-  (`YamConfig(zero_gravity_mode=True)`, passed through to the i2rt driver), so the
-  first stiff PD command (homing or the first action) can jump from wherever the
-  arm was idling. Nothing bounds the per-step joint delta yet (tracked as a known
-  issue); stand clear at `reset()` and prefer a `home_pose` near the resting pose.
+  (`YamConfig(zero_gravity_mode=True)`, passed through to the i2rt driver).
+  Homing and rest-pose motions ramp at `control_hz`, but the first *policy*
+  action is still a stiff PD command that can jump from wherever the arm ended
+  up. Nothing bounds the per-step joint delta yet (tracked as a known issue);
+  stand clear when the episode starts, and set `home_pose` so episodes begin
+  from your checkpoint's trained start state.
 - **Absolute vs. delta joints: verify first.** MolmoAct2's YAM `actions` are
   treated as *absolute* joint targets by default. If your checkpoint emits
   deltas, set `YamConfig(joints_are_delta=True)` (the embodiment converts to
@@ -175,8 +189,8 @@ prompts are skipped and every episode runs to `max_steps`, scoring as a failure.
 
 ### Units: every 14-D vector uses the same layout
 
-`joint_low`/`joint_high`, `home_pose`, actions, and the observed `joint_pos`
-state all use *policy units*:
+`joint_low`/`joint_high`, `home_pose`, `rest_pose`, actions, and the observed
+`joint_pos` state all use *policy units*:
 
 | Slots | Meaning | Unit |
 |-------|---------|------|
@@ -189,11 +203,20 @@ driver boundary; nothing you configure here is in hardware gripper units.
 `YamConfig`: `left_channel`, `right_channel`, `gripper_type` (i2rt `GripperType`
 enum *name*, e.g. `LINEAR_4310`; grippers only: `NO_GRIPPER`/`YAM_TEACHING_HANDLE`
 would break the 14-D packing and are rejected), `control_hz`, `cam_height/width`,
-`joint_low/high`, `home_pose`, `gripper_open/closed`, `joints_are_delta`,
-`zero_gravity_mode` (default `True`; see *Safety*), `unattended` (default `False`;
-skip operator prompts).
-`MolmoActConfig`: `server_url`, `endpoint`, `num_steps`, `timeout_s`,
-`camera_order`, `state_key`, `cam_height/width`.
+`joint_low/high`, `home_pose` (reset ramps here smoothly over `rest_secs` rather
+than jumping), `rest_pose` (close ramps here before torque is released, so the
+arms never fall; default `None` keeps the old release-in-place behavior),
+`rest_secs` (ramp duration, default 3.0), `gripper_open/closed`,
+`joints_are_delta`, `zero_gravity_mode` (default `True`; see *Safety*),
+`unattended` (default `False`; skip operator prompts),
+`top/left/right_cam_device` (V4L2 paths for the builtin camera reader; all
+three or none), `max_steps_hint` (display-only horizon for the operator
+status line; bounds nothing).
+`MolmoActConfig`: `server_url`, `endpoint`, `num_steps` (the wire field: the
+server's flow-matching denoising steps, *not* the chunk length),
+`action_horizon` (the checkpoint's advertised chunk length, 30 for the bimanual
+YAM tag; metadata only), `timeout_s`, `camera_order`, `state_key`,
+`cam_height/width`.
 
 Scalar knobs are settable from the CLI:
 `inspect-robots run -P server_url=http://gpu:8202 -E left_channel=can0 ...`.
