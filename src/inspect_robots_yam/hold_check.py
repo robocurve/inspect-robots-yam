@@ -34,7 +34,8 @@ from typing import Any, Protocol
 import numpy as np
 import numpy.typing as npt
 
-DEFAULT_THRESHOLD_RAD = 0.01
+DEFAULT_SETTLE_RAD = 0.05
+DEFAULT_TREND_RAD = 0.01
 DEFAULT_DURATION_S = 60.0
 DEFAULT_INTERVAL_S = 5.0
 
@@ -72,16 +73,30 @@ def _default_robot_factory(  # pragma: no cover - real hardware
 
 @dataclass(frozen=True)
 class HoldResult:
-    """The verdict plus the per-interval drift history for the report."""
+    """The verdict plus the per-interval drift history for the report.
+
+    Two distinct signals: ``settle`` is the first-sample drift (a one-time
+    steady-state control offset right after the command — benign if small),
+    while ``trend`` is how much further the arm moved after settling
+    (accumulating sag/walk-off — the dangerous one). Rig data shows the
+    settle is mode-independent (~0.012-0.015 rad on YAM joint 3), so the two
+    need separate thresholds.
+    """
 
     max_drift: float
+    settle: float
     worst_joint: int
-    threshold_rad: float
+    settle_rad: float
+    trend_rad: float
     samples: tuple[tuple[float, float], ...]  # (elapsed_s, max_abs_drift)
 
     @property
+    def trend(self) -> float:
+        return max(0.0, self.max_drift - self.settle)
+
+    @property
     def passed(self) -> bool:
-        return self.max_drift <= self.threshold_rad
+        return self.settle <= self.settle_rad and self.trend <= self.trend_rad
 
 
 def run_hold_check(
@@ -89,7 +104,8 @@ def run_hold_check(
     *,
     duration_s: float = DEFAULT_DURATION_S,
     interval_s: float = DEFAULT_INTERVAL_S,
-    threshold_rad: float = DEFAULT_THRESHOLD_RAD,
+    settle_rad: float = DEFAULT_SETTLE_RAD,
+    trend_rad: float = DEFAULT_TREND_RAD,
     sleep_fn: Callable[[float], None] = time.sleep,
     emit: EmitFn = _print_flushed,
 ) -> HoldResult:
@@ -117,8 +133,10 @@ def run_hold_check(
         )
     return HoldResult(
         max_drift=max_drift,
+        settle=samples[0][1] if samples else 0.0,
         worst_joint=worst_joint,
-        threshold_rad=threshold_rad,
+        settle_rad=settle_rad,
+        trend_rad=trend_rad,
         samples=tuple(samples),
     )
 
@@ -153,10 +171,16 @@ def main(
     parser.add_argument("--duration-s", type=float, default=DEFAULT_DURATION_S)
     parser.add_argument("--interval-s", type=float, default=DEFAULT_INTERVAL_S)
     parser.add_argument(
-        "--threshold-rad",
+        "--settle-rad",
         type=float,
-        default=DEFAULT_THRESHOLD_RAD,
-        help="max acceptable drift on any joint over the whole window",
+        default=DEFAULT_SETTLE_RAD,
+        help="max acceptable one-time settle (first-sample drift)",
+    )
+    parser.add_argument(
+        "--trend-rad",
+        type=float,
+        default=DEFAULT_TREND_RAD,
+        help="max acceptable drift GROWTH after the first sample (sag/walk-off)",
     )
     args = parser.parse_args(argv)
 
@@ -168,7 +192,8 @@ def main(
             robot,
             duration_s=args.duration_s,
             interval_s=args.interval_s,
-            threshold_rad=args.threshold_rad,
+            settle_rad=args.settle_rad,
+            trend_rad=args.trend_rad,
             sleep_fn=sleep_fn,
             emit=emit,
         )
@@ -182,8 +207,9 @@ def main(
             closer()
     verdict = "PASS" if result.passed else "FAIL"
     emit(
-        f"{verdict}: max drift {result.max_drift:.4f} rad on joint {result.worst_joint} "
-        f"(threshold {result.threshold_rad} rad)"
+        f"{verdict}: settle {result.settle:.4f} rad (limit {result.settle_rad}), "
+        f"trend {result.trend:.4f} rad (limit {result.trend_rad}), "
+        f"worst joint {result.worst_joint}"
     )
     return 0 if result.passed else 1
 

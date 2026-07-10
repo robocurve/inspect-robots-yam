@@ -56,9 +56,29 @@ def test_drifting_arm_fails_and_reports_worst_joint() -> None:
     assert result.samples  # per-interval history retained for the report
 
 
-def test_threshold_is_configurable() -> None:
+def test_thresholds_are_configurable() -> None:
     arm = _FakeArm(drift_per_read=0.001)
-    assert _run(arm, threshold_rad=1.0).passed is True
+    assert _run(arm, settle_rad=1.0, trend_rad=1.0).passed is True
+
+
+def test_settle_and_trend_are_judged_separately() -> None:
+    class _SettlingArm(_FakeArm):
+        """Settles 0.03 on the first read after command, then holds flat."""
+
+        def get_joint_pos(self):  # type: ignore[no-untyped-def]
+            self.reads += 1
+            if self.reads > 1:
+                self.pose = np.full(7, 0.03)
+            return self.pose.copy()
+
+    settled = _run(_SettlingArm())
+    assert settled.settle == pytest.approx(0.03)
+    assert settled.trend == pytest.approx(0.0)
+    assert settled.passed is True  # one-time settle within the generous limit
+
+    drifting = _run(_FakeArm(drift_per_read=0.02))
+    assert drifting.trend > 0.01
+    assert drifting.passed is False  # growth after the first sample = sag
 
 
 def test_main_wires_argv_and_exit_codes() -> None:
