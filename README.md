@@ -96,6 +96,34 @@ pol = MolmoAct2Policy(server_url="http://127.0.0.1:8202")
 print(log.status, log.results.metrics)
 ```
 
+### Zero-config CLI
+
+`inspect-robots "place the fork on the plate"` works once two pieces are in
+place. First, a small entry-point factory that bakes in your rig's camera
+reader (the CLI cannot inject one) and, ideally, a rest pose:
+
+```python
+# my_rig/__init__.py, registered under [project.entry-points."inspect_robots.embodiments"]
+def make_yam_arms(**flat):
+    flat.setdefault("rest_pose", MY_REST_POSE)  # park here before torque-off
+    return YAMEmbodiment(YamConfig.from_kwargs(**flat), camera_reader=my_camera_reader)
+```
+
+Second, defaults in `~/.config/inspect-robots/config.ini`:
+
+```ini
+[defaults]
+policy = molmoact2
+embodiment = my_yam_arms   # your factory's entry-point name
+scorer = success_at_end    # scores the operator's y/N answer at episode end
+max_steps = 1200           # 120 s at 10 Hz
+rerun = true               # live viewer of cams/state/actions (inspect-robots[rerun])
+store_frames = true        # keep the policy's camera frames per run
+```
+
+Any language instruction then runs the full attended flow: position the scene,
+press Enter to start, press any key to end the episode, answer y/N to score.
+
 At each episode end the embodiment asks the operator (y/N); a `yes` records
 `termination_reason="success"`, which KitchenBench's `task_success` scorer reads.
 The operator prompts need an interactive terminal: a dead stdin raises
@@ -113,10 +141,12 @@ prompts are skipped and every episode runs to `max_steps`, scoring as a failure.
   and 13 stay normalized 0–1, only slots 0–5 and 7–12 are radians.
 - **Use `ClampApprover`** on hardware for a second layer.
 - **Zero-gravity handoff jump.** The arms connect in zero-gravity mode by default
-  (`YamConfig(zero_gravity_mode=True)`, passed through to the i2rt driver), so the
-  first stiff PD command (homing or the first action) can jump from wherever the
-  arm was idling. Nothing bounds the per-step joint delta yet (tracked as a known
-  issue); stand clear at `reset()` and prefer a `home_pose` near the resting pose.
+  (`YamConfig(zero_gravity_mode=True)`, passed through to the i2rt driver).
+  Homing and rest-pose motions ramp at `control_hz`, but the first *policy*
+  action is still a stiff PD command that can jump from wherever the arm ended
+  up. Nothing bounds the per-step joint delta yet (tracked as a known issue);
+  stand clear when the episode starts, and set `home_pose` so episodes begin
+  from your checkpoint's trained start state.
 - **Absolute vs. delta joints: verify first.** MolmoAct2's YAM `actions` are
   treated as *absolute* joint targets by default. If your checkpoint emits
   deltas, set `YamConfig(joints_are_delta=True)` (the embodiment converts to
@@ -138,8 +168,8 @@ prompts are skipped and every episode runs to `max_steps`, scoring as a failure.
 
 ### Units: every 14-D vector uses the same layout
 
-`joint_low`/`joint_high`, `home_pose`, actions, and the observed `joint_pos`
-state all use *policy units*:
+`joint_low`/`joint_high`, `home_pose`, `rest_pose`, actions, and the observed
+`joint_pos` state all use *policy units*:
 
 | Slots | Meaning | Unit |
 |-------|---------|------|
@@ -152,11 +182,17 @@ driver boundary; nothing you configure here is in hardware gripper units.
 `YamConfig`: `left_channel`, `right_channel`, `gripper_type` (i2rt `GripperType`
 enum *name*, e.g. `LINEAR_4310`; grippers only: `NO_GRIPPER`/`YAM_TEACHING_HANDLE`
 would break the 14-D packing and are rejected), `control_hz`, `cam_height/width`,
-`joint_low/high`, `home_pose`, `gripper_open/closed`, `joints_are_delta`,
-`zero_gravity_mode` (default `True`; see *Safety*), `unattended` (default `False`;
-skip operator prompts).
-`MolmoActConfig`: `server_url`, `endpoint`, `num_steps`, `timeout_s`,
-`camera_order`, `state_key`, `cam_height/width`.
+`joint_low/high`, `home_pose` (reset ramps here smoothly over `rest_secs` rather
+than jumping), `rest_pose` (close ramps here before torque is released, so the
+arms never fall; default `None` keeps the old release-in-place behavior),
+`rest_secs` (ramp duration, default 3.0), `gripper_open/closed`,
+`joints_are_delta`, `zero_gravity_mode` (default `True`; see *Safety*),
+`unattended` (default `False`; skip operator prompts).
+`MolmoActConfig`: `server_url`, `endpoint`, `num_steps` (the wire field: the
+server's flow-matching denoising steps, *not* the chunk length),
+`action_horizon` (the checkpoint's advertised chunk length, 30 for the bimanual
+YAM tag; metadata only), `timeout_s`, `camera_order`, `state_key`,
+`cam_height/width`.
 
 Scalar knobs are settable from the CLI:
 `inspect-robots run -P server_url=http://gpu:8202 -E left_channel=can0 ...`.
