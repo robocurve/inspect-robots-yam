@@ -22,7 +22,7 @@ from inspect_robots.spaces import (
     ObservationSpace,
 )
 
-from inspect_robots_yam.packing import ARM_DOF, STATE_KEY, TOTAL_DIM, state_spec
+from inspect_robots_yam.packing import ARM_DOF, DIM_LABELS, STATE_KEY, TOTAL_DIM, state_spec
 
 _T = TypeVar("_T", bound="_FromKwargs")
 
@@ -39,6 +39,14 @@ _ARM_LOW = (-np.pi,) * ARM_DOF + (0.0,)
 _ARM_HIGH = (np.pi,) * ARM_DOF + (1.0,)
 _DEFAULT_LOW = _ARM_LOW * 2
 _DEFAULT_HIGH = _ARM_HIGH * 2
+
+# Conservative default per-step displacement limits for joints_are_delta mode:
+# 0.2 rad per joint per step, a full normalized stroke per gripper per step.
+# Symmetric (the declared delta box is +/-step_limits), so the gripper can
+# open as well as close -- reusing the absolute [0, 1] box here would clamp
+# every negative gripper delta to zero.
+_STEP_ARM = (0.2,) * ARM_DOF + (1.0,)
+_DEFAULT_STEP_LIMITS = _STEP_ARM * 2
 
 
 class _FromKwargs:
@@ -73,6 +81,7 @@ class YamConfig(_FromKwargs):
     gripper_open: float = 0.0
     gripper_closed: float = 1.0
     joints_are_delta: bool = False
+    step_limits: tuple[float, ...] = _DEFAULT_STEP_LIMITS
     zero_gravity_mode: bool = True
     unattended: bool = False
     # Display-only hint of the framework's episode horizon (the Task/CLI owns
@@ -111,6 +120,10 @@ class YamConfig(_FromKwargs):
                 "camera devices must be set all three or none "
                 "(top_cam_device, left_cam_device, right_cam_device)"
             )
+        if len(self.step_limits) != TOTAL_DIM or any(
+            not (s > 0) or not np.isfinite(s) for s in self.step_limits
+        ):
+            raise ValueError(f"step_limits must be {TOTAL_DIM} finite positive entries")
         if self.gripper_open == self.gripper_closed:
             raise ValueError(
                 "gripper_open and gripper_closed must differ (the gripper stroke "
@@ -124,6 +137,14 @@ class YamConfig(_FromKwargs):
     @property
     def high(self) -> npt.NDArray[np.float64]:
         return np.asarray(self.joint_high, dtype=np.float64)
+
+    @property
+    def delta_low(self) -> npt.NDArray[np.float64]:
+        return -np.asarray(self.step_limits, dtype=np.float64)
+
+    @property
+    def delta_high(self) -> npt.NDArray[np.float64]:
+        return np.asarray(self.step_limits, dtype=np.float64)
 
 
 @dataclass(frozen=True)
@@ -141,6 +162,7 @@ class MolmoActConfig(_FromKwargs):
     """
 
     server_url: str = "http://127.0.0.1:8202"
+    joints_are_delta: bool = False
     endpoint: str = "/act"
     num_steps: int = 10
     action_horizon: int = 30
@@ -157,15 +179,25 @@ class MolmoActConfig(_FromKwargs):
 
 DEFAULT_CAMERAS: tuple[str, ...] = ("top_cam", "left_cam", "right_cam")
 
-# The action *semantics* both the policy and the embodiment declare. Compatibility
-# checking compares control_mode + rotation_repr (errors) and gripper + frame
-# (warnings); declaring this single constant on both sides guarantees a clean check.
-ACTION_SEMANTICS = ActionSemantics(
-    control_mode="joint_pos",
-    rotation_repr="none",
-    gripper="continuous",
-    frame="base",
-)
+
+def action_semantics(joints_are_delta: bool = False) -> ActionSemantics:
+    """The action *semantics* both the policy and the embodiment declare.
+
+    Compatibility checking compares control_mode + rotation_repr (errors) and
+    gripper + frame (warnings); building both sides from this one function,
+    with the same ``joints_are_delta``, guarantees a clean check — and a loud
+    one when a delta-configured rig is paired with an absolute-declaring
+    policy (or vice versa). ``dim_labels`` names the 14 dims so
+    label-addressed tooling (e.g. the LLM agent policy) can move joints by
+    name.
+    """
+    return ActionSemantics(
+        control_mode="joint_delta" if joints_are_delta else "joint_pos",
+        rotation_repr="none",
+        gripper="continuous",
+        frame="base",
+        dim_labels=DIM_LABELS,
+    )
 
 
 def camera_specs(height: int, width: int, names: tuple[str, ...]) -> tuple[CameraSpec, ...]:
@@ -176,10 +208,18 @@ def camera_specs(height: int, width: int, names: tuple[str, ...]) -> tuple[Camer
 def action_box(
     low: npt.NDArray[np.float64] | None = None,
     high: npt.NDArray[np.float64] | None = None,
+    *,
+    joints_are_delta: bool = False,
 ) -> Box:
-    """The shared 14-D joint-position action space. ``low``/``high`` are optional
-    safety limits (the embodiment supplies them; the policy leaves them unset)."""
-    return Box(shape=(TOTAL_DIM,), low=low, high=high, semantics=ACTION_SEMANTICS)
+    """The shared 14-D action space. ``low``/``high`` are optional limits
+    (the embodiment supplies them; the policy leaves them unset): absolute
+    joint limits in absolute mode, per-step displacement limits in delta mode."""
+    return Box(
+        shape=(TOTAL_DIM,),
+        low=low,
+        high=high,
+        semantics=action_semantics(joints_are_delta),
+    )
 
 
 def observation_space(

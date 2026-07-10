@@ -49,6 +49,10 @@ Collection = "https://github.com/robocurve/worldevals"
 # cannot resolve the [yam] extra — install i2rt directly from git (see README).
 # For local dev against sibling checkouts: uv pip install -e ../inspect-robots -e ../kitchenbench
 [tool.uv.sources]
+# TODO(release): drop this git source once a core release carrying plan 0008
+# (joint_delta, dim_labels, Policy.bind) is on PyPI; until then the adapter
+# needs the pre-release core.
+inspect-robots = { git = "https://github.com/robocurve/inspect-robots", rev = "fd18442" }
 i2rt = { git = "https://github.com/i2rt-robotics/i2rt" }
 
 # Inspect Robots discovers these by entry point — no import needed for `inspect-robots list`.

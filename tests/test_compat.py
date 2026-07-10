@@ -97,3 +97,18 @@ def test_negative_policy_advertising_rate_trips_control_rate_warning() -> None:
     report = check_compatibility(_Rated(), YAMEmbodiment())  # type: ignore[arg-type]
     assert report.ok is True  # only a warning, not an error
     assert any(i.code == "control_rate" for i in report.warnings)
+
+
+def test_delta_pairing_passes_compat_in_lockstep() -> None:
+    from inspect_robots_yam import MolmoAct2Policy, YamConfig, YAMEmbodiment
+    from inspect_robots_yam.config import MolmoActConfig
+
+    delta_emb = YAMEmbodiment(YamConfig(joints_are_delta=True))
+    delta_pol = MolmoAct2Policy(MolmoActConfig(joints_are_delta=True))
+    assert check_compatibility(delta_pol, delta_emb).ok is True
+
+    # A mismatch (delta rig, absolute-declaring policy) is a hard compat error.
+    absolute_pol = MolmoAct2Policy(MolmoActConfig())
+    report = check_compatibility(absolute_pol, delta_emb)
+    assert report.ok is False
+    assert any(i.code == "control_mode" for i in report.errors)

@@ -194,7 +194,16 @@ class YAMEmbodiment:
 
         self.info = EmbodimentInfo(
             name="yam_arms",
-            action_space=action_box(low=self._cfg.low, high=self._cfg.high),
+            # Delta mode declares the per-step displacement box (symmetric,
+            # honest for guardrail derivation); the absolute joint limits stay
+            # enforced on the SUMMED command inside _send() either way.
+            action_space=(
+                action_box(
+                    low=self._cfg.delta_low, high=self._cfg.delta_high, joints_are_delta=True
+                )
+                if self._cfg.joints_are_delta
+                else action_box(low=self._cfg.low, high=self._cfg.high)
+            ),
             observation_space=observation_space(
                 self._cfg.cam_height, self._cfg.cam_width, DEFAULT_CAMERAS
             ),

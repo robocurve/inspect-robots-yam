@@ -59,7 +59,9 @@ class MolmoAct2Policy:
         self.num_inferences = 0
         self.info = PolicyInfo(
             name="molmoact2",
-            action_space=action_box(),  # semantics only; the embodiment owns limits
+            # Semantics only; the embodiment owns limits. joints_are_delta must
+            # mirror the rig's YamConfig or compat fails loudly (by design).
+            action_space=action_box(joints_are_delta=self._cfg.joints_are_delta),
             observation_space=observation_space(
                 self._cfg.cam_height,
                 self._cfg.cam_width,

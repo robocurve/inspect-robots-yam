@@ -485,3 +485,25 @@ def test_no_cameras_configured_keeps_fail_fast_reader_with_device_hint() -> None
     with pytest.raises(ConfigError, match="cam_device"):
         emb.reset(Scene(id="s", instruction="x"))
     assert drv.commands == []  # fail-fast happened before any driver connect
+
+def test_delta_mode_declares_joint_delta_and_per_step_box() -> None:
+    import numpy as np
+
+    cfg = YamConfig(joints_are_delta=True)
+    emb, _, _ = _build(cfg)
+    sem = emb.info.action_space.semantics
+    assert sem is not None and sem.control_mode == "joint_delta"
+    # The declared box is the per-step displacement limits, NOT the absolute
+    # joint limits: symmetric, so the gripper can open (negative delta) too.
+    assert np.allclose(emb.info.action_space.low, cfg.delta_low)
+    assert np.allclose(emb.info.action_space.high, cfg.delta_high)
+    # The absolute-limit backstop still applies to the summed command in _send.
+
+
+def test_absolute_mode_declares_joint_pos_with_labels() -> None:
+    from inspect_robots_yam.packing import DIM_LABELS
+
+    emb, _, _ = _build(YamConfig())
+    sem = emb.info.action_space.semantics
+    assert sem is not None and sem.control_mode == "joint_pos"
+    assert sem.dim_labels == DIM_LABELS
