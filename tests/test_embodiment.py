@@ -396,3 +396,67 @@ def test_close_rest_pose_zero_hz_falls_back_to_10hz() -> None:
     emb.reset(Scene(id="s", instruction="x"))
     emb.close()
     assert len(drv.commands) == 10  # 1 s at the 10 Hz fallback
+
+
+def _build_with_status(cfg: YamConfig | None = None, poll_end_seq: list[bool] | None = None):
+    drv = FakeDriver()
+    polls = list(poll_end_seq or [False])
+    status: list[str | None] = []
+    emb = YAMEmbodiment(
+        cfg or YamConfig(),
+        driver_factory=lambda _c: drv,
+        camera_reader=_cameras,
+        operator=_operator(["", "y"]),
+        poll_end=lambda: polls.pop(0) if polls else False,
+        sleep_fn=lambda _s: None,
+        clock=lambda: 0.0,
+        status_fn=status.append,
+    )
+    return emb, status
+
+
+def test_reset_announces_run_instructions() -> None:
+    emb, status = _build_with_status(YamConfig(max_steps_hint=1200))
+    emb.reset(Scene(id="s", instruction="x"))
+    assert len(status) == 1
+    msg = status[0]
+    assert msg is not None
+    assert "any key" in msg and "y/N" in msg  # how to end + how scoring works
+    assert "120s" in msg  # horizon from max_steps_hint / control_hz
+
+
+def test_status_line_updates_once_per_second_with_horizon() -> None:
+    emb, status = _build_with_status(YamConfig(max_steps_hint=1200))
+    emb.reset(Scene(id="s", instruction="x"))
+    for _ in range(25):  # 2.5 s at 10 Hz
+        emb.step(Action(data=np.zeros(14)))
+    updates = [m for m in status[1:] if m is not None]
+    assert len(updates) == 2  # at steps 10 and 20
+    assert "1s / 120s" in updates[0]
+    assert "2s / 120s" in updates[1]
+    assert "any key" in updates[0]  # instructions ride along
+
+
+def test_status_line_without_hint_shows_elapsed_only() -> None:
+    emb, status = _build_with_status()
+    emb.reset(Scene(id="s", instruction="x"))
+    for _ in range(10):
+        emb.step(Action(data=np.zeros(14)))
+    updates = [m for m in status[1:] if m is not None]
+    assert updates and "1s" in updates[0] and "/" not in updates[0].split("|")[0]
+
+
+def test_status_finishes_with_none_when_operator_ends_episode() -> None:
+    emb, status = _build_with_status(poll_end_seq=[True])
+    emb.reset(Scene(id="s", instruction="x"))
+    result = emb.step(Action(data=np.zeros(14)))
+    assert result.terminated is True
+    assert status[-1] is None  # line closed before the y/N prompt
+
+
+def test_unattended_runs_emit_no_status() -> None:
+    emb, status = _build_with_status(YamConfig(unattended=True, max_steps_hint=100))
+    emb.reset(Scene(id="s", instruction="x"))
+    for _ in range(15):
+        emb.step(Action(data=np.zeros(14)))
+    assert status == []

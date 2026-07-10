@@ -91,6 +91,14 @@ def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cov
     return _Real()
 
 
+def _default_status(line: str | None) -> None:  # pragma: no cover - real TTY output
+    """Rewrite one status line in place; ``None`` closes it with a newline."""
+    if line is None:
+        print(flush=True)
+    else:
+        print(f"\r  {line}   ", end="", flush=True)
+
+
 def _default_camera_reader(cfg: YamConfig) -> ImageMap:
     raise NotImplementedError(
         "provide a camera_reader returning {'top_cam','left_cam','right_cam': HxWx3 uint8}"
@@ -110,6 +118,7 @@ class YAMEmbodiment:
         poll_end: Callable[[], bool] | None = None,
         sleep_fn: Callable[[float], None] | None = None,
         clock: Callable[[], float] | None = None,
+        status_fn: Callable[[str | None], None] | None = None,
         **flat: Any,
     ) -> None:
         self._cfg = config if config is not None else YamConfig.from_kwargs(**flat)
@@ -119,6 +128,7 @@ class YAMEmbodiment:
         self._poll_end: Callable[[], bool] = poll_end or default_poll_end
         self._sleep: Callable[[float], None] = sleep_fn or time.sleep
         self._clock: Callable[[], float] = clock or time.perf_counter
+        self._status: Callable[[str | None], None] = status_fn or _default_status
 
         self._driver: BimanualDriver | None = None
         self._instruction: str | None = None
@@ -155,6 +165,9 @@ class YAMEmbodiment:
             self._ramp_to(np.asarray(self._cfg.home_pose, dtype=np.float64))
         if not self._cfg.unattended:
             self._operator.wait_ready()
+            horizon = self._horizon_secs()
+            limit = f" Max {horizon:.0f}s." if horizon is not None else ""
+            self._status(f"Running: press any key to end the episode, then y/N to score.{limit}")
         self._instruction = scene.instruction
         self.num_steps = 0
         self._t_last = self._clock()
@@ -173,11 +186,13 @@ class YAMEmbodiment:
             cmd = base + cmd
         self._send(cmd)
         self._pace()
+        self._emit_status()
 
         obs = self._observe(self._instruction)
         # Unattended runs have no operator: skip the end poll and its success
         # prompt entirely; the episode runs to the framework's max_steps.
         if not self._cfg.unattended and self._poll_end():
+            self._status(None)  # close the status line before the y/N prompt
             success = self._operator.confirm_success()
             return StepResult(
                 observation=obs,
@@ -223,6 +238,27 @@ class YAMEmbodiment:
             self._sleep(1.0 / hz)
 
     # -- internals ---------------------------------------------------------
+
+    def _horizon_secs(self) -> float | None:
+        """The episode horizon in seconds, if max_steps_hint is configured."""
+        hint = self._cfg.max_steps_hint
+        hz = self._cfg.control_hz
+        if hint is None or not hz or hz <= 0:
+            return None
+        return hint / hz
+
+    def _emit_status(self) -> None:
+        """Once per second (of control time), tell the operator where they are."""
+        if self._cfg.unattended:
+            return
+        hz = self._cfg.control_hz if self._cfg.control_hz > 0 else 10.0
+        interval = max(1, round(hz))
+        if self.num_steps % interval != 0:
+            return
+        elapsed = self.num_steps / hz
+        horizon = self._horizon_secs()
+        span = f"{elapsed:.0f}s / {horizon:.0f}s" if horizon is not None else f"{elapsed:.0f}s"
+        self._status(f"t = {span} | any key ends the episode")
 
     def _require_driver(self) -> BimanualDriver:
         # Reachable: step() before the first reset(), or after close().
