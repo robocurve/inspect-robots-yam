@@ -51,6 +51,11 @@ RobotFactory = Callable[[str, bool], SingleArm]
 EmitFn = Callable[[str], None]
 
 
+def _print_flushed(line: str) -> None:
+    """Default emit: flush per line so output streams over ssh pipes."""
+    print(line, flush=True)
+
+
 def _default_robot_factory(  # pragma: no cover - real hardware
     channel: str, zero_gravity_mode: bool
 ) -> SingleArm:
@@ -86,7 +91,7 @@ def run_hold_check(
     interval_s: float = DEFAULT_INTERVAL_S,
     threshold_rad: float = DEFAULT_THRESHOLD_RAD,
     sleep_fn: Callable[[float], None] = time.sleep,
-    emit: EmitFn = print,
+    emit: EmitFn = _print_flushed,
 ) -> HoldResult:
     """Command the current pose once, then watch drift for ``duration_s``."""
     pose = np.asarray(robot.get_joint_pos(), dtype=np.float64)
@@ -130,7 +135,7 @@ def main(
     *,
     robot_factory: RobotFactory | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
-    emit: EmitFn = print,
+    emit: EmitFn = _print_flushed,
 ) -> int:
     """CLI entry point. Exit 0 on PASS, 1 on FAIL."""
     parser = argparse.ArgumentParser(
@@ -158,14 +163,23 @@ def main(
     factory = robot_factory if robot_factory is not None else _default_robot_factory
     emit(f"{args.channel} zero_gravity={args.zero_gravity}: watching for {args.duration_s:.0f}s")
     robot = factory(args.channel, args.zero_gravity)
-    result = run_hold_check(
-        robot,
-        duration_s=args.duration_s,
-        interval_s=args.interval_s,
-        threshold_rad=args.threshold_rad,
-        sleep_fn=sleep_fn,
-        emit=emit,
-    )
+    try:
+        result = run_hold_check(
+            robot,
+            duration_s=args.duration_s,
+            interval_s=args.interval_s,
+            threshold_rad=args.threshold_rad,
+            sleep_fn=sleep_fn,
+            emit=emit,
+        )
+    finally:
+        # Release the motor chain: i2rt's receive thread is non-daemon, so a
+        # never-closed handle keeps the process alive after the verdict AND
+        # holds the CAN channel, wedging the next connection until a power
+        # cycle. Verified the hard way on a real rig.
+        closer = getattr(robot, "close", None)
+        if callable(closer):
+            closer()
     verdict = "PASS" if result.passed else "FAIL"
     emit(
         f"{verdict}: max drift {result.max_drift:.4f} rad on joint {result.worst_joint} "

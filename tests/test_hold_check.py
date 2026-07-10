@@ -92,3 +92,28 @@ def test_main_wires_argv_and_exit_codes() -> None:
 def test_main_rejects_bad_zero_gravity_value() -> None:
     with pytest.raises(SystemExit):
         main(["can0", "--zero-gravity", "maybe"], sleep_fn=lambda _s: None, emit=lambda _l: None)
+
+
+def test_main_closes_the_robot_even_on_failure() -> None:
+    class _ClosableArm(_FakeArm):
+        closed = 0
+
+        def close(self) -> None:
+            _ClosableArm.closed += 1
+
+    arm = _ClosableArm(drift_per_read=0.5)  # guaranteed FAIL verdict
+    rc = main(
+        ["can0", "--zero-gravity", "true"],
+        robot_factory=lambda channel, zero_gravity_mode: arm,
+        sleep_fn=lambda _s: None,
+        emit=lambda _l: None,
+    )
+    assert rc == 1
+    assert _ClosableArm.closed == 1  # released regardless of the verdict
+
+
+def test_default_emit_flushes(capsys: pytest.CaptureFixture[str]) -> None:
+    from inspect_robots_yam.hold_check import _print_flushed
+
+    _print_flushed("hello")
+    assert capsys.readouterr().out == "hello\n"
