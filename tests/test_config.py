@@ -124,3 +124,10 @@ def test_yam_rejects_bad_rest_pose() -> None:
 def test_yam_rejects_nonpositive_rest_secs() -> None:
     with pytest.raises(ValueError, match="rest_secs must be > 0"):
         YamConfig(rest_secs=0.0)
+
+
+def test_yam_max_steps_hint_default_and_validation() -> None:
+    assert YamConfig().max_steps_hint is None
+    assert YamConfig(max_steps_hint=1200).max_steps_hint == 1200
+    with pytest.raises(ValueError, match="max_steps_hint must be >= 1"):
+        YamConfig(max_steps_hint=0)

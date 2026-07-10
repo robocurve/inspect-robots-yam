@@ -75,6 +75,10 @@ class YamConfig(_FromKwargs):
     joints_are_delta: bool = False
     zero_gravity_mode: bool = True
     unattended: bool = False
+    # Display-only hint of the framework's episode horizon (the Task/CLI owns
+    # the real max_steps): lets the operator status line show elapsed/total.
+    # Bounds nothing.
+    max_steps_hint: int | None = None
 
     def __post_init__(self) -> None:
         if self.gripper_type not in SUPPORTED_GRIPPER_TYPES:
@@ -91,6 +95,8 @@ class YamConfig(_FromKwargs):
             raise ValueError(f"rest_pose must have {TOTAL_DIM} entries")
         if self.rest_secs <= 0:
             raise ValueError("rest_secs must be > 0")
+        if self.max_steps_hint is not None and self.max_steps_hint < 1:
+            raise ValueError("max_steps_hint must be >= 1")
         if self.gripper_open == self.gripper_closed:
             raise ValueError(
                 "gripper_open and gripper_closed must differ (the gripper stroke "
