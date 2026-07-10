@@ -193,3 +193,30 @@ def test_molmoact_config_gains_delta_flag() -> None:
 
     assert MolmoActConfig().joints_are_delta is False
     assert MolmoActConfig(joints_are_delta=True).joints_are_delta is True
+
+
+def test_pose_fields_parse_comma_strings_from_flat_kwargs() -> None:
+    import numpy as np
+
+    csv = ",".join(["0.1"] * 6 + ["1.0"] + ["0.2"] * 6 + ["0.9"])
+    cfg = YamConfig.from_kwargs(rest_pose=csv)
+    assert isinstance(cfg.rest_pose, tuple) and len(cfg.rest_pose) == 14
+    assert cfg.rest_pose[0] == pytest.approx(0.1)
+    assert cfg.rest_pose[13] == pytest.approx(0.9)
+    # Spaces tolerated; other pose-shaped fields parse the same way.
+    cfg = YamConfig.from_kwargs(home_pose=" 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1 ")
+    assert cfg.home_pose is not None and cfg.home_pose[6] == pytest.approx(1.0)
+    cfg = YamConfig.from_kwargs(step_limits=csv)
+    assert np.allclose(cfg.delta_high[0], 0.1)
+
+
+def test_pose_string_parse_errors_are_guided() -> None:
+    with pytest.raises(ValueError, match="rest_pose"):
+        YamConfig.from_kwargs(rest_pose="0.1,zoom,0.3")
+    with pytest.raises(ValueError, match="rest_pose must have 14"):
+        YamConfig.from_kwargs(rest_pose="0.1,0.2")
+
+
+def test_pose_fields_still_accept_real_tuples() -> None:
+    cfg = YamConfig.from_kwargs(rest_pose=(0.0,) * 14)
+    assert cfg.rest_pose == (0.0,) * 14

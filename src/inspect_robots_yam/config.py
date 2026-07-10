@@ -50,7 +50,15 @@ _DEFAULT_STEP_LIMITS = _STEP_ARM * 2
 
 
 class _FromKwargs:
-    """Mixin: build a frozen dataclass from flat scalar kwargs (CLI-friendly)."""
+    """Mixin: build a frozen dataclass from flat scalar kwargs (CLI-friendly).
+
+    Fields named in ``_FLOAT_TUPLE_FIELDS`` additionally accept a
+    comma-separated string ("0.1,0.2,...") so pose-shaped tuples are
+    settable from ``-E key=value`` flags and config.ini, which only carry
+    scalars.
+    """
+
+    _FLOAT_TUPLE_FIELDS: frozenset[str] = frozenset()
 
     @classmethod
     def from_kwargs(cls: type[_T], **flat: Any) -> _T:
@@ -58,12 +66,25 @@ class _FromKwargs:
         unknown = set(flat) - names
         if unknown:
             raise TypeError(f"{cls.__name__} got unexpected config keys: {sorted(unknown)}")
+        for key in cls._FLOAT_TUPLE_FIELDS & set(flat):
+            value = flat[key]
+            if isinstance(value, str):
+                try:
+                    flat[key] = tuple(float(part) for part in value.split(","))
+                except ValueError:
+                    raise ValueError(
+                        f"{key} must be a comma-separated list of numbers, got {value!r}"
+                    ) from None
         return cls(**flat)
 
 
 @dataclass(frozen=True)
 class YamConfig(_FromKwargs):
     """Static configuration for a bimanual YAM embodiment."""
+
+    _FLOAT_TUPLE_FIELDS = frozenset(
+        {"joint_low", "joint_high", "home_pose", "rest_pose", "step_limits"}
+    )
 
     left_channel: str = "can0"
     right_channel: str = "can1"
