@@ -229,8 +229,15 @@ class YAMEmbodiment:
             )
         if self._driver is None:
             self._driver = self._driver_factory(self._cfg)
-        if self._cfg.home_pose is not None:
-            self._ramp_to(np.asarray(self._cfg.home_pose, dtype=np.float64))
+
+        driver = self._require_driver()
+        current = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+        target = (
+            np.asarray(self._cfg.home_pose, dtype=np.float64)
+            if self._cfg.home_pose is not None
+            else current
+        )
+        self._ramp_to(target)
         if not self._cfg.unattended:
             self._operator.wait_ready()
             horizon = self._horizon_secs()
@@ -336,9 +343,12 @@ class YAMEmbodiment:
 
     def _send(self, cmd: Vec) -> None:
         """Clamp to joint limits (safety backstop) and de-normalize grippers."""
-        clamped = np.clip(cmd, self._cfg.low, self._cfg.high)
+        driver = self._require_driver()
+        current = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+        clamped = np.clip(cmd, current + self._cfg.delta_low, current + self._cfg.delta_high)
+        clamped = np.clip(clamped, self._cfg.low, self._cfg.high)
         physical = self._denorm_grippers(clamped)
-        self._require_driver().command_joint_pos(physical)
+        driver.command_joint_pos(physical)
 
     def _denorm_grippers(self, cmd: Vec) -> Vec:
         out: Vec = cmd.copy()
