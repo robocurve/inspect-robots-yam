@@ -744,6 +744,15 @@ class YAMEmbodiment:
         # exact units STATE_SPEC declares (and _send() accepts) — the inverse of
         # the de-normalization applied to outgoing commands.
         state = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+
+        images = dict(self._camera_reader(self._cfg))
+        expected_shape = (self._cfg.cam_height, self._cfg.cam_width, 3)
+        for name, img in images.items():
+            if img.shape != expected_shape:
+                raise ValueError(
+                    f"camera {name!r} returned shape {img.shape}, expected {expected_shape}"
+                )
+
         values = {packing.STATE_KEY: state}
         if self._cfg.control_interface == "eef_pos":
             left_kinematics, right_kinematics = self._require_kinematics()
@@ -754,7 +763,7 @@ class YAMEmbodiment:
             )
             values["eef_state"] = np.concatenate((left, right))
         return Observation(
-            images=dict(self._camera_reader(self._cfg)),
+            images=images,
             state=values,
             instruction=instruction,
         )

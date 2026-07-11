@@ -15,7 +15,7 @@ from inspect_robots_yam.policy import ActServerPolicy, MolmoAct2Policy, gr00t_po
 
 
 def _obs(instruction: str | None = "do it") -> Observation:
-    img = np.zeros((4, 4, 3), dtype=np.uint8)
+    img = np.zeros((224, 224, 3), dtype=np.uint8)
     return Observation(
         images={"top_cam": img, "left_cam": img, "right_cam": img},
         state={"joint_pos": np.zeros(14)},
@@ -174,7 +174,7 @@ def test_act_missing_camera_raises() -> None:
     pol = MolmoAct2Policy(post_fn=post)
     pol.reset(Scene(id="s", instruction="x"))
     obs = Observation(
-        images={"top_cam": np.zeros((4, 4, 3), np.uint8)}, state={"joint_pos": np.zeros(14)}
+        images={"top_cam": np.zeros((224, 224, 3), np.uint8)}, state={"joint_pos": np.zeros(14)}
     )
     with pytest.raises(ValueError, match="missing camera"):
         pol.act(obs)
@@ -195,7 +195,7 @@ def test_act_missing_state_raises() -> None:
     post, _ = _fake_post(np.zeros((1, 14)))
     pol = MolmoAct2Policy(post_fn=post)
     pol.reset(Scene(id="s", instruction="x"))
-    img = np.zeros((4, 4, 3), np.uint8)
+    img = np.zeros((224, 224, 3), np.uint8)
     obs = Observation(images={"top_cam": img, "left_cam": img, "right_cam": img}, state={})
     with pytest.raises(ValueError, match="missing state key"):
         pol.act(obs)

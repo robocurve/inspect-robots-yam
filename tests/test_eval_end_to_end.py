@@ -33,7 +33,7 @@ class _FakeDriver:
 
 
 def _cameras(_cfg):
-    img = np.zeros((4, 4, 3), dtype=np.uint8)
+    img = np.zeros((224, 224, 3), dtype=np.uint8)
     return {"top_cam": img, "left_cam": img, "right_cam": img}
 
 
