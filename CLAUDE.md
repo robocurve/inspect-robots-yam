@@ -92,7 +92,10 @@ non-YAM I2RT robots, and model fine-tuning.
   it with the README's Install snippet — a build-constraints file pinning
   `scikit-build-core<0.10` is required (ruckig's published sdists no longer
   build under scikit-build-core 1.0; see pantor/ruckig#261 and issue #47).
-  `I2RT_INSTALL_COMMAND` in `_i2rt.py` is the runtime copy of that remedy.
+  `I2RT_INSTALL_COMMAND` in `src/inspect_robots_yam/_i2rt.py` is the runtime
+  copy of that remedy and the single source of truth for its pinned revision.
+  To advance it, update that command and the README install command together,
+  then run the full test suite.
 - **Releases are one-click**: Actions → Release → Run workflow → pick
   patch/minor/major. The version is derived from the git tag by hatch-vcs —
   never add a static `version =` back to pyproject (`__version__` comes from importlib.metadata). The same
