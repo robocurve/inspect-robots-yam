@@ -229,6 +229,11 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
   up. Nothing bounds the per-step joint delta yet (tracked as a known issue);
   stand clear when the episode starts, and set `home_pose` so episodes begin
   from your checkpoint's trained start state.
+- **Park pose must rest under gravity.** On close, the arms ramp back to an
+  explicit `rest_pose` or, by default, to the pose they were in at the first
+  reset, and torque is released once the ramp finishes. Start runs (or set
+  `rest_pose`) with the arms in a supported resting pose, not held mid-air:
+  whatever pose the park ends in is the pose the arms go limp from.
 - **Absolute vs. delta joints: verify first.** MolmoAct2's YAM `actions` are
   treated as *absolute* joint targets by default. If your checkpoint emits
   deltas, set `YamConfig(joints_are_delta=True)` (the embodiment converts to

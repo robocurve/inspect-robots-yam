@@ -68,6 +68,7 @@ def test_timer_runout_parks_at_init_pose_on_close() -> None:
 
     assert logs[0].status == "success"
     assert embodiment.num_steps == 80  # the task horizon ended the trial, not the operator
+    assert drv.closed is False  # caller-owned: eval() must NOT have closed it for us
     embodiment.close()  # eval() itself closes registry-resolved embodiments (the CLI path)
     assert drv.commands[-1] == pytest.approx(init_pose)
     assert drv.closed is True
