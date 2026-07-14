@@ -1,7 +1,7 @@
 # Consume core `bind_task`: countdown horizon without config duplication
 
 Date: 2026-07-14
-Status: revised after critique round 1 (property-member protocol, FutureWarning,
+Status: approved (critique round 2 verdict OK; property-member protocol, FutureWarning,
 warn-after-validate, close() clears the bound horizon, README + test-site
 enumeration)
 

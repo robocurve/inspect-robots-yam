@@ -10,6 +10,7 @@ configure them, since the Inspect Robots CLI only forwards scalar ``key=value`` 
 from __future__ import annotations
 
 import dataclasses
+import warnings
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
@@ -106,9 +107,11 @@ class YamConfig(_FromKwargs):
     step_limits: tuple[float, ...] = _DEFAULT_STEP_LIMITS
     zero_gravity_mode: bool = True
     unattended: bool = False
-    # Display-only hint of the framework's episode horizon (the Task/CLI owns
-    # the real max_steps): lets the operator status line show elapsed/total.
-    # Bounds nothing.
+    # DEPRECATED fallback: framework-driven runs now supply the real horizon
+    # via the embodiment's bind_task hook, so the countdown needs no config.
+    # Only consulted when the hook never fires (direct rollout(), or a core
+    # that predates it). Display-only; bounds nothing. Removal in a later
+    # release.
     max_steps_hint: int | None = None
     # Builtin OpenCV camera reader: set ALL THREE to your rig's V4L2 color
     # nodes (stable udev paths recommended; /dev/videoN reshuffles on replug)
@@ -156,6 +159,18 @@ class YamConfig(_FromKwargs):
             raise ValueError(
                 "gripper_open and gripper_closed must differ (the gripper stroke "
                 "would be zero and observations could not be normalized)"
+            )
+        # Last, after every validation: an invalid config raises without ever
+        # warning. FutureWarning (not DeprecationWarning) so operators running
+        # the console script actually see it under Python's default filters.
+        if self.max_steps_hint is not None:
+            warnings.warn(
+                "max_steps_hint is deprecated: framework-driven runs supply the "
+                "real horizon via the bind_task hook, so the countdown needs no "
+                "config. The hint is only used when the hook never fires "
+                "(direct rollout(), or a core that predates it).",
+                FutureWarning,
+                stacklevel=2,
             )
 
     @property
