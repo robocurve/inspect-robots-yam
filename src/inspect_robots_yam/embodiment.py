@@ -32,7 +32,7 @@ from inspect_robots.scene import Scene
 from inspect_robots.types import Action, Observation, StepResult
 
 from inspect_robots_yam import packing
-from inspect_robots_yam._i2rt import I2RT_INSTALL_COMMAND, _load_i2rt
+from inspect_robots_yam._i2rt import I2RT_INSTALL_COMMAND, _load_i2rt, close_robot_safely
 from inspect_robots_yam.config import DEFAULT_CAMERAS, YamConfig, action_box, observation_space
 from inspect_robots_yam.operator import OperatorIO, default_poll_end
 
@@ -92,7 +92,7 @@ def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cov
             for arm in (left, right):
                 closer = getattr(arm, "close", None)
                 if callable(closer):
-                    closer()
+                    close_robot_safely(arm)
 
     return _Real()
 
