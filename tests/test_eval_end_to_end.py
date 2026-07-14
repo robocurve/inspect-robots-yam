@@ -33,7 +33,7 @@ class _FakeDriver:
 
 
 def _cameras(_cfg):
-    img = np.zeros((224, 224, 3), dtype=np.uint8)
+    img = np.zeros((4, 4, 3), dtype=np.uint8)
     return {"top_cam": img, "left_cam": img, "right_cam": img}
 
 
@@ -55,9 +55,9 @@ def test_timer_runout_parks_at_init_pose_on_close() -> None:
     init_pose = np.full(14, 0.2)
     drv = _FakeDriver()
     drv.state = init_pose.copy()
-    policy = MolmoAct2Policy(MolmoActConfig(num_steps=1), post_fn=_post_away)
+    policy = MolmoAct2Policy(MolmoActConfig(cam_height=4, cam_width=4, num_steps=1), post_fn=_post_away)
     embodiment = YAMEmbodiment(
-        YamConfig(rest_pose=None, unattended=True, rest_secs=0.2),
+        YamConfig(cam_height=4, cam_width=4, rest_pose=None, unattended=True, rest_secs=0.4),
         driver_factory=lambda _c: drv,
         camera_reader=_cameras,
         sleep_fn=lambda _d: None,
@@ -75,9 +75,9 @@ def test_timer_runout_parks_at_init_pose_on_close() -> None:
 
 
 def test_eval_scores_success_end_to_end() -> None:
-    policy = MolmoAct2Policy(MolmoActConfig(num_steps=1), post_fn=_post)
+    policy = MolmoAct2Policy(MolmoActConfig(cam_height=4, cam_width=4, num_steps=1), post_fn=_post)
     embodiment = YAMEmbodiment(
-        YamConfig(),
+        YamConfig(cam_height=4, cam_width=4),
         driver_factory=lambda _c: _FakeDriver(),
         camera_reader=_cameras,
         operator=_always_yes_operator(),
