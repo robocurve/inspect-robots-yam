@@ -47,6 +47,7 @@ inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2 --embodimen
 ## Install (on the robot/GPU machine)
 
 ```bash
+uv venv && source .venv/bin/activate
 uv pip install inspect-robots-yam
 # The i2rt driver is git-only and not on PyPI. Install it directly:
 uv pip install "i2rt @ git+https://github.com/i2rt-robotics/i2rt"
@@ -97,7 +98,7 @@ declared devices (three cameras and both arms' CAN channels) with live
 probes, including unplug-to-identify:
 
 ```bash
-uv run inspect-robots setup
+inspect-robots setup
 ```
 
 Or write the file yourself, replacing the three camera paths with your rig's
@@ -124,7 +125,7 @@ EOF
 Then tell the robot what to do:
 
 ```bash
-uv run inspect-robots "place the fork on the plate"
+inspect-robots "place the fork on the plate"
 ```
 
 The attended flow: position the scene, press Enter to start, press any key to
