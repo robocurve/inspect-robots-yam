@@ -54,7 +54,9 @@ uv pip install "i2rt @ git+https://github.com/i2rt-robotics/i2rt"
 
 The base package includes the `/act` transport and builtin OpenCV camera reader.
 Only `i2rt`, the I2RT YAM arm driver required for real hardware, needs the
-separate git install.
+separate git install. The camera reader depends on `opencv-python-headless`;
+if your environment also carries `opencv-python`, the two share the `cv2`
+module and the last one installed wins.
 
 Then download the model weights (needs a Hugging Face token) and start the server,
 from the [MolmoAct2 repo](https://github.com/allenai/molmoact2):

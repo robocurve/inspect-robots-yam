@@ -70,7 +70,7 @@ def _load_i2rt() -> tuple[Any, Any]:
             raise
         raise ModuleNotFoundError(
             "i2rt is the I2RT YAM arm driver. It is git-only and not on PyPI. "
-            'Install it with: uv pip install "i2rt @ '
+            'Install or update it with: uv pip install "i2rt @ '
             'git+https://github.com/i2rt-robotics/i2rt"',
             name=exc.name,
         ) from exc
@@ -146,10 +146,7 @@ def _opencv_camera_reader(cfg: YamConfig) -> CameraReader:
                 cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
                 if not cap.isOpened():
                     raise RuntimeError(f"cannot open {name} at {dev}")
-                cap.set(
-                    cv2.CAP_PROP_FOURCC,
-                    cv2.VideoWriter_fourcc(*"YUYV"),  # type: ignore[attr-defined]
-                )
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"YUYV"))
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)

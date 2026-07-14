@@ -79,15 +79,19 @@ jobs:
             **/pyproject.toml
             **/uv.lock
       - name: Install package without client, camera, or hardware dependencies
+        # inspect-robots + numpy come pinned from uv.lock (CI stays locked;
+        # unlocked resolution is the weekly canary's job, not a merge gate's).
         run: |
           uv venv --python 3.12
           uv pip install --no-deps .
-          uv pip install "inspect-robots>=0.6"
+          uv export --locked --no-emit-project --no-hashes \
+            | grep -E '^(inspect-robots|numpy)==' > /tmp/minimal-locked.txt
+          uv pip install -r /tmp/minimal-locked.txt
       - name: Assert integration modules absent, then import
         run: |
           .venv/bin/python - <<'PY'
           import importlib.util
-          for mod in ("requests", "json_numpy", "cv2", "i2rt"):
+          for mod in ("requests", "json_numpy", "cv2", "i2rt", "torch"):
               assert importlib.util.find_spec(mod) is None, f"{mod} unexpectedly installed"
           import inspect_robots_yam
           print("inspect_robots_yam", inspect_robots_yam.__version__, "imported with minimal deps")

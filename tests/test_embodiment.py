@@ -83,6 +83,22 @@ def test_load_i2rt_guides_missing_driver(
     )
 
 
+def test_load_i2rt_preserves_nameless_missing_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_import = builtins.__import__
+    original = ModuleNotFoundError("import machinery gave no module name", name=None)
+
+    def nameless_failure(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.startswith("i2rt"):
+            raise original
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", nameless_failure)
+
+    with pytest.raises(ModuleNotFoundError) as exc_info:
+        embodiment._load_i2rt()
+    assert exc_info.value is original
+
+
 def test_load_i2rt_preserves_other_missing_module(monkeypatch: pytest.MonkeyPatch) -> None:
     real_import = builtins.__import__
     original = ModuleNotFoundError("No module named 'broken_driver_dep'", name="broken_driver_dep")
