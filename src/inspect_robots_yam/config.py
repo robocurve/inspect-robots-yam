@@ -96,7 +96,8 @@ class YamConfig(_FromKwargs):
     joint_high: tuple[float, ...] = _DEFAULT_HIGH
     home_pose: tuple[float, ...] | None = None
     # Explicit override for the pose used to park on close(). Without it, close()
-    # parks at the episode's captured initial pose. Gripper slots are normalized 0-1.
+    # parks at the pose captured at the first reset() after connecting. Gripper
+    # slots are normalized 0-1.
     rest_pose: tuple[float, ...] | None = None
     rest_secs: float = 3.0
     gripper_open: float = 0.0

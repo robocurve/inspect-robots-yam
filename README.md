@@ -266,7 +266,8 @@ enum *name*, e.g. `LINEAR_4310`; grippers only: `NO_GRIPPER`/`YAM_TEACHING_HANDL
 would break the 14-D packing and are rejected), `control_hz`, `cam_height/width`,
 `joint_low/high`, `home_pose` (reset ramps here smoothly over `rest_secs` rather
 than jumping), `rest_pose` (explicit close park override; by default, close
-ramps back to the episode's captured initial pose before torque is released),
+ramps back to the pose the arms were in at the first reset before torque is
+released),
 `rest_secs` (ramp duration, default 3.0), `gripper_open/closed`,
 `joints_are_delta`, `zero_gravity_mode` (default `True`; see *Safety*),
 `unattended` (default `False`; skip operator prompts),

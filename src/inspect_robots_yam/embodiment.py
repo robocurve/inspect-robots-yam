@@ -258,7 +258,13 @@ class YAMEmbodiment:
             self._driver = self._driver_factory(self._cfg)
         if self._cfg.home_pose is not None:
             self._ramp_to(np.asarray(self._cfg.home_pose, dtype=np.float64))
-        self._init_pose = self._norm_grippers(packing.validate_dim(self._driver.get_joint_pos()))
+        if self._init_pose is None:
+            # First reset of this connection: remember where the operator left
+            # the arms, so close() can park there. Later resets keep it — their
+            # start pose is just wherever the previous episode ended.
+            self._init_pose = self._norm_grippers(
+                packing.validate_dim(self._driver.get_joint_pos())
+            )
         if not self._cfg.unattended:
             self._operator.wait_ready()
             horizon = self._horizon_secs()
@@ -302,10 +308,10 @@ class YAMEmbodiment:
         """Park the arms, then release the driver handles.
 
         Parking uses an explicit ``rest_pose`` when configured, otherwise it
-        falls back to the episode's captured initial pose so torque-off is
-        harmless by default. The release lives in a ``finally`` so a driver
-        fault mid-ramp can never leave the handles held. No-op if never
-        connected.
+        falls back to the pose captured at the first ``reset()`` of this
+        connection so torque-off is harmless by default. The release lives in
+        a ``finally`` so a driver fault mid-ramp can never leave the handles
+        held. No-op if never connected.
         """
         if self._driver is None:
             return
@@ -320,6 +326,7 @@ class YAMEmbodiment:
         finally:
             self._driver.close()
             self._driver = None
+            self._init_pose = None
 
     def _ramp_to(self, target: Vec) -> None:
         """Linearly ramp from the current pose to ``target`` over ``rest_secs``.

@@ -407,19 +407,35 @@ def test_close_init_pose_grippers_round_trip_through_normalized_units() -> None:
     assert drv.closed is True
 
 
-def test_second_reset_recaptures_init_pose() -> None:
-    init_pose_a = np.full(14, 0.2)
-    init_pose_b = np.full(14, 0.4)
-    drv = EchoDriver(state=init_pose_a.copy())
+def test_close_parks_at_first_reset_pose_across_episodes() -> None:
+    # Later resets start wherever the previous episode ended; parking must
+    # return to where the operator left the arms when the run began.
+    init_pose = np.full(14, 0.2)
+    drv = EchoDriver(state=init_pose.copy())
     emb, _, _ = _build(YamConfig(rest_secs=0.2), driver=drv, operator=_operator(["", ""]))
     emb.reset(Scene(id="a", instruction="x"))
     emb.step(Action(data=np.full(14, 0.8)))
-    drv.state = init_pose_b.copy()
-    emb.reset(Scene(id="b", instruction="x"))
+    emb.reset(Scene(id="b", instruction="x"))  # starts at 0.8, must not re-capture
     emb.close()
 
-    assert drv.commands[-1] == pytest.approx(init_pose_b)
-    assert drv.commands[-1] != pytest.approx(init_pose_a)
+    assert drv.commands[-1] == pytest.approx(init_pose)
+    assert drv.closed is True
+
+
+def test_reconnect_after_close_recaptures_init_pose() -> None:
+    pose_a = np.full(14, 0.2)
+    pose_b = np.full(14, 0.4)
+    drv = EchoDriver(state=pose_a.copy())
+    emb, _, _ = _build(YamConfig(rest_secs=0.2), driver=drv, operator=_operator(["", ""]))
+    emb.reset(Scene(id="a", instruction="x"))
+    emb.close()
+    drv.state = pose_b.copy()
+    drv.closed = False
+    emb.reset(Scene(id="b", instruction="x"))  # fresh connection: capture anew
+    emb.step(Action(data=np.full(14, 0.8)))
+    emb.close()
+
+    assert drv.commands[-1] == pytest.approx(pose_b)
     assert drv.closed is True
 
 
