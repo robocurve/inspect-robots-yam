@@ -270,7 +270,9 @@ class YAMEmbodiment:
         the countdown falls back to the deprecated ``max_steps_hint`` (or
         elapsed-only). Hardware-free — the framework calls it before
         ``reset()`` ever connects the driver. One call per ``eval()``; the
-        latest envelope wins.
+        latest envelope wins. On a caller-owned instance an aborted eval
+        (e.g. a compatibility failure after binding) leaves the envelope in
+        place until ``close()`` or the next bind.
         """
         self._bound_max_steps = int(envelope.max_steps)
 
