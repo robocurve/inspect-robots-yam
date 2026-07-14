@@ -43,9 +43,13 @@ DEFAULT_INTERVAL_S = 5.0
 class SingleArm(Protocol):
     """The one-arm slice of the i2rt driver this check needs."""
 
-    def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]: ...
+    def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]:
+        """Read one arm pose in driver-native units."""
+        ...
 
-    def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None: ...
+    def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None:
+        """Command a pose in the same units returned by ``get_joint_pos``."""
+        ...
 
 
 RobotFactory = Callable[[str, bool], SingleArm]
@@ -92,10 +96,12 @@ class HoldResult:
 
     @property
     def trend(self) -> float:
+        """Measure drift growth beyond the first sample, floored at zero radians."""
         return max(0.0, self.max_drift - self.settle)
 
     @property
     def passed(self) -> bool:
+        """Require settle and trend to stay within their independent radian limits."""
         return self.settle <= self.settle_rad and self.trend <= self.trend_rad
 
 

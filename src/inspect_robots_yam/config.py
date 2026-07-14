@@ -119,6 +119,12 @@ class YamConfig(_FromKwargs):
     right_cam_device: str | None = None
 
     def __post_init__(self) -> None:
+        """Reject values that violate the 14-D packing and hardware invariants.
+
+        Pose and step vectors must span both arms, every step limit must be
+        finite and positive, the gripper stroke must be nonzero, and builtin
+        camera device paths must be configured all together or not at all.
+        """
         if self.gripper_type not in SUPPORTED_GRIPPER_TYPES:
             raise ValueError(
                 f"gripper_type {self.gripper_type!r} is not supported; expected one of "
@@ -153,18 +159,22 @@ class YamConfig(_FromKwargs):
 
     @property
     def low(self) -> npt.NDArray[np.float64]:
+        """Return absolute lower bounds in radians and normalized gripper units."""
         return np.asarray(self.joint_low, dtype=np.float64)
 
     @property
     def high(self) -> npt.NDArray[np.float64]:
+        """Return absolute upper bounds in radians and normalized gripper units."""
         return np.asarray(self.joint_high, dtype=np.float64)
 
     @property
     def delta_low(self) -> npt.NDArray[np.float64]:
+        """Return negative per-step limits in radians and normalized gripper units."""
         return -np.asarray(self.step_limits, dtype=np.float64)
 
     @property
     def delta_high(self) -> npt.NDArray[np.float64]:
+        """Return positive per-step limits in radians and normalized gripper units."""
         return np.asarray(self.step_limits, dtype=np.float64)
 
 
@@ -195,6 +205,7 @@ class MolmoActConfig(_FromKwargs):
 
     @property
     def url(self) -> str:
+        """Join the server and endpoint with exactly one separating slash."""
         return self.server_url.rstrip("/") + "/" + self.endpoint.lstrip("/")
 
 

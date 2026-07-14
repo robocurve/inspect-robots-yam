@@ -11,6 +11,7 @@ Run [Inspect Robots](https://github.com/robocurve/inspect-robots) evals on real
 [![PyPI](https://img.shields.io/pypi/v/inspect-robots-yam)](https://pypi.org/project/inspect-robots-yam/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/robocurve/inspect-robots-yam/actions/workflows/ci.yml)
+[![Docs coverage](https://img.shields.io/badge/public%20docstrings-100%25-brightgreen)](https://github.com/robocurve/inspect-robots-yam/actions/workflows/ci.yml)
 [![Built on Inspect Robots](https://img.shields.io/badge/built%20on-Inspect%20Robots-indigo)](https://github.com/robocurve/inspect-robots)
 
 </div>
@@ -293,6 +294,9 @@ uv run pre-commit install
 uv run pytest --cov                        # 100% coverage required
 uv run ruff check . && uv run mypy
 ```
+
+Every public module, class, and function needs a docstring, enforced by Ruff D1;
+state the contract instead of restating the symbol name.
 
 The whole suite runs with no hardware, no server, and no stdin: the i2rt
 driver, cameras, the `/act` transport, the clock, and operator I/O are all
