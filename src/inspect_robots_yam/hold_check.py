@@ -34,7 +34,7 @@ from typing import Any, Protocol
 import numpy as np
 import numpy.typing as npt
 
-from inspect_robots_yam.embodiment import _load_i2rt
+from inspect_robots_yam._i2rt import _load_i2rt
 
 DEFAULT_SETTLE_RAD = 0.05
 DEFAULT_TREND_RAD = 0.01

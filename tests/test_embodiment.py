@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import builtins
 import itertools
-import sys
-from types import ModuleType
 
 import numpy as np
 import pytest
@@ -14,7 +11,6 @@ from inspect_robots.errors import ConfigError
 from inspect_robots.scene import Scene
 from inspect_robots.types import Action
 
-from inspect_robots_yam import embodiment
 from inspect_robots_yam.config import YamConfig
 from inspect_robots_yam.embodiment import YAMEmbodiment
 from inspect_robots_yam.operator import OperatorIO
@@ -42,77 +38,6 @@ class EchoDriver(FakeDriver):
     def command_joint_pos(self, target: np.ndarray) -> None:
         super().command_joint_pos(target)
         self.state = np.asarray(target, dtype=float).copy()
-
-
-def test_load_i2rt_success(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_get_robot = object()
-    fake_gripper_type = object()
-    modules = {
-        "i2rt": ModuleType("i2rt"),
-        "i2rt.robots": ModuleType("i2rt.robots"),
-        "i2rt.robots.get_robot": ModuleType("i2rt.robots.get_robot"),
-        "i2rt.robots.utils": ModuleType("i2rt.robots.utils"),
-    }
-    modules["i2rt"].__path__ = []
-    modules["i2rt.robots"].__path__ = []
-    modules["i2rt.robots.get_robot"].get_yam_robot = fake_get_robot
-    modules["i2rt.robots.utils"].GripperType = fake_gripper_type
-    for name, module in modules.items():
-        monkeypatch.setitem(sys.modules, name, module)
-
-    assert embodiment._load_i2rt() == (fake_get_robot, fake_gripper_type)
-
-
-@pytest.mark.parametrize("missing_name", ["i2rt", "i2rt.robots"])
-def test_load_i2rt_guides_missing_driver(
-    monkeypatch: pytest.MonkeyPatch, missing_name: str
-) -> None:
-    real_import = builtins.__import__
-
-    def missing_i2rt(name, globals=None, locals=None, fromlist=(), level=0):
-        if name.startswith("i2rt"):
-            raise ModuleNotFoundError(f"No module named {missing_name!r}", name=missing_name)
-        return real_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", missing_i2rt)
-
-    with pytest.raises(ModuleNotFoundError) as exc_info:
-        embodiment._load_i2rt()
-    assert 'uv pip install "i2rt @ git+https://github.com/i2rt-robotics/i2rt"' in str(
-        exc_info.value
-    )
-
-
-def test_load_i2rt_preserves_nameless_missing_module(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_import = builtins.__import__
-    original = ModuleNotFoundError("import machinery gave no module name", name=None)
-
-    def nameless_failure(name, globals=None, locals=None, fromlist=(), level=0):
-        if name.startswith("i2rt"):
-            raise original
-        return real_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", nameless_failure)
-
-    with pytest.raises(ModuleNotFoundError) as exc_info:
-        embodiment._load_i2rt()
-    assert exc_info.value is original
-
-
-def test_load_i2rt_preserves_other_missing_module(monkeypatch: pytest.MonkeyPatch) -> None:
-    real_import = builtins.__import__
-    original = ModuleNotFoundError("No module named 'broken_driver_dep'", name="broken_driver_dep")
-
-    def broken_i2rt(name, globals=None, locals=None, fromlist=(), level=0):
-        if name.startswith("i2rt"):
-            raise original
-        return real_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", broken_i2rt)
-
-    with pytest.raises(ModuleNotFoundError) as exc_info:
-        embodiment._load_i2rt()
-    assert exc_info.value is original
 
 
 def _cameras(_cfg):
