@@ -92,7 +92,15 @@ same way. See *Safety* below.
 
 ## Run on hardware
 
-Write your defaults once, replacing the three camera paths with your rig's
+Write your defaults once. The interactive wizard interviews this plugin's
+declared devices (three cameras and both arms' CAN channels) with live
+probes, including unplug-to-identify:
+
+```bash
+uv run inspect-robots setup
+```
+
+Or write the file yourself, replacing the three camera paths with your rig's
 V4L2 color nodes (use stable `/dev/v4l/by-id/...` or udev-symlink paths;
 bare `/dev/videoN` numbers reshuffle on every replug):
 
