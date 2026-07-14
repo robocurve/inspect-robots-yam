@@ -281,7 +281,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -326,14 +326,14 @@ wheels = [
 
 [[package]]
 name = "inspect-robots"
-version = "0.8.0"
+version = "0.8.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/27/63/0d3e5fbeb110e858fc00858cf6fe39520ece05f12d764c96e34f26e422b2/inspect_robots-0.8.0.tar.gz", hash = "sha256:d2aaddca6504a1f933ffb919a5fae8cfaaa86f055f31c4d2d00ab19dd19ec7b8", size = 140158, upload-time = "2026-07-14T04:52:09.799Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a4/64/bb32ebb419d77d983c7a477335b14481003eecea6c4dc684cb755615807b/inspect_robots-0.8.1.tar.gz", hash = "sha256:33624b7994bbcee01371e929c60a823a737b32c5ca40f5b59ef25b1765539611", size = 147738, upload-time = "2026-07-14T21:09:20.588Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/91/8c/769525ff92b62e6dab5e3aa3baa5eec42d55a4fd7354a7689e1b55d83f71/inspect_robots-0.8.0-py3-none-any.whl", hash = "sha256:ff56308479eff335ff85088d4f50f6b6c4421518f2088bea08b3419901dd6aa0", size = 80709, upload-time = "2026-07-14T04:52:08.544Z" },
+    { url = "https://files.pythonhosted.org/packages/50/a2/77500dae20e723cd430732fc9aed9094a35e3f4afeeb554215afef697fa9/inspect_robots-0.8.1-py3-none-any.whl", hash = "sha256:157f85d3cf5330ca7b8df9cd5442bef5f45a39bd935a3ccb4dab7790481a68b5", size = 83295, upload-time = "2026-07-14T21:09:19.158Z" },
 ]
 
 [[package]]
