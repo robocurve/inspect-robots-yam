@@ -113,7 +113,7 @@ class YamConfig(_FromKwargs):
     # nodes (stable udev paths recommended; /dev/videoN reshuffles on replug)
     # and yam_arms works from the CLI/config with no custom camera factory.
     # Plain strings, so `-E top_cam_device=...` and config.ini can carry them.
-    # Needs opencv-python-headless (the [cameras] extra).
+    # Uses the base opencv-python-headless dependency.
     top_cam_device: str | None = None
     left_cam_device: str | None = None
     right_cam_device: str | None = None

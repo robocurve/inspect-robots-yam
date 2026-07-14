@@ -11,7 +11,7 @@ The package is `mypy --strict` clean, ships `py.typed`, and is 100%-covered.
 | `config.py` | `YamConfig` / `MolmoActConfig` (frozen, `from_kwargs` for CLI scalars) + shared `action_box()` / `observation_space()` / `ACTION_SEMANTICS` so both components declare an **identical** contract. |
 | `operator.py` | `OperatorIO` (injectable stdin/stdout) for readiness + success prompts; `default_poll_end` (real TTY poll, `# pragma: no cover`). |
 | `policy.py` | `MolmoAct2Policy` — `/act` client. `act()` packs cameras+instruction+state, POSTs via the injectable `post_fn`, returns an `ActionChunk`. Real transport is the pragma'd `_default_post`. |
-| `embodiment.py` | `YAMEmbodiment` — i2rt driver. Clamp backstop, optional delta→abs, gripper de-norm, `SELF_PACED` pacing, operator-keypress success. Hardware seams (`_default_driver_factory`, `_default_camera_reader`) are injected/pragma'd. |
+| `embodiment.py` | `YAMEmbodiment` — i2rt driver. Clamp backstop, optional delta→abs, gripper de-norm, `SELF_PACED` pacing, operator-keypress success. `_load_i2rt` keeps the driver import lazy and guides git installation when it is absent. Hardware seams (`_default_driver_factory`, `_default_camera_reader`) are injected/pragma'd. |
 | `preflight.py` | `build` / `run_preflight` + the `inspect-robots-yam-preflight` CLI: run the compat check, print, exit non-zero on errors. |
 | `__init__.py` | Public API fenced by `__all__` (guarded by `tests/test_api_snapshot.py`). |
 

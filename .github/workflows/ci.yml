@@ -63,10 +63,10 @@ jobs:
       - name: Pytest (100% coverage)
         run: uv run pytest --cov --cov-report=term-missing
 
-  # Dependency hygiene: the package must import with ONLY its runtime deps
-  # (inspect_robots + numpy) — no requests, json_numpy, or i2rt (those are lazy extras).
+  # Import hygiene: the package must import with only inspect_robots + numpy;
+  # client, camera, and hardware modules must stay lazy.
   import-hygiene:
-    name: import without client/hardware extras
+    name: import with minimal dependencies
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -78,16 +78,19 @@ jobs:
           cache-dependency-glob: |
             **/pyproject.toml
             **/uv.lock
-      - name: Install runtime only from uv.lock (no extras)
-        run: uv sync --locked --python 3.12
-      - name: Assert optional deps absent, then import
+      - name: Install package without client, camera, or hardware dependencies
         run: |
-          uv run python - <<'PY'
+          uv venv --python 3.12
+          uv pip install --no-deps .
+          uv pip install "inspect-robots>=0.6"
+      - name: Assert integration modules absent, then import
+        run: |
+          .venv/bin/python - <<'PY'
           import importlib.util
-          for mod in ("requests", "json_numpy", "i2rt"):
+          for mod in ("requests", "json_numpy", "cv2", "i2rt"):
               assert importlib.util.find_spec(mod) is None, f"{mod} unexpectedly installed"
           import inspect_robots_yam
-          print("inspect_robots_yam", inspect_robots_yam.__version__, "imported with runtime deps only")
+          print("inspect_robots_yam", inspect_robots_yam.__version__, "imported with minimal deps")
           PY
 
   # Single required status check for branch protection: green iff every job

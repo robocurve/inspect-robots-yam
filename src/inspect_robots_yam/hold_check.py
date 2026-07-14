@@ -34,6 +34,8 @@ from typing import Any, Protocol
 import numpy as np
 import numpy.typing as npt
 
+from inspect_robots_yam.embodiment import _load_i2rt
+
 DEFAULT_SETTLE_RAD = 0.05
 DEFAULT_TREND_RAD = 0.01
 DEFAULT_DURATION_S = 60.0
@@ -64,8 +66,7 @@ def _print_flushed(line: str) -> None:
 def _default_robot_factory(  # pragma: no cover - real hardware
     channel: str, zero_gravity_mode: bool
 ) -> SingleArm:
-    from i2rt.robots.get_robot import get_yam_robot
-    from i2rt.robots.utils import GripperType
+    get_yam_robot, GripperType = _load_i2rt()
 
     robot: SingleArm = get_yam_robot(
         channel=channel,

@@ -44,10 +44,11 @@ gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
   D1; state the contract instead of restating the symbol name.
 - **mypy + numpy:** numpy 2.5's stubs use 3.12-only syntax that mypy (py3.10
   target) rejects; the dev extra pins `numpy<2.5` and CI runs mypy on 3.11.
-- **No torch.** The model lives in the MolmoAct2 server. Hardware/client deps
-  (`requests`, `json_numpy`, `i2rt`) are optional extras, lazily imported behind
-  `# pragma: no cover` seams; the `import-hygiene` CI job enforces that
-  `import inspect_robots_yam` works with only inspect_robots + numpy.
+- **No torch.** The model lives in the MolmoAct2 server. The base dependencies
+  include `requests`, `json_numpy`, and OpenCV, but those modules remain lazily
+  imported behind seams. The git-only `i2rt` driver is also loaded lazily and
+  produces guided installation help when absent. The `import-hygiene` CI job
+  enforces that `import inspect_robots_yam` works with only inspect_robots + numpy.
 
 ## Safety invariants (do not weaken)
 
@@ -84,8 +85,8 @@ non-YAM I2RT robots, and model fine-tuning.
   dependency versions the pyproject ranges allow (ignoring the lockfile), runs
   the tests, and opens an issue on failure — catching ecosystem breakage that
   locked CI can't see. A green canary means `uv lock --upgrade` is safe.
-- The `i2rt` driver is GitHub-only; `uv.lock` pins it to a commit. To advance
-  it, run `uv lock --upgrade-package i2rt`.
+- The `i2rt` driver is git-only and intentionally absent from `uv.lock`. Install
+  it with `uv pip install "i2rt @ git+https://github.com/i2rt-robotics/i2rt"`.
 - **Releases are one-click**: Actions → Release → Run workflow → pick
   patch/minor/major. The version is derived from the git tag by hatch-vcs —
   never add a static `version =` back to pyproject (`__version__` comes from importlib.metadata). The same
