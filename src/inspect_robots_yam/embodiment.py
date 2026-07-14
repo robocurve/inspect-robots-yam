@@ -214,6 +214,7 @@ class YAMEmbodiment:
         self._status: Callable[[str | None], None] = status_fn or _default_status
 
         self._driver: BimanualDriver | None = None
+        self._init_pose: Vec | None = None
         self._instruction: str | None = None
         self._t_last = 0.0
         self.num_steps = 0
@@ -255,6 +256,14 @@ class YAMEmbodiment:
             )
         if self._driver is None:
             self._driver = self._driver_factory(self._cfg)
+        if self._init_pose is None:
+            # Capture BEFORE any motion of ours (incl. the home ramp): this is
+            # exactly where the operator left the arms — the safest known
+            # gravity-stable park target for close(). Later resets keep it;
+            # their start pose is just wherever the previous episode ended.
+            self._init_pose = self._norm_grippers(
+                packing.validate_dim(self._driver.get_joint_pos())
+            )
         if self._cfg.home_pose is not None:
             self._ramp_to(np.asarray(self._cfg.home_pose, dtype=np.float64))
         if not self._cfg.unattended:
@@ -297,22 +306,41 @@ class YAMEmbodiment:
         return StepResult(observation=obs, terminated=False)
 
     def close(self) -> None:
-        """Park at ``rest_pose`` (if configured), then release the driver handles.
+        """Park the arms, then release the driver handles.
 
-        Releasing the driver zeroes motor torque, so whatever pose the arms are
-        in when it happens is the pose they fall from — the rest ramp runs
-        first so torque-off is harmless. The release lives in a ``finally`` so
-        a driver fault mid-ramp can never leave the handles held. No-op if
-        never connected.
+        Parking uses an explicit ``rest_pose`` when configured, otherwise it
+        falls back to the pose captured at the first ``reset()`` of this
+        connection (before any commanded motion) so torque-off is harmless by
+        default. The release lives in a ``finally`` so a driver fault or
+        interrupt mid-ramp can never leave the handles held — but the arms may
+        then fall from a mid-ramp pose. No-op if never connected.
         """
         if self._driver is None:
             return
         try:
-            if self._cfg.rest_pose is not None:
-                self._ramp_to(np.asarray(self._cfg.rest_pose, dtype=np.float64))
+            target = (
+                np.asarray(self._cfg.rest_pose, dtype=np.float64)
+                if self._cfg.rest_pose is not None
+                else self._init_pose
+            )
+            if target is not None:
+                if not self._cfg.unattended:
+                    self._status("parking: ramping arms back before torque-off")
+                try:
+                    self._ramp_to(target)
+                finally:
+                    # Close the status line even when the ramp faults, so a
+                    # traceback never prints appended to it.
+                    if not self._cfg.unattended:
+                        self._status(None)
         finally:
-            self._driver.close()
-            self._driver = None
+            try:
+                self._driver.close()
+            finally:
+                # Clear connection state even if the driver's own close()
+                # raises, so a later reset() reconnects and re-captures.
+                self._driver = None
+                self._init_pose = None
 
     def _ramp_to(self, target: Vec) -> None:
         """Linearly ramp from the current pose to ``target`` over ``rest_secs``.

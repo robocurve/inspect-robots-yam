@@ -26,3 +26,6 @@ htmlcov/
 .DS_Store
 .idea/
 .vscode/
+
+# Agent worktrees
+.worktrees/

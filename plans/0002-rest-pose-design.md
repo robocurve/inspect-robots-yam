@@ -23,6 +23,12 @@ On `close()`, when a driver is connected **and** `rest_pose` is set:
 `rest_pose=None` (default) keeps today's behavior bit-for-bit. `close()`
 without a connected driver stays a no-op.
 
+> **Amended by PR #36 (2026-07-14):** the `rest_pose=None` resolution above no
+> longer holds. Without a configured `rest_pose`, `close()` now parks at the
+> pose captured at the first `reset()` after connecting (before any commanded
+> motion); `rest_pose` remains an explicit override. Release-in-place only
+> happens when no pose was ever captured.
+
 **Out of scope.** Capture tooling lives in the operator's run harness
 (`~/run_molmoact_yam.py --capture-rest-pose` writes `~/.yam_rest_pose.json`),
 not in this package: the package has no camera/TTY/file conventions, and the

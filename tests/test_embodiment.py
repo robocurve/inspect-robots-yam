@@ -361,11 +361,125 @@ def test_close_rest_pose_goes_through_clamp_and_denorm() -> None:
     assert cmd[6] == pytest.approx(15.0)  # 10 + 0.5 * (20 - 10)
 
 
-def test_close_without_rest_pose_sends_nothing() -> None:
-    emb, drv, _ = _build()
+def test_close_without_rest_pose_ramps_to_captured_init_pose() -> None:
+    init_pose = np.full(14, 0.2)
+    drv = EchoDriver(state=init_pose.copy())
+    emb, _, _ = _build(YamConfig(rest_secs=0.3), driver=drv)
     emb.reset(Scene(id="s", instruction="x"))
+    emb.step(Action(data=np.full(14, 0.8)))
+    command_count = len(drv.commands)
     emb.close()
-    assert drv.commands == []
+
+    park_commands = drv.commands[command_count:]
+    assert len(park_commands) > 1
+    assert park_commands[-1] == pytest.approx(init_pose)
+    j0 = [command[0] for command in park_commands]
+    assert all(b <= a for a, b in itertools.pairwise(j0))
+    assert drv.closed is True
+
+
+def test_close_explicit_rest_pose_wins_over_captured_init_pose() -> None:
+    init_pose = np.full(14, 0.2)
+    rest_pose = np.full(14, 0.6)
+    drv = EchoDriver(state=init_pose.copy())
+    emb, _, _ = _build(YamConfig(rest_pose=(0.6,) * 14, rest_secs=0.2), driver=drv)
+    emb.reset(Scene(id="s", instruction="x"))
+    emb.step(Action(data=np.full(14, 0.8)))
+    emb.close()
+
+    assert drv.commands[-1] == pytest.approx(rest_pose)
+    assert drv.commands[-1] != pytest.approx(init_pose)
+    assert drv.closed is True
+
+
+def test_close_init_pose_grippers_round_trip_through_normalized_units() -> None:
+    init_pose = np.full(14, 0.2)
+    init_pose[6] = init_pose[13] = 15.0
+    cfg = YamConfig(rest_secs=0.2, gripper_open=10.0, gripper_closed=20.0)
+    drv = EchoDriver(state=init_pose.copy())
+    emb, _, _ = _build(cfg, driver=drv)
+    emb.reset(Scene(id="s", instruction="x"))
+    emb.step(Action(data=np.full(14, 0.8)))
+    emb.close()
+
+    assert drv.commands[-1][6] == pytest.approx(15.0)
+    assert drv.commands[-1][13] == pytest.approx(15.0)
+    assert drv.closed is True
+
+
+def test_close_parks_at_first_reset_pose_across_episodes() -> None:
+    # Later resets start wherever the previous episode ended; parking must
+    # return to where the operator left the arms when the run began.
+    init_pose = np.full(14, 0.2)
+    drv = EchoDriver(state=init_pose.copy())
+    emb, _, _ = _build(YamConfig(rest_secs=0.2), driver=drv, operator=_operator(["", ""]))
+    emb.reset(Scene(id="a", instruction="x"))
+    emb.step(Action(data=np.full(14, 0.8)))
+    emb.reset(Scene(id="b", instruction="x"))  # starts at 0.8, must not re-capture
+    emb.close()
+
+    assert drv.commands[-1] == pytest.approx(init_pose)
+    assert drv.closed is True
+
+
+def test_close_parks_at_pre_home_pose_when_home_pose_configured() -> None:
+    # The operator-left pose, not the raised home pose, is the park target:
+    # torque is released after parking, so the target must be gravity-stable.
+    operator_pose = np.full(14, 0.1)
+    drv = EchoDriver(state=operator_pose.copy())
+    emb, _, _ = _build(YamConfig(home_pose=(0.5,) * 14, rest_secs=0.2), driver=drv)
+    emb.reset(Scene(id="s", instruction="x"))
+    emb.step(Action(data=np.full(14, 0.8)))
+    emb.close()
+
+    assert drv.commands[-1] == pytest.approx(operator_pose)
+    assert drv.closed is True
+
+
+def test_failed_driver_close_still_clears_connection_state() -> None:
+    class FaultyClose(EchoDriver):
+        fail = True
+
+        def close(self) -> None:
+            if self.fail:
+                raise RuntimeError("CAN teardown fault")
+            super().close()
+
+    pose_a = np.full(14, 0.2)
+    pose_b = np.full(14, 0.4)
+    drv = FaultyClose(state=pose_a.copy())
+    emb, _, _ = _build(YamConfig(rest_secs=0.2), driver=drv, operator=_operator(["", ""]))
+    emb.reset(Scene(id="s", instruction="x"))
+    with pytest.raises(RuntimeError, match="teardown"):
+        emb.close()
+    emb.close()  # connection state was cleared: the second close is a clean no-op
+    with pytest.raises(RuntimeError, match="before reset"):
+        emb.step(Action(data=np.zeros(14)))
+    # The captured pose was cleared too: a reconnect re-captures at the new
+    # pose, so the next park cannot ramp to the stale pre-fault target.
+    drv.fail = False
+    drv.state = pose_b.copy()
+    emb.reset(Scene(id="s2", instruction="x"))
+    emb.step(Action(data=np.full(14, 0.8)))
+    emb.close()
+    assert drv.commands[-1] == pytest.approx(pose_b)
+    assert drv.closed is True
+
+
+def test_reconnect_after_close_recaptures_init_pose() -> None:
+    pose_a = np.full(14, 0.2)
+    pose_b = np.full(14, 0.4)
+    drv = EchoDriver(state=pose_a.copy())
+    emb, _, _ = _build(YamConfig(rest_secs=0.2), driver=drv, operator=_operator(["", ""]))
+    emb.reset(Scene(id="a", instruction="x"))
+    emb.close()
+    drv.state = pose_b.copy()
+    drv.closed = False
+    emb.reset(Scene(id="b", instruction="x"))  # fresh connection: capture anew
+    emb.step(Action(data=np.full(14, 0.8)))
+    emb.close()
+
+    assert drv.commands[-1] == pytest.approx(pose_b)
     assert drv.closed is True
 
 
@@ -374,6 +488,14 @@ def test_close_before_connect_skips_rest_motion() -> None:
     emb.close()  # never connected: no motion, no close
     assert drv.commands == []
     assert drv.closed is False
+
+
+def test_close_connected_without_park_target_only_releases() -> None:
+    emb, drv, _ = _build()
+    emb._driver = drv  # simulate a connection interrupted before reset captures its pose
+    emb.close()
+    assert drv.commands == []
+    assert drv.closed is True
 
 
 def test_close_rest_fault_still_releases_driver() -> None:

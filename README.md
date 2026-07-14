@@ -229,6 +229,11 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
   up. Nothing bounds the per-step joint delta yet (tracked as a known issue);
   stand clear when the episode starts, and set `home_pose` so episodes begin
   from your checkpoint's trained start state.
+- **Park pose must rest under gravity.** On close, the arms ramp back to an
+  explicit `rest_pose` or, by default, to the pose they were in at the first
+  reset, and torque is released once the ramp finishes. Start runs (or set
+  `rest_pose`) with the arms in a supported resting pose, not held mid-air:
+  whatever pose the park ends in is the pose the arms go limp from.
 - **Absolute vs. delta joints: verify first.** MolmoAct2's YAM `actions` are
   treated as *absolute* joint targets by default. If your checkpoint emits
   deltas, set `YamConfig(joints_are_delta=True)` (the embodiment converts to
@@ -265,8 +270,9 @@ driver boundary; nothing you configure here is in hardware gripper units.
 enum *name*, e.g. `LINEAR_4310`; grippers only: `NO_GRIPPER`/`YAM_TEACHING_HANDLE`
 would break the 14-D packing and are rejected), `control_hz`, `cam_height/width`,
 `joint_low/high`, `home_pose` (reset ramps here smoothly over `rest_secs` rather
-than jumping), `rest_pose` (close ramps here before torque is released, so the
-arms never fall; default `None` keeps the old release-in-place behavior),
+than jumping), `rest_pose` (explicit close park override; by default, close
+ramps back to the pose the arms were in at the first reset before torque is
+released),
 `rest_secs` (ramp duration, default 3.0), `gripper_open/closed`,
 `joints_are_delta`, `zero_gravity_mode` (default `True`; see *Safety*),
 `unattended` (default `False`; skip operator prompts),
