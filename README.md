@@ -129,7 +129,10 @@ inspect-robots "place the fork on the plate"
 ```
 
 The attended flow: position the scene, press Enter to start, press any key to
-end the episode, answer y/N to score.
+end the episode, answer y/N to score. The status line counts up against the
+run's real step limit (`t = 42s / 120s`) with no configuration needed
+(requires inspect-robots newer than 0.8.1; on older cores set
+`max_steps_hint`).
 
 For exotic camera stacks (or full programmatic control), the Python API takes
 a custom `camera_reader` returning
@@ -296,8 +299,10 @@ released),
 `joints_are_delta`, `zero_gravity_mode` (default `True`; see *Safety*),
 `unattended` (default `False`; skip operator prompts),
 `top/left/right_cam_device` (V4L2 paths for the builtin camera reader; all
-three or none), `max_steps_hint` (display-only horizon for the operator
-status line; bounds nothing).
+three or none), `max_steps_hint` (deprecated: on inspect-robots newer than
+0.8.1, framework runs feed the status line the real horizon automatically;
+the hint is only a fallback for direct `rollout()` calls or older cores;
+bounds nothing).
 `MolmoActConfig`: `server_url`, `endpoint`, `num_steps` (the wire field: the
 server's flow-matching denoising steps, *not* the chunk length),
 `action_horizon` (the checkpoint's advertised chunk length, 30 for the bimanual

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 from inspect_robots.spaces import CameraSpec
@@ -128,9 +130,14 @@ def test_yam_rejects_nonpositive_rest_secs() -> None:
 
 def test_yam_max_steps_hint_default_and_validation() -> None:
     assert YamConfig().max_steps_hint is None
-    assert YamConfig(max_steps_hint=1200).max_steps_hint == 1200
-    with pytest.raises(ValueError, match="max_steps_hint must be >= 1"):
-        YamConfig(max_steps_hint=0)
+    with pytest.warns(FutureWarning, match="max_steps_hint"):
+        assert YamConfig(max_steps_hint=1200).max_steps_hint == 1200
+    # Invalid values raise without ever warning (validation precedes the
+    # deprecation warning).
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError, match="max_steps_hint must be >= 1"):
+            YamConfig(max_steps_hint=0)
 
 
 def test_yam_camera_devices_default_none() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+from dataclasses import dataclass
 
 import numpy as np
 import pytest
@@ -538,7 +539,9 @@ def _build_with_status(cfg: YamConfig | None = None, poll_end_seq: list[bool] | 
 
 
 def test_reset_announces_run_instructions() -> None:
-    emb, status = _build_with_status(YamConfig(max_steps_hint=1200))
+    with pytest.warns(FutureWarning, match="max_steps_hint"):
+        cfg = YamConfig(max_steps_hint=1200)
+    emb, status = _build_with_status(cfg)
     emb.reset(Scene(id="s", instruction="x"))
     assert len(status) == 1
     msg = status[0]
@@ -548,7 +551,9 @@ def test_reset_announces_run_instructions() -> None:
 
 
 def test_status_line_updates_once_per_second_with_horizon() -> None:
-    emb, status = _build_with_status(YamConfig(max_steps_hint=1200))
+    with pytest.warns(FutureWarning, match="max_steps_hint"):
+        cfg = YamConfig(max_steps_hint=1200)
+    emb, status = _build_with_status(cfg)
     emb.reset(Scene(id="s", instruction="x"))
     for _ in range(25):  # 2.5 s at 10 Hz
         emb.step(Action(data=np.zeros(14)))
@@ -577,11 +582,66 @@ def test_status_finishes_with_none_when_operator_ends_episode() -> None:
 
 
 def test_unattended_runs_emit_no_status() -> None:
-    emb, status = _build_with_status(YamConfig(unattended=True, max_steps_hint=100))
+    with pytest.warns(FutureWarning, match="max_steps_hint"):
+        cfg = YamConfig(unattended=True, max_steps_hint=100)
+    emb, status = _build_with_status(cfg)
     emb.reset(Scene(id="s", instruction="x"))
     for _ in range(15):
         emb.step(Action(data=np.zeros(14)))
     assert status == []
+
+
+@dataclass(frozen=True)
+class _Envelope:
+    """Local stand-in for the core TaskEnvelope (the hook protocol is structural)."""
+
+    name: str
+    max_steps: int
+
+
+def test_bind_task_drives_the_countdown_horizon() -> None:
+    emb, status = _build_with_status()
+    emb.bind_task(_Envelope(name="adhoc", max_steps=1200))
+    emb.reset(Scene(id="s", instruction="x"))
+    assert status[0] is not None and "Max 120s." in status[0]
+    for _ in range(10):
+        emb.step(Action(data=np.zeros(14)))
+    updates = [m for m in status[1:] if m is not None]
+    assert updates and "1s / 120s" in updates[0]
+
+
+def test_bound_horizon_wins_over_deprecated_hint() -> None:
+    with pytest.warns(FutureWarning, match="max_steps_hint"):
+        cfg = YamConfig(max_steps_hint=100)  # would show "Max 10s."
+    emb, status = _build_with_status(cfg)
+    emb.bind_task(_Envelope(name="adhoc", max_steps=1200))
+    emb.reset(Scene(id="s", instruction="x"))
+    assert status[0] is not None and "Max 120s." in status[0]
+    assert "Max 10s." not in status[0]
+
+
+def test_rebind_latest_envelope_wins() -> None:
+    emb, status = _build_with_status()
+    emb.bind_task(_Envelope(name="first", max_steps=100))
+    emb.bind_task(_Envelope(name="second", max_steps=1200))
+    emb.reset(Scene(id="s", instruction="x"))
+    assert status[0] is not None and "Max 120s." in status[0]
+
+
+def test_close_clears_the_bound_horizon() -> None:
+    # close() before any reset: the clear must not depend on a connected driver,
+    # and the next (framework-less) run must fall back, not show stale data.
+    emb, status = _build_with_status()
+    emb.bind_task(_Envelope(name="stale", max_steps=1200))
+    emb.close()
+    emb.reset(Scene(id="s", instruction="x"))
+    assert status[0] is not None and "Max" not in status[0]
+
+
+def test_real_envelope_shape_satisfies_the_protocol() -> None:
+    from inspect_robots_yam.embodiment import TaskEnvelopeLike
+
+    assert isinstance(_Envelope(name="t", max_steps=1), TaskEnvelopeLike)
 
 
 def test_camera_devices_select_the_builtin_opencv_reader() -> None:
