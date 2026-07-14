@@ -40,6 +40,8 @@ gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
   `tool.uv.sources`).
 - Gates (all blocking in CI): `ruff check .`, `ruff format --check .`,
   `mypy` (strict), `pytest --cov` at **100%**.
+  Every public module, class, and function needs a docstring, enforced by Ruff
+  D1; state the contract instead of restating the symbol name.
 - **mypy + numpy:** numpy 2.5's stubs use 3.12-only syntax that mypy (py3.10
   target) rejects; the dev extra pins `numpy<2.5` and CI runs mypy on 3.11.
 - **No torch.** The model lives in the MolmoAct2 server. Hardware/client deps

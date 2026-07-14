@@ -43,11 +43,17 @@ Vec = npt.NDArray[np.float64]
 class BimanualDriver(Protocol):
     """The minimal 14-D joint-position driver the embodiment needs."""
 
-    def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]: ...
+    def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]:
+        """Read both arm poses in radians and driver-native gripper units."""
+        ...
 
-    def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None: ...
+    def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None:
+        """Command both arm poses in radians and driver-native gripper units."""
+        ...
 
-    def close(self) -> None: ...
+    def close(self) -> None:
+        """Release both arm handles, allowing their motor torque to drop."""
+        ...
 
 
 DriverFactory = Callable[[YamConfig], BimanualDriver]
