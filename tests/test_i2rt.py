@@ -3,14 +3,92 @@
 from __future__ import annotations
 
 import builtins
+import logging
 import sys
+import threading
+import time
 from types import ModuleType
 
 import pytest
 
-from inspect_robots_yam._i2rt import I2RT_INSTALL_COMMAND, _load_i2rt
+import inspect_robots_yam._i2rt as i2rt_module
+from inspect_robots_yam._i2rt import I2RT_INSTALL_COMMAND, _load_i2rt, close_robot_safely
 from inspect_robots_yam.embodiment import YAMEmbodiment
 from inspect_robots_yam.policy import MolmoAct2Policy
+
+
+class FakeMotorInterface:
+    def __init__(self, events: list[str]) -> None:
+        self.closed = False
+        self.events = events
+        self.send_after_close: list[ValueError] = []
+
+    def send(self) -> None:
+        if self.closed:
+            error = ValueError("file descriptor cannot be a negative integer (-1)")
+            self.send_after_close.append(error)
+            raise error
+
+    def close(self) -> None:
+        self.events.append("iface_close")
+        self.closed = True
+
+
+class FakeChain:
+    def __init__(self, *, bound_target: bool = True, ignores_running: bool = False) -> None:
+        self.running = True
+        self.events: list[str] = []
+        self.errors: list[ValueError] = []
+        self.motor_interface = FakeMotorInterface(self.events)
+        self._started = threading.Event()
+        self._release = threading.Event()
+        self._ignores_running = ignores_running
+
+        if bound_target:
+            target = self._control_loop
+        else:
+
+            def target() -> None:
+                self._control_loop()
+
+        self.control_thread = threading.Thread(
+            target=target,
+            name="fake-i2rt-control",
+            daemon=ignores_running,
+        )
+        self.control_thread.start()
+        assert self._started.wait(timeout=1.0)
+
+    def _control_loop(self) -> None:
+        self._started.set()
+        try:
+            while self.running or (self._ignores_running and not self._release.is_set()):
+                try:
+                    self.motor_interface.send()
+                except ValueError as exc:
+                    self.errors.append(exc)
+                    if not self._ignores_running:
+                        break
+                time.sleep(0.001)
+        finally:
+            self.events.append("loop_exit")
+
+    def release(self) -> None:
+        self._release.set()
+
+    def stop(self) -> None:
+        self.running = False
+        self.release()
+        self.control_thread.join(timeout=0.2)
+
+
+class FakeRobot:
+    def __init__(self, chain: FakeChain) -> None:
+        self.motor_chain = chain
+
+    def close(self) -> None:
+        self.motor_chain.running = False
+        self.motor_chain.motor_interface.close()
 
 
 def test_load_i2rt_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -93,3 +171,79 @@ def test_runtime_requirements_use_top_level_modules_and_nonempty_commands(compon
 
 def test_yam_i2rt_runtime_requirement_uses_install_command() -> None:
     assert YAMEmbodiment.RUNTIME_REQUIREMENTS["i2rt"] == I2RT_INSTALL_COMMAND
+
+
+def test_close_robot_safely_joins_control_thread_before_socket_close() -> None:
+    chain = FakeChain()
+    robot = FakeRobot(chain)
+
+    try:
+        close_robot_safely(robot)
+
+        assert not chain.control_thread.is_alive()
+        assert chain.motor_interface.closed
+        assert not chain.motor_interface.send_after_close
+        assert not chain.errors
+
+        robot.close()
+        assert chain.events.count("iface_close") == 1
+    finally:
+        chain.stop()
+
+
+def test_close_robot_safely_orders_loop_exit_before_interface_close() -> None:
+    chain = FakeChain()
+
+    try:
+        close_robot_safely(FakeRobot(chain))
+
+        assert chain.events.index("loop_exit") < chain.events.index("iface_close")
+    finally:
+        chain.stop()
+
+
+def test_close_robot_safely_without_motor_chain_calls_robot_close() -> None:
+    class RobotWithoutChain:
+        motor_chain = None
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    robot = RobotWithoutChain()
+
+    close_robot_safely(robot)
+
+    assert robot.closed
+
+
+def test_close_robot_safely_uses_grace_period_without_discoverable_thread() -> None:
+    chain = FakeChain(bound_target=False)
+
+    try:
+        close_robot_safely(FakeRobot(chain))
+        chain.control_thread.join(timeout=0.2)
+
+        assert chain.motor_interface.closed
+        assert not chain.control_thread.is_alive()
+        assert not chain.motor_interface.send_after_close
+    finally:
+        chain.stop()
+
+
+def test_close_robot_safely_warns_and_closes_interface_after_join_timeout(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    chain = FakeChain(ignores_running=True)
+    monkeypatch.setattr(i2rt_module, "_CONTROL_THREAD_JOIN_TIMEOUT", 0.01)
+
+    try:
+        with caplog.at_level(logging.WARNING, logger=i2rt_module.__name__):
+            close_robot_safely(FakeRobot(chain))
+
+        assert chain.motor_interface.closed
+        assert "fake-i2rt-control" in caplog.text
+    finally:
+        chain.stop()

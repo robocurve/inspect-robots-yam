@@ -2,9 +2,71 @@
 
 from __future__ import annotations
 
+import logging
+import threading
+import time
 from typing import Any
 
 I2RT_INSTALL_COMMAND = 'uv pip install "i2rt @ git+https://github.com/i2rt-robotics/i2rt"'
+_CONTROL_THREAD_JOIN_TIMEOUT = 5.0
+_CONTROL_THREAD_GRACE_PERIOD = 0.05
+
+logger = logging.getLogger(__name__)
+
+
+def close_robot_safely(robot: Any) -> None:
+    """Close an I2RT robot without racing its control loop against the CAN socket.
+
+    I2RT discards its control-thread handle and closes the CAN socket without joining
+    that thread, so the loop crashes with ``fd=-1`` during every teardown. This helper
+    works around robocurve/inspect-robots-yam#28 by discovering the discarded thread
+    and interposing its join between I2RT setting ``running = False`` and closing the
+    socket.
+    """
+    chain = getattr(robot, "motor_chain", None)
+    if chain is None or getattr(chain, "motor_interface", None) is None:
+        # No single-chain interface to guard (unknown driver shape, or a
+        # multi-chain aggregate) — fall back to the driver's own teardown.
+        robot.close()
+        return
+
+    control_threads = [
+        thread
+        for thread in threading.enumerate()
+        if getattr(getattr(thread, "_target", None), "__self__", None) is chain
+    ]
+    original_close = chain.motor_interface.close
+    close_lock = threading.Lock()
+    closed = False
+
+    def close_motor_interface_safely() -> None:
+        nonlocal closed
+        with close_lock:
+            if closed:
+                return
+
+            if control_threads:
+                for thread in control_threads:
+                    thread.join(timeout=_CONTROL_THREAD_JOIN_TIMEOUT)
+                    if thread.is_alive():
+                        logger.warning(
+                            "I2RT control thread %s did not stop within %.1f seconds",
+                            thread.name,
+                            _CONTROL_THREAD_JOIN_TIMEOUT,
+                        )
+            else:
+                logger.debug(
+                    "No I2RT control thread was discoverable; waiting %.2f seconds "
+                    "before closing the motor interface",
+                    _CONTROL_THREAD_GRACE_PERIOD,
+                )
+                time.sleep(_CONTROL_THREAD_GRACE_PERIOD)
+
+            original_close()
+            closed = True
+
+    chain.motor_interface.close = close_motor_interface_safely
+    robot.close()
 
 
 def _load_i2rt() -> tuple[Any, Any]:
