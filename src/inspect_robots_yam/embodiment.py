@@ -26,6 +26,7 @@ from typing import Any, ClassVar, Protocol, cast, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
+from inspect_robots.conformance import DeviceSlot
 from inspect_robots.embodiment import SELF_PACED, EmbodimentInfo
 from inspect_robots.errors import ConfigError
 from inspect_robots.scene import Scene
@@ -172,6 +173,19 @@ class YAMEmbodiment:
         "i2rt": I2RT_INSTALL_COMMAND,
         "cv2": "uv pip install inspect-robots-yam",
     }
+
+    # The setup wizard interviews these with real-device probes (issue
+    # inspect-robots#61). CAN channels are grouped: a config naming only one
+    # arm's channel silently drives the other on the plugin default, the
+    # exact failure the interview exists to prevent. Cameras mirror
+    # YamConfig's all-three-or-none validation.
+    DEVICE_SLOTS: ClassVar[tuple[DeviceSlot, ...]] = (
+        DeviceSlot(arg="left_channel", kind="can", label="left arm CAN channel", group="arms"),
+        DeviceSlot(arg="right_channel", kind="can", label="right arm CAN channel", group="arms"),
+        DeviceSlot(arg="top_cam_device", kind="v4l2", label="top camera", group="cameras"),
+        DeviceSlot(arg="left_cam_device", kind="v4l2", label="left camera", group="cameras"),
+        DeviceSlot(arg="right_cam_device", kind="v4l2", label="right camera", group="cameras"),
+    )
 
     def __init__(
         self,

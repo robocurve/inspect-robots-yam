@@ -1,4 +1,4 @@
-"""Tests for lazy I2RT loading and declared runtime requirements."""
+"""Tests for lazy I2RT loading and declared conformance (runtime requirements, device slots)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from types import ModuleType
 import pytest
 
 from inspect_robots_yam._i2rt import I2RT_INSTALL_COMMAND, _load_i2rt
+from inspect_robots_yam.config import YamConfig
 from inspect_robots_yam.embodiment import YAMEmbodiment
 from inspect_robots_yam.policy import MolmoAct2Policy
 
@@ -93,3 +94,27 @@ def test_runtime_requirements_use_top_level_modules_and_nonempty_commands(compon
 
 def test_yam_i2rt_runtime_requirement_uses_install_command() -> None:
     assert YAMEmbodiment.RUNTIME_REQUIREMENTS["i2rt"] == I2RT_INSTALL_COMMAND
+
+
+def test_device_slots_cover_channels_and_cameras_with_valid_config_args() -> None:
+    """Every declared slot writes a real YamConfig field, grouped per hardware constraint."""
+    from dataclasses import fields
+
+    from inspect_robots.conformance import DEVICE_KINDS, DeviceSlot, device_slots
+
+    slots = device_slots(YAMEmbodiment)
+
+    assert slots == YAMEmbodiment.DEVICE_SLOTS  # defensive reader keeps every entry
+    config_fields = {f.name for f in fields(YamConfig)}
+    assert all(isinstance(slot, DeviceSlot) for slot in slots)
+    assert all(slot.arg in config_fields for slot in slots)
+    assert all(slot.kind in DEVICE_KINDS for slot in slots)
+    assert {slot.arg for slot in slots if slot.group == "arms"} == {
+        "left_channel",
+        "right_channel",
+    }
+    assert {slot.arg for slot in slots if slot.group == "cameras"} == {
+        "top_cam_device",
+        "left_cam_device",
+        "right_cam_device",
+    }
