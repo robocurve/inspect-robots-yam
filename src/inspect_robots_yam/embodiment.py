@@ -253,13 +253,13 @@ class YAMEmbodiment:
         driver = self._require_driver()
         self.num_steps += 1
         cmd = packing.validate_dim(action.data)
+        base = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
         if self._cfg.joints_are_delta:
             # Normalize the gripper slots of the current position first, so the
             # delta is applied in policy units (a fraction of the gripper stroke)
             # and the sum re-enters _send() in the same units as absolute mode.
-            base = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
             cmd = base + cmd
-        self._send(cmd)
+        self._send(cmd, base=base)
         self._pace()
         self._emit_status()
 
@@ -341,12 +341,12 @@ class YAMEmbodiment:
             raise RuntimeError("step() called before reset() (or after close())")
         return self._driver
 
-    def _send(self, cmd: Vec) -> None:
-        """Clamp to joint limits (safety backstop) and de-normalize grippers."""
+    def _send(self, cmd: Vec, base: Vec | None = None) -> None:
+        """Clamp to step limits (safety backstop) and de-normalize grippers."""
         driver = self._require_driver()
-        current = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
-        clamped = np.clip(cmd, current + self._cfg.delta_low, current + self._cfg.delta_high)
-        clamped = np.clip(clamped, self._cfg.low, self._cfg.high)
+        current = base if base is not None else self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+        clamped = np.clip(cmd, self._cfg.low, self._cfg.high)
+        clamped = np.clip(clamped, current + self._cfg.delta_low, current + self._cfg.delta_high)
         physical = self._denorm_grippers(clamped)
         driver.command_joint_pos(physical)
 

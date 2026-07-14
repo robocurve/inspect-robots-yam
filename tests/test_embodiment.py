@@ -106,26 +106,30 @@ def test_reset_returns_observation_and_homes() -> None:
     assert home_cmd[13] == pytest.approx(11.0)
 
 
-def test_reset_without_home_pose_issues_no_command() -> None:
-    emb, drv, _ = _build()
+def test_reset_without_home_pose_ramps_to_current_pose() -> None:
+    drv = FakeDriver(state=np.full(14, 0.3))
+    emb, _, _ = _build(driver=drv)
     emb.reset(Scene(id="s", instruction="x"))
-    assert drv.commands == []
+    assert len(drv.commands) > 0
+    assert drv.commands[-1][0] == pytest.approx(0.3)
 
 
 def test_step_clamps_to_limits() -> None:
     emb, drv, _ = _build()
     emb.reset(Scene(id="s", instruction="x"))
-    # Way out of bounds; joints clip to +/-pi, gripper to [0,1].
+    # Way out of bounds; joints clip to step limit (0.2), gripper to [0,1].
     emb.step(Action(data=np.full(14, 100.0)))
     cmd = drv.commands[-1]
-    assert cmd[0] == pytest.approx(np.pi)  # joint clamped
+    assert cmd[0] == pytest.approx(0.2)  # joint clamped to step limit
     # gripper slot clamped to 1.0 then de-normalized with default identity (0..1) -> 1.0
     assert cmd[6] == pytest.approx(1.0)
 
 
 def test_step_gripper_denormalization() -> None:
     cfg = YamConfig(gripper_open=10.0, gripper_closed=20.0)
-    emb, drv, _ = _build(cfg)
+    state = np.zeros(14)
+    state[6] = 10.0; state[13] = 10.0
+    emb, drv, _ = _build(cfg, driver=EchoDriver(state=state))
     emb.reset(Scene(id="s", instruction="x"))
     emb.step(Action(data=np.zeros(14)))  # normalized gripper 0 -> open value
     cmd = drv.commands[-1]
@@ -253,6 +257,7 @@ def test_pacing_skipped_when_hz_zero() -> None:
     cfg = YamConfig(control_hz=0.0)
     emb, _, sleeps = _build(cfg)
     emb.reset(Scene(id="s", instruction="x"))
+    sleeps.clear()  # reset() now sleeps during homing
     emb.step(Action(data=np.zeros(14)))
     assert sleeps == []  # no sleep attempted at hz=0
 
@@ -335,6 +340,7 @@ def test_close_ramps_to_rest_pose_then_releases() -> None:
     drv = EchoDriver()
     emb, _, sleeps = _build(cfg, driver=drv)
     emb.reset(Scene(id="s", instruction="x"))
+    drv.commands.clear()
     emb.close()
     assert len(drv.commands) == 20
     assert drv.commands[-1] == pytest.approx(np.full(14, 0.5))
@@ -346,24 +352,27 @@ def test_close_ramps_to_rest_pose_then_releases() -> None:
 
 
 def test_close_rest_pose_goes_through_clamp_and_denorm() -> None:
-    # Out-of-range joints clamp to +/-pi; gripper slots de-normalize like actions.
+    # Out-of-range joints clamp to step limits (0.2); gripper slots de-normalize like actions.
     cfg = YamConfig(
         rest_pose=(100.0,) * 6 + (0.5,) + (100.0,) * 6 + (0.5,),
         rest_secs=0.1,  # 1 waypoint
         gripper_open=10.0,
         gripper_closed=20.0,
     )
-    emb, drv, _ = _build(cfg)
+    state = np.zeros(14)
+    state[6] = 10.0; state[13] = 10.0
+    emb, drv, _ = _build(cfg, driver=EchoDriver(state=state))
     emb.reset(Scene(id="s", instruction="x"))
     emb.close()
     cmd = drv.commands[-1]
-    assert cmd[0] == pytest.approx(np.pi)
+    assert cmd[0] == pytest.approx(0.2)  # step limit from 0
     assert cmd[6] == pytest.approx(15.0)  # 10 + 0.5 * (20 - 10)
 
 
 def test_close_without_rest_pose_sends_nothing() -> None:
     emb, drv, _ = _build()
     emb.reset(Scene(id="s", instruction="x"))
+    drv.commands.clear()  # reset() now sends commands to hold current pose
     emb.close()
     assert drv.commands == []
     assert drv.closed is True
@@ -378,12 +387,15 @@ def test_close_before_connect_skips_rest_motion() -> None:
 
 def test_close_rest_fault_still_releases_driver() -> None:
     class FaultyDriver(FakeDriver):
+        fault_now = False
         def command_joint_pos(self, target: np.ndarray) -> None:
-            raise RuntimeError("CAN fault")
+            if self.fault_now:
+                raise RuntimeError("CAN fault")
 
     drv = FaultyDriver()
     emb, _, _ = _build(YamConfig(rest_pose=(0.0,) * 14), driver=drv)
     emb.reset(Scene(id="s", instruction="x"))
+    drv.fault_now = True
     with pytest.raises(RuntimeError, match="CAN fault"):
         emb.close()
     assert drv.closed is True  # handles released despite the fault
@@ -394,6 +406,7 @@ def test_close_rest_pose_zero_hz_falls_back_to_10hz() -> None:
     cfg = YamConfig(rest_pose=(0.1,) * 14, rest_secs=1.0, control_hz=0.0)
     emb, drv, _ = _build(cfg)
     emb.reset(Scene(id="s", instruction="x"))
+    drv.commands.clear()
     emb.close()
     assert len(drv.commands) == 10  # 1 s at the 10 Hz fallback
 
@@ -508,3 +521,32 @@ def test_absolute_mode_declares_joint_pos_with_labels() -> None:
     sem = emb.info.action_space.semantics
     assert sem is not None and sem.control_mode == "joint_pos"
     assert sem.dim_labels == DIM_LABELS
+
+
+def test_step_tracks_far_target_at_step_limits() -> None:
+    # EchoDriver means driver.get_joint_pos() follows exactly what was last commanded.
+    drv = EchoDriver()
+    emb, _, _ = _build(driver=drv)
+    emb.reset(Scene(id="s", instruction="x"))
+    drv.commands.clear()
+    
+    # Try to jump to 1.0 (step limit is 0.2)
+    emb.step(Action(data=np.full(14, 1.0)))
+    cmd1 = drv.commands[-1]
+    assert cmd1[0] == pytest.approx(0.2)
+    
+    # Try again, it should walk another 0.2 to 0.4
+    emb.step(Action(data=np.full(14, 1.0)))
+    cmd2 = drv.commands[-1]
+    assert cmd2[0] == pytest.approx(0.4)
+
+
+def test_reset_zero_g_first_command_equals_current_pose() -> None:
+    # If the arm is sitting at 0.7 in zero-g, reset should send 0.7 as the first command.
+    drv = FakeDriver(state=np.full(14, 0.7))
+    emb, _, _ = _build(YamConfig(home_pose=None), driver=drv)
+    emb.reset(Scene(id="s", instruction="x"))
+    assert len(drv.commands) > 0
+    # The homing ramp should have sent 0.7 across the board (clamped properly)
+    assert drv.commands[0][0] == pytest.approx(0.7)
+    assert drv.commands[-1][0] == pytest.approx(0.7)
