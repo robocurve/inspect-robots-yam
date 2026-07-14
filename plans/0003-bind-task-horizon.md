@@ -1,7 +1,9 @@
 # Consume core `bind_task`: countdown horizon without config duplication
 
 Date: 2026-07-14
-Status: draft (headed for subagent critique loop)
+Status: revised after critique round 1 (property-member protocol, FutureWarning,
+warn-after-validate, close() clears the bound horizon, README + test-site
+enumeration)
 
 ## Problem
 
@@ -26,13 +28,24 @@ check, where `envelope` is a frozen `TaskEnvelope` with `name` and
   class TaskEnvelopeLike(Protocol):
       """Structural mirror of ``inspect_robots.task.TaskEnvelope``."""
 
-      name: str
-      max_steps: int
+      @property
+      def name(self) -> str: ...
+
+      @property
+      def max_steps(self) -> int: ...
   ```
 
-  (`typing.Protocol` is already imported; no core import is added. When the
-  package later bumps its core floor past the release that ships
-  `TaskEnvelope`, this alias can be replaced by the real import.)
+  The members MUST be read-only properties, not plain attributes: a Protocol
+  attribute member demands a settable variable under mypy strict, which
+  statically rejects the frozen `TaskEnvelope` dataclass this protocol
+  exists to mirror (the package ships `py.typed`, so a typed downstream
+  caller passing `task.envelope` would get an arg-type error). Property
+  members accept frozen dataclasses statically and still pass runtime
+  `isinstance` under `@runtime_checkable` (both `Protocol` and
+  `runtime_checkable` are already imported; the house style precedent is
+  `BimanualDriver`). When the package later bumps its core floor past the
+  release that ships `TaskEnvelope`, this alias can be replaced by the real
+  import.
 
 - `YAMEmbodiment.bind_task(envelope: TaskEnvelopeLike) -> None` stores the
   horizon: `self._bound_max_steps = int(envelope.max_steps)` (initialized to
@@ -49,18 +62,31 @@ check, where `envelope` is a frozen `TaskEnvelope` with `name` and
   input. On direct `rollout()` calls or older cores it never fires and the
   behavior is exactly today's (hint if set, otherwise elapsed-only
   countdown). Re-binds (one per `eval()`) overwrite: latest envelope wins.
+- `close()` also clears `_bound_max_steps`: a closed instance later driven
+  via direct `rollout()` must fall back, not display the previous task's
+  stale horizon.
 
 ### `config.py`
 
 - `max_steps_hint` stays but is deprecated: when a non-None value is
-  configured, emit a `DeprecationWarning` from `__post_init__` (where the
-  field is already validated) saying the framework now supplies the horizon
-  via `bind_task` and the hint is only a fallback for runs where the hook
-  never fires. Deleting the field outright would `TypeError` on existing
+  configured, emit a `FutureWarning` from `__post_init__`, AFTER the
+  existing `>= 1` validation (warn-then-raise on an invalid value would be
+  noise). `FutureWarning`, not `DeprecationWarning`: the audience is
+  operators running the `inspect-robots` console script, and Python's
+  default filters hide `DeprecationWarning` raised from library code — they
+  would never see it. Message: the framework now supplies the horizon via
+  `bind_task`; the hint is only a fallback for runs where the hook never
+  fires. Deleting the field outright would `TypeError` on existing
   `config.ini` files (`from_kwargs` rejects unknown keys); actual removal
   waits for a later release.
 - The field docstring is rewritten to say "Deprecated fallback" instead of
   presenting the knob as the way to get a countdown.
+
+### `README.md`
+
+- The countdown paragraph that presents `max_steps_hint` as the knob is
+  rewritten: the horizon now appears with zero configuration under
+  framework-driven runs; `max_steps_hint` is a deprecated fallback.
 
 ### User-visible effect
 
@@ -81,10 +107,20 @@ TDD; gates: yam CI's 100% coverage, mypy strict, ruff.
   hint still works when nothing was bound; neither → elapsed-only line.
 - A second `bind_task` call overwrites the first (latest wins).
 - `reset()`'s "Max Ns." line reflects the bound horizon.
-- Configuring `max_steps_hint` warns `DeprecationWarning` (and existing
-  tests that set it are updated to expect it).
-- `TaskEnvelopeLike` accepts the real shape: a frozen local dataclass with
-  `name`/`max_steps` satisfies it (structural check).
+- Configuring `max_steps_hint` warns `FutureWarning`. Four existing
+  construction sites start warning and get `pytest.warns` at the
+  `YamConfig(...)` construction (not around embodiment methods):
+  `test_reset_announces_run_instructions`,
+  `test_status_line_updates_once_per_second_with_horizon`,
+  `test_unattended_runs_emit_no_status` (all via the `_build_with_status`
+  helper's config construction), and the `max_steps_hint=0` validation case
+  in `test_config.py`.
+- After `close()`, the bound horizon is gone (fallback behavior returns).
+- `TaskEnvelopeLike` accepts the real shape at runtime: a frozen local
+  dataclass with `name`/`max_steps` passes `isinstance` (the
+  `@runtime_checkable` structural check; tests are outside mypy's scope in
+  this repo, so the static acceptance is enforced by the property-member
+  form above rather than a test).
 
 ## Out of scope
 
