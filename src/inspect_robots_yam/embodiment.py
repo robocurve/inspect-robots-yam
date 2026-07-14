@@ -214,6 +214,7 @@ class YAMEmbodiment:
         self._status: Callable[[str | None], None] = status_fn or _default_status
 
         self._driver: BimanualDriver | None = None
+        self._init_pose: Vec | None = None
         self._instruction: str | None = None
         self._t_last = 0.0
         self.num_steps = 0
@@ -257,6 +258,7 @@ class YAMEmbodiment:
             self._driver = self._driver_factory(self._cfg)
         if self._cfg.home_pose is not None:
             self._ramp_to(np.asarray(self._cfg.home_pose, dtype=np.float64))
+        self._init_pose = self._norm_grippers(packing.validate_dim(self._driver.get_joint_pos()))
         if not self._cfg.unattended:
             self._operator.wait_ready()
             horizon = self._horizon_secs()
@@ -297,19 +299,24 @@ class YAMEmbodiment:
         return StepResult(observation=obs, terminated=False)
 
     def close(self) -> None:
-        """Park at ``rest_pose`` (if configured), then release the driver handles.
+        """Park the arms, then release the driver handles.
 
-        Releasing the driver zeroes motor torque, so whatever pose the arms are
-        in when it happens is the pose they fall from — the rest ramp runs
-        first so torque-off is harmless. The release lives in a ``finally`` so
-        a driver fault mid-ramp can never leave the handles held. No-op if
-        never connected.
+        Parking uses an explicit ``rest_pose`` when configured, otherwise it
+        falls back to the episode's captured initial pose so torque-off is
+        harmless by default. The release lives in a ``finally`` so a driver
+        fault mid-ramp can never leave the handles held. No-op if never
+        connected.
         """
         if self._driver is None:
             return
         try:
-            if self._cfg.rest_pose is not None:
-                self._ramp_to(np.asarray(self._cfg.rest_pose, dtype=np.float64))
+            target = (
+                np.asarray(self._cfg.rest_pose, dtype=np.float64)
+                if self._cfg.rest_pose is not None
+                else self._init_pose
+            )
+            if target is not None:
+                self._ramp_to(target)
         finally:
             self._driver.close()
             self._driver = None
