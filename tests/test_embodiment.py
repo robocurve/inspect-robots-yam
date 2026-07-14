@@ -437,18 +437,33 @@ def test_close_parks_at_pre_home_pose_when_home_pose_configured() -> None:
 
 
 def test_failed_driver_close_still_clears_connection_state() -> None:
-    class FaultyClose(FakeDriver):
-        def close(self) -> None:
-            raise RuntimeError("CAN teardown fault")
+    class FaultyClose(EchoDriver):
+        fail = True
 
-    drv = FaultyClose()
-    emb, _, _ = _build(driver=drv)
+        def close(self) -> None:
+            if self.fail:
+                raise RuntimeError("CAN teardown fault")
+            super().close()
+
+    pose_a = np.full(14, 0.2)
+    pose_b = np.full(14, 0.4)
+    drv = FaultyClose(state=pose_a.copy())
+    emb, _, _ = _build(YamConfig(rest_secs=0.2), driver=drv, operator=_operator(["", ""]))
     emb.reset(Scene(id="s", instruction="x"))
     with pytest.raises(RuntimeError, match="teardown"):
         emb.close()
     emb.close()  # connection state was cleared: the second close is a clean no-op
     with pytest.raises(RuntimeError, match="before reset"):
         emb.step(Action(data=np.zeros(14)))
+    # The captured pose was cleared too: a reconnect re-captures at the new
+    # pose, so the next park cannot ramp to the stale pre-fault target.
+    drv.fail = False
+    drv.state = pose_b.copy()
+    emb.reset(Scene(id="s2", instruction="x"))
+    emb.step(Action(data=np.full(14, 0.8)))
+    emb.close()
+    assert drv.commands[-1] == pytest.approx(pose_b)
+    assert drv.closed is True
 
 
 def test_reconnect_after_close_recaptures_init_pose() -> None:

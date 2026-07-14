@@ -326,9 +326,13 @@ class YAMEmbodiment:
             if target is not None:
                 if not self._cfg.unattended:
                     self._status("parking: ramping arms back before torque-off")
-                self._ramp_to(target)
-                if not self._cfg.unattended:
-                    self._status(None)
+                try:
+                    self._ramp_to(target)
+                finally:
+                    # Close the status line even when the ramp faults, so a
+                    # traceback never prints appended to it.
+                    if not self._cfg.unattended:
+                        self._status(None)
         finally:
             try:
                 self._driver.close()
