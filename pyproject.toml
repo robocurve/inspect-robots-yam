@@ -19,14 +19,18 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
-dependencies = ["inspect-robots>=0.6", "numpy>=1.24"]
+dependencies = [
+    "inspect-robots>=0.6",
+    "numpy>=1.24",
+    "requests>=2.31",
+    "json-numpy>=2.1",
+    "opencv-python-headless>=4.8",
+]
 
 [project.optional-dependencies]
-# Real /act transport (the model runs in MolmoAct2's own server process).
+# Deprecated aliases retained for compatibility with existing install commands.
 client = ["requests>=2.31", "json-numpy>=2.1"]
 cameras = ["opencv-python-headless>=4.8"]
-# Real YAM arm driver — not on PyPI; resolved from git (see [tool.uv.sources]).
-yam = ["i2rt"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -43,13 +47,6 @@ dev = [
 Homepage = "https://github.com/robocurve/inspect-robots-yam"
 Framework = "https://github.com/robocurve/inspect-robots"
 Collection = "https://github.com/robocurve/worldevals"
-
-# inspect_robots/kitchenbench resolve from PyPI. i2rt is GitHub-only. This is
-# uv-only metadata (stripped from the published wheel), so a plain PyPI install
-# cannot resolve the [yam] extra — install i2rt directly from git (see README).
-# For local dev against sibling checkouts: uv pip install -e ../inspect-robots -e ../kitchenbench
-[tool.uv.sources]
-i2rt = { git = "https://github.com/i2rt-robotics/i2rt" }
 
 # Inspect Robots discovers these by entry point — no import needed for `inspect-robots list`.
 [project.entry-points."inspect_robots.embodiments"]
@@ -98,8 +95,8 @@ python_version = "3.10"
 strict = true
 files = ["src/inspect_robots_yam"]
 
-# Hardware/client deps are lazily imported behind pragma'd seams and are not test
-# deps; silence mypy's missing-import errors for them (mirrors inspect_robots' rerun override).
+# Runtime integrations are lazily imported behind seams; ignore missing type
+# information from their third-party modules.
 [[tool.mypy.overrides]]
 module = ["requests.*", "json_numpy.*", "i2rt.*", "cv2.*"]
 ignore_missing_imports = true

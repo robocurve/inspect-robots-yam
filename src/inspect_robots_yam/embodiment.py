@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
@@ -60,9 +60,25 @@ DriverFactory = Callable[[YamConfig], BimanualDriver]
 CameraReader = Callable[[YamConfig], ImageMap]
 
 
+def _load_i2rt() -> tuple[Any, Any]:
+    """Load the git-only YAM driver symbols with actionable installation guidance."""
+    try:
+        from i2rt.robots.get_robot import get_yam_robot
+        from i2rt.robots.utils import GripperType
+    except ModuleNotFoundError as exc:
+        if exc.name != "i2rt" and not (exc.name or "").startswith("i2rt."):
+            raise
+        raise ModuleNotFoundError(
+            "i2rt is the I2RT YAM arm driver. It is git-only and not on PyPI. "
+            'Install or update it with: uv pip install "i2rt @ '
+            'git+https://github.com/i2rt-robotics/i2rt"',
+            name=exc.name,
+        ) from exc
+    return get_yam_robot, GripperType
+
+
 def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cover - real hardware
-    from i2rt.robots.get_robot import get_yam_robot
-    from i2rt.robots.utils import GripperType
+    get_yam_robot, GripperType = _load_i2rt()
 
     # NAME lookup (GripperType["LINEAR_4310"]) — the enum *values* are lowercase
     # strings, so GripperType(...)/from_string_name would reject the config names.
@@ -113,10 +129,10 @@ def _opencv_camera_reader(cfg: YamConfig) -> CameraReader:
     640x480 explicitly (RealSense D435s return empty frames on cv2 defaults)
     and resizes to ``cam_width`` x ``cam_height`` RGB.
     """
-    devices = {
-        "top_cam": cfg.top_cam_device,
-        "left_cam": cfg.left_cam_device,
-        "right_cam": cfg.right_cam_device,
+    devices: dict[str, str] = {
+        "top_cam": cast(str, cfg.top_cam_device),
+        "left_cam": cast(str, cfg.left_cam_device),
+        "right_cam": cast(str, cfg.right_cam_device),
     }
     caps: dict[str, Any] = {}
 
@@ -130,7 +146,7 @@ def _opencv_camera_reader(cfg: YamConfig) -> CameraReader:
                 cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
                 if not cap.isOpened():
                     raise RuntimeError(f"cannot open {name} at {dev}")
-                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"YUYV"))
                 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)

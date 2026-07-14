@@ -47,16 +47,16 @@ inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2 --embodimen
 ## Install (on the robot/GPU machine)
 
 ```bash
-uv pip install "inspect-robots-yam[client]"
-# The i2rt driver is GitHub-only (not on PyPI), so the [yam] hardware extra
-# can't resolve from PyPI — install the driver directly instead:
+uv pip install inspect-robots-yam
+# The i2rt driver is git-only and not on PyPI. Install it directly:
 uv pip install "i2rt @ git+https://github.com/i2rt-robotics/i2rt"
 ```
 
-- `client` → `requests` + `json-numpy` (the `/act` transport).
-- `i2rt` → the I2RT YAM arm driver, required for real hardware (the `[yam]`
-  extra declares it, but only resolves in a git/dev install where
-  `[tool.uv.sources]` applies: from PyPI, install it directly as above).
+The base package includes the `/act` transport and builtin OpenCV camera reader.
+Only `i2rt`, the I2RT YAM arm driver required for real hardware, needs the
+separate git install. The camera reader depends on `opencv-python-headless`;
+if your environment also carries `opencv-python`, the two share the `cv2`
+module and the last one installed wins.
 
 Then download the model weights (needs a Hugging Face token) and start the server,
 from the [MolmoAct2 repo](https://github.com/allenai/molmoact2):
@@ -91,12 +91,6 @@ state keys all line up. It does not prove the joint values are interpreted the
 same way. See *Safety* below.
 
 ## Run on hardware
-
-Install the builtin camera reader's dependency:
-
-```bash
-uv pip install "inspect-robots-yam[cameras]"
-```
 
 Write your defaults once, replacing the three camera paths with your rig's
 V4L2 color nodes (use stable `/dev/v4l/by-id/...` or udev-symlink paths;
@@ -162,7 +156,7 @@ cameras and the labeled 14-D state, and moves joints by name
 approver-checked motions.
 
 ```bash
-uv pip install inspect-robots-agent "inspect-robots-yam[cameras]"
+uv pip install inspect-robots-agent inspect-robots-yam
 inspect-robots config set embodiment yam_arms     # once, per machine
 export ANTHROPIC_API_KEY=sk-ant-...
 
