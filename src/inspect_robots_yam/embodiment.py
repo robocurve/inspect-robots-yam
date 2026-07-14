@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping
-from typing import Any, Protocol, cast, runtime_checkable
+from typing import Any, ClassVar, Protocol, cast, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
@@ -32,6 +32,7 @@ from inspect_robots.scene import Scene
 from inspect_robots.types import Action, Observation, StepResult
 
 from inspect_robots_yam import packing
+from inspect_robots_yam._i2rt import I2RT_INSTALL_COMMAND, _load_i2rt
 from inspect_robots_yam.config import DEFAULT_CAMERAS, YamConfig, action_box, observation_space
 from inspect_robots_yam.operator import OperatorIO, default_poll_end
 
@@ -58,23 +59,6 @@ class BimanualDriver(Protocol):
 
 DriverFactory = Callable[[YamConfig], BimanualDriver]
 CameraReader = Callable[[YamConfig], ImageMap]
-
-
-def _load_i2rt() -> tuple[Any, Any]:
-    """Load the git-only YAM driver symbols with actionable installation guidance."""
-    try:
-        from i2rt.robots.get_robot import get_yam_robot
-        from i2rt.robots.utils import GripperType
-    except ModuleNotFoundError as exc:
-        if exc.name != "i2rt" and not (exc.name or "").startswith("i2rt."):
-            raise
-        raise ModuleNotFoundError(
-            "i2rt is the I2RT YAM arm driver. It is git-only and not on PyPI. "
-            'Install or update it with: uv pip install "i2rt @ '
-            'git+https://github.com/i2rt-robotics/i2rt"',
-            name=exc.name,
-        ) from exc
-    return get_yam_robot, GripperType
 
 
 def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cover - real hardware
@@ -182,6 +166,12 @@ def _default_camera_reader(cfg: YamConfig) -> ImageMap:
 
 class YAMEmbodiment:
     """Inspect Robots embodiment for bimanual YAM arms (joint-position control)."""
+
+    # cv2 is a base dependency, so its absence indicates a broken package install.
+    RUNTIME_REQUIREMENTS: ClassVar[Mapping[str, str]] = {
+        "i2rt": I2RT_INSTALL_COMMAND,
+        "cv2": "uv pip install inspect-robots-yam",
+    }
 
     def __init__(
         self,

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 from inspect_robots.policy import PolicyConfig, PolicyInfo
@@ -45,6 +45,11 @@ def _default_post(  # pragma: no cover - real network transport, only vs a live 
 
 class MolmoAct2Policy:
     """Inspect Robots policy wrapping MolmoAct2's bimanual-YAM ``/act`` endpoint."""
+
+    RUNTIME_REQUIREMENTS: ClassVar[Mapping[str, str]] = {
+        "requests": "uv pip install inspect-robots-yam",
+        "json_numpy": "uv pip install inspect-robots-yam",
+    }
 
     def __init__(
         self,
