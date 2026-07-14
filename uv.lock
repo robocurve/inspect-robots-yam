@@ -281,7 +281,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -326,14 +326,14 @@ wheels = [
 
 [[package]]
 name = "inspect-robots"
-version = "0.6.0"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/84/03/4149c307e5fdebd2986ada9e0497ce13c7685f122148dbf5b8ac7444625b/inspect_robots-0.6.0.tar.gz", hash = "sha256:d654b50506fc6f8459521c0d7ac0a718d580bf2114074259b872de9236d9f399", size = 110399, upload-time = "2026-07-10T06:34:33.651Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/27/63/0d3e5fbeb110e858fc00858cf6fe39520ece05f12d764c96e34f26e422b2/inspect_robots-0.8.0.tar.gz", hash = "sha256:d2aaddca6504a1f933ffb919a5fae8cfaaa86f055f31c4d2d00ab19dd19ec7b8", size = 140158, upload-time = "2026-07-14T04:52:09.799Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3a/5c/03b8dc5caf3f50194e44c01a00d608273b20597d4331f88464f71bfa441b/inspect_robots-0.6.0-py3-none-any.whl", hash = "sha256:ecb3a8c6f6c47f7b562b58c0cc1cfb5480229f7695967396fb970ada8ae5ac9c", size = 67025, upload-time = "2026-07-10T06:34:32.41Z" },
+    { url = "https://files.pythonhosted.org/packages/91/8c/769525ff92b62e6dab5e3aa3baa5eec42d55a4fd7354a7689e1b55d83f71/inspect_robots-0.8.0-py3-none-any.whl", hash = "sha256:ff56308479eff335ff85088d4f50f6b6c4421518f2088bea08b3419901dd6aa0", size = 80709, upload-time = "2026-07-14T04:52:08.544Z" },
 ]
 
 [[package]]
@@ -367,7 +367,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "inspect-robots", specifier = ">=0.6" },
+    { name = "inspect-robots", specifier = ">=0.8" },
     { name = "json-numpy", specifier = ">=2.1" },
     { name = "json-numpy", marker = "extra == 'client'", specifier = ">=2.1" },
     { name = "kitchenbench", marker = "extra == 'dev'" },
