@@ -163,19 +163,24 @@ cameras and the labeled 14-D state, and moves joints by name
 (`left_j0`..`left_gripper`, `right_j0`..`right_gripper`) through smooth,
 approver-checked motions.
 
-```bash
-# Copy the env template and add your API key:
-cp .env.example .env
+Copy the env template and add your API key:
 
-# Install the add-on:
+```bash
+cp .env.example .env
+```
+
+Install the add-on:
+
+```bash
 uv pip install inspect-robots-agent inspect-robots-yam
 inspect-robots config set embodiment yam_arms     # once, per machine
+```
 
-# Cameras come from the builtin reader: set the three *_cam_device paths in
-# ~/.config/inspect-robots/config.ini (see Quickstart above) or pass them as
-# -E flags per run.
+Cameras come from the builtin reader: set the three `*_cam_device` paths in
+`~/.config/inspect-robots/config.ini` (see Quickstart above) or pass them as
+`-E` flags per run. Then run the LLM on the robot:
 
-# Run the LLM on the robot:
+```bash
 inspect-robots "place the fork on the plate" --policy agent \
     -P model=anthropic/claude-fable-5
 ```
