@@ -164,6 +164,7 @@ cameras and the labeled 14-D state, and moves joints by name
 approver-checked motions.
 
 ```bash
+# Install the add-on:
 uv pip install inspect-robots-agent inspect-robots-yam
 inspect-robots config set embodiment yam_arms     # once, per machine
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -171,9 +172,19 @@ export ANTHROPIC_API_KEY=sk-ant-...
 # Cameras come from the builtin reader: set the three *_cam_device paths in
 # ~/.config/inspect-robots/config.ini (see Quickstart above) or pass them as
 # -E flags per run.
+
+# Run an LLM to control the robot:
 inspect-robots "place the fork on the plate" --policy agent \
     -P model=anthropic/claude-fable-5
 ```
+
+> [!NOTE]
+> Invoke the CLI as plain `inspect-robots`, not `uv run inspect-robots`.
+> Inside a uv project, `uv run` first re-syncs the environment to the
+> project's lockfile, which uninstalls add-ons that are not declared
+> dependencies (the run above then fails with `no policy named 'agent'`).
+> To use `uv run` anyway, pass `--no-sync` or make the add-on a real
+> dependency with `uv add inspect-robots-agent`.
 
 Safety guardrails (a bounds clamp plus a per-step delta limit derived from the
 declared action space) are wired in by default for every CLI run; turning them
