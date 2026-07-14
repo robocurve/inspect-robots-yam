@@ -29,11 +29,18 @@ check, where `envelope` is a frozen `TaskEnvelope` with `name` and
       """Structural mirror of ``inspect_robots.task.TaskEnvelope``."""
 
       @property
-      def name(self) -> str: ...
+      def name(self) -> str:
+          """The task's registry/display name."""
+          ...
 
       @property
-      def max_steps(self) -> int: ...
+      def max_steps(self) -> int:
+          """The rollout horizon the framework will enforce."""
+          ...
   ```
+
+  (Property docstrings are required — ruff's D102 applies to `src`, and the
+  `BimanualDriver` precedent docstrings every member.)
 
   The members MUST be read-only properties, not plain attributes: a Protocol
   attribute member demands a settable variable under mypy strict, which
@@ -62,16 +69,21 @@ check, where `envelope` is a frozen `TaskEnvelope` with `name` and
   input. On direct `rollout()` calls or older cores it never fires and the
   behavior is exactly today's (hint if set, otherwise elapsed-only
   countdown). Re-binds (one per `eval()`) overwrite: latest envelope wins.
-- `close()` also clears `_bound_max_steps`: a closed instance later driven
-  via direct `rollout()` must fall back, not display the previous task's
-  stale horizon.
+- `close()` also clears `_bound_max_steps`, unconditionally and as its FIRST
+  statement — before the existing `self._driver is None` early return.
+  Otherwise a bound-but-never-reset instance (e.g. `eval()` aborting at
+  `assert_compatible`, which core runs after `bind_task`) would keep a stale
+  horizon through close(). A closed instance later driven via direct
+  `rollout()` must fall back, not display the previous task's horizon;
+  close() stays idempotent.
 
 ### `config.py`
 
 - `max_steps_hint` stays but is deprecated: when a non-None value is
-  configured, emit a `FutureWarning` from `__post_init__`, AFTER the
-  existing `>= 1` validation (warn-then-raise on an invalid value would be
-  noise). `FutureWarning`, not `DeprecationWarning`: the audience is
+  configured, emit a `FutureWarning` at the END of `__post_init__`, after
+  ALL validations (an invalid config — bad hint, bad cameras, bad step
+  limits — raises without ever warning). `FutureWarning`, not
+  `DeprecationWarning`: the audience is
   operators running the `inspect-robots` console script, and Python's
   default filters hide `DeprecationWarning` raised from library code — they
   would never see it. Message: the framework now supplies the horizon via
@@ -84,9 +96,10 @@ check, where `envelope` is a frozen `TaskEnvelope` with `name` and
 
 ### `README.md`
 
-- The countdown paragraph that presents `max_steps_hint` as the knob is
-  rewritten: the horizon now appears with zero configuration under
-  framework-driven runs; `max_steps_hint` is a deprecated fallback.
+- The `max_steps_hint` entry in the `YamConfig` field listing is marked
+  deprecated (fallback only), and the attended-flow section gains a line
+  noting the countdown shows the real horizon with zero configuration under
+  framework-driven runs.
 
 ### User-visible effect
 
@@ -108,13 +121,15 @@ TDD; gates: yam CI's 100% coverage, mypy strict, ruff.
 - A second `bind_task` call overwrites the first (latest wins).
 - `reset()`'s "Max Ns." line reflects the bound horizon.
 - Configuring `max_steps_hint` warns `FutureWarning`. Four existing
-  construction sites start warning and get `pytest.warns` at the
-  `YamConfig(...)` construction (not around embodiment methods):
-  `test_reset_announces_run_instructions`,
+  construction sites start warning and get `pytest.warns` at their own
+  `YamConfig(...)` constructions (the `_build_with_status` helper's internal
+  default construction never warns): the three in `test_embodiment.py`
+  (`test_reset_announces_run_instructions`,
   `test_status_line_updates_once_per_second_with_horizon`,
-  `test_unattended_runs_emit_no_status` (all via the `_build_with_status`
-  helper's config construction), and the `max_steps_hint=0` validation case
-  in `test_config.py`.
+  `test_unattended_runs_emit_no_status`) and the valid
+  `YamConfig(max_steps_hint=1200)` construction in `test_config.py`. The
+  `max_steps_hint=0` case there keeps raising `ValueError` without warning
+  (validation precedes the warning) — assert that explicitly.
 - After `close()`, the bound horizon is gone (fallback behavior returns).
 - `TaskEnvelopeLike` accepts the real shape at runtime: a frozen local
   dataclass with `name`/`max_steps` passes `isinstance` (the
