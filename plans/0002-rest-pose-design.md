@@ -29,6 +29,12 @@ without a connected driver stays a no-op.
 > motion); `rest_pose` remains an explicit override. Release-in-place only
 > happens when no pose was ever captured.
 
+> **Amended by PR #44 (2026-07-14):** `rest_pose` now defaults to the factory
+> all-zero pose. Setting `rest_pose=None` opts out and retains the captured-init
+> fallback from PR #36. Parking, whether factory, explicit, or captured-init,
+> only happens after a pose was captured; a connection fault before capture
+> releases in place.
+
 **Out of scope.** Capture tooling lives in the operator's run harness
 (`~/run_molmoact_yam.py --capture-rest-pose` writes `~/.yam_rest_pose.json`),
 not in this package: the package has no camera/TTY/file conventions, and the
