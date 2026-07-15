@@ -351,6 +351,10 @@ mode means "skip homing" — is redefined in eef mode to select
 FK-in-box validation and begin yaw-degenerate, so skipping is not offered
 in this mode.
 
+> **Amended by plan 0007 (2026-07-15):** the statement above that
+> `home_pose=None` skips homing in joint mode is superseded. Joint mode now
+> selects the mandatory `DEFAULT_JOINT_HOME_POSE` and always homes.
+
 At first `reset()` in eef mode (once kinematics exist, §5), the configured
 (or default) home pose is validated: FK(home) must lie inside the
 workspace box, erroring out otherwise. This kills the out-of-box-*start*
