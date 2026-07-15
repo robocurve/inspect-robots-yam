@@ -53,9 +53,21 @@ Give joints mode the same treatment EEF mode already has:
    - `OperatorIO.wait_ready` already accepts a custom prompt and already maps
      dead stdin to `EmbodimentFault` with the `unattended=True` escape hatch;
      no operator changes needed.
-   - Later resets keep status-only motion, consistent with parking (which
-     ramps with a status message and no gate). Unattended mode is unchanged:
-     motion without prompts is what unattended opts into.
+   - Ordering within `reset()`: the motionless EEF home FK-in-box validation
+     (fail-fast on configuration errors) runs FIRST, then the gate, then the
+     ramp. The operator must not confirm "stand clear" only for reset to
+     error out configuration-side.
+   - Later resets do not re-prompt. So the homing motion is not silent, add a
+     `self._status("homing: ramping arms to start pose")` (attended only,
+     cleared after the ramp) before `_ramp_to`, mirroring close()'s
+     "parking:" status. Unattended mode is unchanged: motion without prompts
+     is what unattended opts into.
+   - Scope honesty: the gate's "no motion before confirmation" covers
+     `reset()` only. If the gate itself raises `EmbodimentFault` (dead
+     stdin), `_init_pose` is already captured, so a subsequent `close()`
+     still parks per plan 0004's deliberate always-park-after-capture rule;
+     with rest == home that sweep is identical to the one the gate refused.
+     Release notes must not overclaim beyond reset.
    - This gate applies in both control interfaces, closing the same
      pre-existing ordering gap for EEF mode and explicit `home_pose` configs.
 
@@ -89,8 +101,9 @@ Field semantics that do NOT change:
   (the joints part of that comment moves into the block above):
 
   ```python
-  # Park target == home target so consecutive episodes need no corrective
-  # motion: close() leaves the arms exactly where the next reset() starts.
+  # Park target == home target: the next episode starts in distribution with
+  # no gripper re-open transient. (Torque release after parking still lets
+  # the arms sag slightly, and reset always re-runs the homing ramp.)
   DEFAULT_REST_POSE: tuple[float, ...] = DEFAULT_JOINT_HOME_POSE
   ```
 
@@ -127,8 +140,10 @@ Field semantics that do NOT change:
   `control_interface == "eef_pos"` guard.
 
 - `reset()` adds the attended first-connect pre-homing gate described in
-  Decision item 4, placed after driver/kinematics construction and the
-  init-pose capture, immediately before the homing ramp.
+  Decision item 4, placed after driver/kinematics construction, the
+  init-pose capture, AND the motionless EEF home validation, immediately
+  before the homing ramp; plus the attended "homing:" status around the ramp
+  (Decision item 4).
 
 ### Tests
 
@@ -139,10 +154,23 @@ Field semantics that do NOT change:
     equals `DEFAULT_JOINT_HOME_POSE` (gripper slots de-normalized per
     `gripper_open`/`gripper_closed` at the driver boundary, matching how the
     existing homing tests assert).
+  - Test helper change FIRST: the scripted `_operator()` helper (line 50)
+    pops from a finite list and raises `IndexError` on exhaustion, and the
+    gate adds one consumed input to every attended first reset. Nearly every
+    attended test in the file would die with `IndexError` inside `reset()`
+    (e.g. `test_reset_twice_reuses_driver` line 251 needs three inputs, the
+    `_build_with_status` tests line 648 exhaust before `confirm_success`,
+    `test_close_after_mid_reset_fault_parks` line 515 dies before its
+    expected camera fault). Fix the helper to return `""` when the scripted
+    answers are exhausted (keeping explicit scripts meaningful for the tests
+    that assert prompt content), rather than editing dozens of tests.
   - New: attended first-connect gate ordering test. With a scripted
-    `OperatorIO`, the first `reset()` prompts (stand-clear prompt observed in
-    `input_fn` calls) before the driver sees any command; a second `reset()`
-    on the same connection does not re-prompt before the ramp. Unattended
+    `OperatorIO` whose `input_fn` records prompts, the first `reset()`
+    issues the stand-clear prompt (matched by prompt text) before the driver
+    sees any command; a second `reset()` on the same connection does not
+    issue the stand-clear prompt before the ramp (it still issues the
+    post-home ready prompt, so assert on prompt text or
+    command-count-at-call-time, not on zero `input_fn` calls). Unattended
     mode never prompts.
   - Known breakage from "reset now always ramps under default config" (the
     dominant class; each needs restructuring or re-expectation, not just
