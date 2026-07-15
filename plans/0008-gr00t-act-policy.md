@@ -55,6 +55,11 @@ current):
 
 - `config.py:1` module docstring ("the MolmoAct2 policy client" → the generic
   /act client).
+- The `MolmoActConfig` class docstring (becomes `ActServerConfig`'s): describe
+  the generic client, the new `name` field, and note the 30-step horizon
+  default is the MolmoAct2 bimanual-YAM checkpoint's.
+- README Configuration section: the config-keys line for the policy gains
+  `name` (and refers to `ActServerConfig`).
 - `src/inspect_robots_yam/__init__.py` docstring: "Registers two Inspect
   Robots components" → three; add the `gr00t` policy line.
 - `src/inspect_robots_yam/CLAUDE.md` module table (`policy.py` row) and the
@@ -134,7 +139,8 @@ POST /act  -> request (json_numpy):
     {"top_cam": (H,W,3) uint8, "left_cam": ..., "right_cam": ...,
      "instruction": str, "state": (14,) float32,
      "num_steps": int (accepted, ignored — logged once),
-     "timestamp": float (optional, ignored)}
+     "timestamp": float (optional, ignored — ActServerPolicy never sends it;
+      accepted only for parity with MolmoAct2's own example clients)}
   response (json_numpy):
     {"actions": (N, 14) float32, "dt_ms": float}
 ```
@@ -162,12 +168,20 @@ Implementation contract (verified against the cached Isaac-GR00T checkout,
   silently swap the arms on real hardware. The shim owns one canonical map,
   `{"left_arm": slice(0, 6), "left_gripper": slice(6, 7),
   "right_arm": slice(7, 13), "right_gripper": slice(13, 14)}` (this repo's
-  packed layout, `packing.py` DIM_LABELS). At startup: every state and
-  action modality key from `get_modality_config()` must be present in the
-  map (hard-fail on unrecognized names) and its width from the checkpoint's
-  stats must equal the slice width. Per request: fill each state key from
-  its named slice; scatter each returned action key into its named slice of
-  a `(T, 14)` buffer. Modality-config order is never load-bearing.
+  packed layout, `packing.py` DIM_LABELS). At startup: the state and the
+  action modality key sets from `get_modality_config()` must each **equal**
+  the canonical map's key set — hard-fail on unrecognized names AND on
+  missing names (a subset-only check would let a left-arm-only fine-tune
+  pass and silently command the right arm to encoder-zero with the gripper
+  closed: unfilled dims land inside the embodiment's clamp bounds, so no
+  downstream guard catches it). Each key's width from the checkpoint's
+  stats must equal its slice width; together the slices exactly partition
+  indices 0..13. Per request: fill each state key from its named slice;
+  scatter each returned action key into its named slice of a `(T, 14)`
+  buffer. With exact-partition validation every buffer element is written
+  before use; initialize with `np.full(..., np.nan)` anyway so any future
+  validation regression produces NaNs (loud, and rejected upstream) instead
+  of plausible zeros. Modality-config order is never load-bearing.
 - Action return: `get_action` returns a **tuple** — `actions, _info =
   policy.get_action(observation)` with `actions: {key: (1, T, D) float32}`
   (`BasePolicy.get_action` → `return action, info`).
