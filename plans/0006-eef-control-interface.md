@@ -39,13 +39,18 @@ embodiment, and every existing safety layer unchanged underneath.
 
 ## 2. Feasibility
 
-i2rt (already a dependency) ships `i2rt.robots.kinematics.Kinematics`: FK
-and mink differential IK over the bundled YAM MuJoCo models
-(`robot_models/arm/yam/yam.xml` + gripper xml via
-`combine_arm_and_gripper_xml`, EEF site `grasp_site`). mink and mujoco come
-in through i2rt's own dependencies; this plan adds no new top-level deps.
-Implementation must verify the exact site/model names against the pinned
-i2rt version at build time, not hardcode blindly.
+i2rt ships `i2rt.robots.kinematics.Kinematics`: FK and mink differential IK
+over the bundled YAM MuJoCo models (arm xml combined with the gripper xml
+via `combine_arm_and_gripper_xml`; the `grasp_site` EEF site lives in the
+*gripper* XMLs, present in all four supported gripper types). mink, mujoco,
+and the QP solver come through i2rt's own dependencies.
+
+Dependency reality: i2rt is NOT a pyproject dependency of this plugin — it
+is a git-installed, lazily-imported runtime requirement (`_i2rt.py`), and
+the repo's gates (100% coverage, import-hygiene with only
+inspect-robots+numpy) must keep passing without it. §5c defines the
+injection seam and §7 the two test tiers this forces. No new top-level
+dependencies are added by this plan.
 
 ## 3. The switch: `control_interface`
 
@@ -74,24 +79,44 @@ straight-line interpolation, bounds/delta guardrails) applies unchanged:
 
 | dims | labels | unit | default bounds |
 |---|---|---|---|
-| 0-2 | `left_x, left_y, left_z` | m | x [0.05, 0.65], y [-0.45, 0.45], z [0.01, 0.60] |
+| 0-2 | `left_x, left_y, left_z` | m | x [0.10, 0.55], y [-0.35, 0.35], z [0.03, 0.55] |
 | 3 | `left_yaw` | rad | [-3.14159, 3.14159] |
 | 4 | `left_gripper` | — | [0, 1] (1 = open, plan 0005 polarity) |
 | 5-9 | `right_*` | same | same |
 
+Default bounds are deliberately *inside* the arm's reach (yam link geometry
+gives roughly 0.75 m of reach; the previous draft's corners exceeded it) and
+keep 3 cm of table clearance at `z_min` against best-effort IK position
+error. The real-kinematics test tier (§7) validates every box corner and
+face center for IK convergence on the bundled model.
+
 - Coordinates are in **each arm's own base frame** (+x forward from the arm
-  base, +z up). No cross-arm calibration exists on rigs yet; a future
-  `arm_base_poses` config knob can lift both arms into one shared frame
-  without changing this interface. The frame convention is stated in the
+  base, +z up — a per-mount convention software cannot verify; on mirrored
+  bimanual mounts the two arms' +y axes point opposite ways in the world,
+  and the README must say so). No cross-arm calibration exists on rigs yet;
+  a future `arm_base_poses` config knob can lift both arms into one shared
+  frame without changing this interface. The frame convention is stated in the
   space's `ActionSemantics.frame` ("base") and must be spelled out in the
   agent-facing bounds text via dim naming alone (the plugin already
   enumerates labels and bounds into the tool description).
-- `yaw` is rotation about base +z, absolute, bounded (not wrapped): the IK
-  target orientation holds the current wrist roll/pitch and tracks
-  commanded yaw. Full orientation (rot6d) is a possible later interface
-  value; position+yaw covers tabletop regrasp/alignment (fork rotation)
-  without asking a VLM to emit 6-D rotation matrices, which the research
-  says they are bad at.
+- `yaw` is rotation about base +z, absolute, bounded — NOT wrapped: a
+  3.1 → −3.1 command linearly sweeps ~2π through zero rather than taking
+  the short way. The tool description must say so and advise intermediate
+  yaws for near-±π regrasps. Full orientation (rot6d) is a possible later
+  interface value; position+yaw covers tabletop regrasp/alignment (fork
+  rotation) without asking a VLM to emit 6-D rotation matrices, which the
+  research says they are bad at.
+- Yaw convention, pinned: at the end of `reset()` each arm captures its FK
+  orientation `R0` and a reference `R_ref := Rz(−yaw0) · R0`, where
+  `yaw0 = atan2(a_y, a_x)` for `a` the horizontal projection of the gripper
+  frame's x-axis (if that projection has norm < 1e-6 — tool axis vertical —
+  the gripper y-axis is used instead; the same extraction rule computes the
+  reported `eef_state` yaw every step). The commanded target orientation is
+  `R_target(yaw) = Rz(yaw) · R_ref`: no per-step extraction of the target,
+  no degeneracy at runtime, and roll/pitch are held at their reset-captured
+  values for the whole trial — the reference is captured once, never
+  re-read from measurements, so tracking error cannot integrate into
+  orientation drift. A signed FK-based test pins the sign convention.
 - Semantics: `control_mode="eef_abs_pose"`, `rotation_repr="none"`,
   `gripper="continuous"`, `frame="base"`, the labels above. `"none"` is the
   honest declared repr for per-dim clamping purposes: no packed 3-D rotation
@@ -109,23 +134,66 @@ Per-arm `Kinematics` instances are constructed lazily at embodiment init
 (combined arm+gripper model, `grasp_site`).
 
 - `step(action)` in eef mode: split the 10-D action per arm; build the
-  target as (position, yaw ∘ current roll/pitch); differential IK warm-
-  started from the arm's current joints (`init_q`), joint-limit constraints
-  on; take mink's best iterate — convergence failure is NOT an exception:
-  the best-effort joints get commanded (they move toward the target), and
-  the truth shows up in the next observation's FK state, closing the loop.
-  The absolute joint limits stay enforced in `_send()` as today, so IK
-  output cannot exceed them no matter what.
+  target as (position, `R_target(yaw)` per §4); differential IK
+  warm-started from the arm's current joints (`init_q`), iteration-capped
+  (`ik_max_iters`, default 20 — warm starts make centimeter steps converge
+  in a few iterations, and the cap bounds the non-convergent worst case
+  well inside the 100 ms budget); take mink's best iterate — convergence
+  failure is NOT an exception: the best-effort joints move toward the
+  target and the truth shows up in the next observation's FK state,
+  closing the loop.
+- **Joint-space rate backstop (safety-critical).** The Cartesian
+  `DeltaLimitApprover` cannot see joint deltas, and an IK branch flip
+  (elbow reconfiguration near a singularity or limit) can return a solution
+  radians away from the current pose. Before commanding, eef-mode `step()`
+  clamps the per-joint displacement: `q_cmd = q_now + clip(q_ik − q_now,
+  ±ik_step_joint_limit)` with `ik_step_joint_limit` a config knob
+  defaulting to 0.2 rad per joint per step (the same scale as delta mode's
+  `_STEP_ARM`). This restores in eef mode exactly the "no wild swings"
+  guarantee joint mode gets from the core guardrails. The absolute joint
+  limits additionally stay enforced in `_send()` as today.
+- Config joint limits and IK: `YamConfig.joint_low/high`, where tighter
+  than the MuJoCo model ranges, are passed into the IK as configuration
+  limits on the six arm joints, so the solver respects operator-tightened
+  limits instead of having `_send()`'s clamp silently distort the Cartesian
+  solution afterward.
+- Gripper joints in the IK model: the combined model contains the gripper's
+  slide joints (equality-coupled, meter-ranged). They are pinned to a fixed
+  nominal mid-range value in `init_q` and stripped from the returned
+  solution; only the six arm joints per arm are taken. The commanded
+  normalized gripper value flows through the existing driver path untouched
+  and never enters IK.
 - The agent-side chunk interpolates *in Cartesian space* (the plugin's
   existing linspace over the action dims), so motions are straight lines in
-  the workspace with per-step Cartesian displacement capped by the toolset's
-  speed limit and the core `DeltaLimitApprover` (5% of workspace range per
-  step by default) — the same two-layer story as joints, in better units.
-- Gripper dims pass through to the existing gripper path untouched.
-- Per-step IK cost at 10 Hz: mink warm-started from the previous solution
-  converges in a few iterations for centimeter-scale steps; implementation
-  must include a latency check in tests (a step must fit well inside the
-  100 ms budget on CPU).
+  the workspace with per-step Cartesian displacement capped by the
+  toolset's speed limit and the core `DeltaLimitApprover` (5% of workspace
+  range per step by default) — the same two-layer story as joints, in
+  better units.
+- **No collision awareness in v1** — stated loudly, not implied: neither
+  arm-table nor arm-arm collision checking exists (the two arms' default
+  y-ranges overlap in a bimanual workspace and mink is given no collision
+  limits). The workspace box, the Cartesian and joint-space rate limits,
+  and the absolute joint limits are the only geometric protections.
+  Operator attendance is assumed, as it already is for joint mode; the
+  README must flag eef mode + unattended operation as operator discretion.
+
+### 5b. reset() / close() in eef mode
+
+Homing, `rest_pose`, and parking remain joint-space and unchanged — those
+poses are 14-D joint vectors regardless of `control_interface`. eef mode
+only changes what `step()` accepts and what the observation reports.
+`reset()` additionally captures the per-arm yaw references (§4) after
+homing completes, and its returned observation already carries `eef_state`.
+
+### 5c. The kinematics seam
+
+`YamConfig` gains `kinematics_factory` (same pattern as the existing
+`driver_factory` seam): a callable returning per-arm objects satisfying a
+small `fk(q) -> 4x4` / `ik(target, init_q) -> (bool, q)` protocol. The
+default factory lazily imports i2rt (`_i2rt.py` conventions) and wraps
+`i2rt.robots.kinematics.Kinematics`; tests inject a deterministic fake.
+This keeps the import-hygiene gate green (no mink/mujoco at import time)
+and makes 100% coverage achievable without i2rt installed.
 
 ## 6. Observation in eef mode
 
@@ -138,27 +206,47 @@ so the agent reads and re-checks the same quantities it commands
 (semantic-state-feedback finding, §1). `joint_pos` (14,) stays for logging
 and debugging; its shape cannot collide with (10,).
 
-## 7. yam tests (TDD)
+## 7. yam tests (TDD, two tiers)
+
+**Tier 1 — gated (100% coverage, no i2rt):** everything runs against the
+injected fake kinematics (§5c) and the existing fake driver.
 
 - Config: `control_interface` validation (unknown value, delta+eef
-  combination), default unchanged.
+  combination), default unchanged; new knobs (`eef_low/high`,
+  `ik_max_iters`, `ik_step_joint_limit`, `kinematics_factory`) validated.
 - Space: eef space shape/labels/bounds/semantics; observation StateSpec
-  declares `eef_state` at (10,) exactly once.
-- Kinematics wrapper: FK/IK round trip on the real bundled model (command
-  a pose, IK, FK the result, assert position within 1 mm and yaw within
-  0.01 rad); warm-start convergence over a straight-line sequence of
-  centimeter steps; per-step wall-clock budget.
-- step(): 10-D action → both arms commanded with IK joints within absolute
-  limits; gripper passthrough; best-effort behavior on an unreachable
-  target (commanded joints finite, within limits, observation FK reflects
-  reality); eef_state present and consistent with FK of commanded joints on
-  the fake driver.
-- Integration with the agent plugin (dev-dep already available in the
-  workspace): `build_toolset` on the eef space produces `move_joints`-class
-  tooling with the 10 labels and correct bounds text; a scripted
-  conversation drives a straight-line move and the emitted chunk passes
-  `ChainApprover(Clamp, DeltaLimit)` untouched.
+  declares `eef_state` at (10,) exactly once alongside `joint_pos` (14,).
+- step(): 10-D action → both arms commanded; joint-space rate backstop
+  clamps a fake-IK solution placed radians away (the elbow-flip case) to
+  `ik_step_joint_limit`; gripper passthrough never enters IK and gripper
+  slide joints are pinned/stripped; best-effort on fake non-convergence
+  (finite, in-limit joints commanded); `ik_max_iters` plumbed through;
+  config joint limits forwarded to the IK seam.
+- Yaw: sign convention against a hand-built rotation; vertical-tool-axis
+  fallback extraction; references captured at reset and never re-read
+  (feed a drifting fake measurement, assert the target orientation is
+  unaffected).
+- reset()/close(): joint-space homing/parking unchanged in eef mode;
+  reset observation carries `eef_state`; yaw references captured
+  post-homing.
+- Integration with the agent plugin (workspace dev dep): `build_toolset`
+  on the eef space produces tooling with the 10 labels and correct bounds
+  text; a scripted conversation drives a straight-line move and the
+  emitted chunk passes `ChainApprover(Clamp, DeltaLimit)` untouched.
 - Existing joint-mode tests untouched and passing (the default path).
+
+**Tier 2 — real-kinematics (skipif i2rt/mink/mujoco not importable; runs
+on rig machines and any environment with the runtime deps, never gates
+CI):**
+
+- FK/IK round trip on the bundled YAM model: position within 1 mm, yaw
+  within 0.01 rad, via the pinned extraction rule.
+- Every default-box corner and face center reaches IK convergence.
+- Warm-start convergence over a straight-line sequence of centimeter
+  steps; saturated non-convergent step (unreachable target at
+  `ik_max_iters`) stays within a generous wall-clock budget (marked perf
+  test, not a tight CI assertion).
+- Signed yaw FK test on the real model.
 
 ## 8. Companion change: inspect-robots-agent (separate PR, core repo)
 
@@ -167,8 +255,10 @@ Small, mode-aware polish — no behavior change for joint-mode users:
 - When the bound space's control mode is in `_POSE_MODES`, the move tool is
   named `move_to` (not `move_joints`) and its description says Cartesian
   end-effector targets with units (meters/radians per the labels), still
-  enumerating per-dim bounds. The toolset already branches on mode; this
-  extends the existing branch, and the system prompt template stays shared.
+  enumerating per-dim bounds. (Precisely: today's tool-name branch is
+  absolute-vs-displacement and `_POSE_MODES` only gates rotation repr — this
+  adds a pose-mode case to the naming/description selection. Small either
+  way.) The system prompt template stays shared.
 - Tests: schema name/description under an eef-mode space; joint-mode
   schemas unchanged.
 - Plugin version bump per its policy.
