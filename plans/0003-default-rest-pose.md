@@ -1,9 +1,10 @@
 # Ship a factory default rest_pose
 
 Date: 2026-07-14
-Status: revised after critique round 1 (blank opt-out replaced by the core's
-existing `none` spelling; park gated on a completed first reset; provenance
-clarified; test sweep enumerated); round 2 pending
+Status: revised after critique rounds 1 (blank opt-out replaced by the
+core's existing `none` spelling; provenance clarified; test sweep
+enumerated) and 2 (park gate predicate corrected to pose-captured, which
+preserves the #36 mid-reset-fault park); round 3 pending
 
 ## Problem
 
@@ -45,16 +46,23 @@ mounting assumption. Exotic mounts override per rig.
    the plugin as Python `None` (core `_defaults.parse_value`). `None` means
    #36's captured-init fallback. A blank value stays a loud `ValueError`
    (it catches half-written lines; do not make it meaningful).
-4. Park gating — close() parks only after a completed first reset. Today an
-   explicitly-set rest_pose ramps on close() even when connect() faulted
-   before any reset captured a pose; with a factory default that would mean
-   commanding motion at teardown of a session that never commanded motion.
-   New rule, applied uniformly to explicit and default values: if no reset
-   has completed, close() releases in place (the pre-reset arms are wherever
-   the operator left them). After a reset: explicit-or-default tuple ->
-   ramp there; `None` -> captured-init pose. This is a deliberate behavior
-   change for the explicit-rest_pose-without-reset corner and must be
-   called out in the PR body.
+4. Park gating — close() parks only if a pose was ever captured
+   (`_init_pose is not None`). Capture happens at the top of the first
+   reset, strictly before any embodiment-commanded motion, so this
+   predicate is exactly the "did we possibly move the arms" boundary and
+   needs no new state (close() already clears `_init_pose`). Path by path:
+   never connected -> no-op; connect-then-fault-before-capture -> release
+   in place (we never moved the arms); any fault after capture, including
+   a camera-open failure that fires after the home ramp -> park at the
+   explicit-or-default tuple (or the captured pose when `None`), matching
+   #36's operator expectations; normal end -> park; double-close -> no-op;
+   reconnect -> re-capture, then park. Deliberate behavior change to call
+   out in the PR body: an explicitly-set rest_pose no longer ramps when
+   close() runs before any capture. NOT "completed first reset": that
+   predicate would leave the arms limp at the raised home pose on a
+   mid-reset camera fault, regressing #36 and contradicting 0002's
+   amendment ("release-in-place only happens when no pose was ever
+   captured").
 5. Park path (not just endpoint): the park ramp is the same linear
    joint-space interpolation as #36's captured-init park and reset()'s
    homing ramp (`_ramp_to`); no waypoint is collision-checked, and the
@@ -65,13 +73,16 @@ mounting assumption. Exotic mounts override per rig.
    episode end (this is true today and merely undocumented). Unattended
    runs (`unattended=True`) park silently like every other close(); the
    reset gate above is what prevents motion on never-reset teardowns.
-6. README: update the `rest_pose` config-table row, the worked example
+6. README: update the `rest_pose` entry in the `YamConfig` field list
+   (README.md:288-294; it is a prose list, not a table), the worked example
    (currently shows grippers 1.0), and the "Park pose must rest under
    gravity" safety bullet: factory default, per-rig override, `none`
    opt-out, path-not-collision-checked warning, and one sentence noting the
    default parks with grippers open, so anything still held is released at
-   park. Keep every existing safety qualifier.
-7. Stale prose sweep: the `rest_pose` field comment (config.py:99-101), the
+   park. Name `DEFAULT_REST_POSE` as an informational constant, not a
+   stable import (it stays out of `__all__` on purpose; do not "fix" the
+   snapshot test by exporting it). Keep every existing safety qualifier.
+7. Stale prose sweep: the `rest_pose` field comment (config.py:98-101), the
    close() docstring (embodiment.py:309-316), and plans/0002-rest-pose-
    design.md gets an "Amended by PR #44" note mirroring the existing #36
    amendment style.
@@ -87,8 +98,9 @@ New:
   fallback still works end to end.
 - close() with default config after a reset ramps to `DEFAULT_REST_POSE`
   (fake driver records waypoints; final target equals the constant).
-- close() before any reset releases in place for BOTH default and explicit
-  rest_pose (the new gate).
+- close() before any pose capture releases in place for BOTH default and
+  explicit rest_pose (the new gate); close() after a capture but with a
+  mid-reset fault still parks (the #36 invariant the gate must preserve).
 - Explicit override wins over the default.
 
 Existing tests that break (enumerated; #36's invariants must be
