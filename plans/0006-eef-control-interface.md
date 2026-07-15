@@ -181,7 +181,9 @@ reset, exactly like a bad CAN channel does today.
      path during a hold.)
   2. **Resync check.** If any joint's `|q_cmd_prev − q_measured|` exceeds
      `cmd_resync_threshold` (config, default 0.35 rad), re-seed
-     `q_cmd_prev := clip(q_measured, config limits)` and mark the step
+     `q_cmd_prev := clip(q_measured, effective per-side intersection)`
+     (the same range the IK model enforces — NOT the raw config limits,
+     which can be wider than a one-sided model range) and mark the step
      `resynced` — bounding command windup ahead of a stalled or
      obstructed arm.
   3. **IK.** Build the target (position, `R_target(yaw)` per §4);
@@ -194,7 +196,14 @@ reset, exactly like a bad CAN channel does today.
      NOT an exception: the solver's **last** iterate (that is what
      `Kinematics.ik` returns on failure — not a best-of pick) still moves
      toward the target, and the truth shows up in the next observation's
-     FK state, closing the loop.
+     FK state, closing the loop. Two edges, pinned: a solve returning any
+     **non-finite** value degrades this step to a hold (re-send
+     `q_cmd_prev`) — commands are generated here, *downstream* of the
+     approvers whose NaN abort is the repo's "must never reach hardware"
+     bar, so the gate has to exist locally; and a QP-infeasibility
+     exception from mink (`NoSolutionFound`) is NOT caught — it
+     propagates as an `EmbodimentFault` and halts the eval, loudly. Only
+     iteration-cap non-convergence is best-effort.
   4. **Rate clamp** (below) against `q_cmd_prev`.
   5. **Reversal counting** on `q_cmd − q_cmd_prev`, skipped entirely on a
      `resynced` step: the resync snap-back is corrective, not
@@ -276,13 +285,17 @@ reset, exactly like a bad CAN channel does today.
   `[max(model_lo, cfg_lo), min(model_hi, cfg_hi)]` (the default config
   ±π is *wider* than the model's one-sided [0, 3.65] shoulder/elbow ranges
   below and tighter above — a one-sided "where tighter" rule would get
-  this wrong). Mechanism, chosen explicitly: the default factory mutates
-  `jnt_range` on the wrapper-owned model
+  this wrong). Mechanism, chosen explicitly: the `_ArmKinematics` wrapper
+  (§5c) applies the intersection through the seam's read/write-ranges
+  affordance, mutating the wrapper-owned model
   (`Kinematics._configuration.model`) right after construction — the
   wrapper wholly owns that model instance, mink's `ConfigurationLimit`
-  reads ranges from it, and `Kinematics` exposes no limits seam of its
-  own, so owned-model mutation is the least-invasive supported path (no
-  XML rewriting). The intersection is validated **non-empty per joint** at
+  reads ranges live from it on every solve, and `Kinematics` exposes no
+  limits seam of its own, so owned-model mutation is the least-invasive
+  supported path (no XML rewriting). Placement matters: the intersection
+  and its non-empty validation are wrapper logic (tier-1 testable against
+  fakes), never factory logic — §5c's rule that nothing spec'd lives only
+  inside the lazily-importing factory applies here too. The intersection is validated **non-empty per joint** at
   kinematics construction — an operator config whose range misses a
   one-sided model range entirely (e.g. `cfg_hi < 0` on a [0, 3.65]
   shoulder) would otherwise write an inverted `jnt_range` with undefined
@@ -431,10 +444,18 @@ injected fake kinematics (§5c) and the existing fake driver.
   resynced and keeps reversal counting live on the arm joints.
 - Empty limit intersection (config range disjoint from a one-sided model
   range) errors at kinematics construction naming the joint.
-- Integration with the agent plugin: `build_toolset` on the eef space
-  produces tooling with the 10 labels and correct bounds text; a scripted
-  conversation drives a straight-line move and the emitted chunk passes
-  `ChainApprover(Clamp, DeltaLimit)` untouched. (Clean-case only, noted:
+- Non-finite IK output (fake solver returning NaN) degrades the step to a
+  hold — `q_cmd_prev` re-sent, nothing non-finite reaches the driver; a
+  fake raising the solver's infeasibility exception propagates (halts),
+  not caught.
+- Integration with the agent plugin, through its *public* surface only
+  (`LLMAgentPolicy` with an injected `httpx` transport — the private
+  `_tools.build_toolset` is not in the plugin's `__all__`, and a private
+  cross-package import would let any agent-plugin refactor break this
+  repo under the open-ended version pin): a scripted conversation binds
+  the policy to the eef space, asserts the advertised tool carries the 10
+  labels and correct bounds text, drives a straight-line move, and the
+  emitted chunk passes `ChainApprover(Clamp, DeltaLimit)` untouched. (Clean-case only, noted:
   after a best-effort divergence, `DeltaLimitApprover`'s store still
   references the last *approved* action, so the next chunk's first steps
   can clamp toward the stale target for a few steps — bounded, safe
@@ -511,6 +532,9 @@ Small, mode-aware polish — no behavior change for joint-mode users:
   calibration per rig) — the research-favored next surface for VLMs.
 - Delta-EEF, full-orientation (rot6d) EEF, discrete primitive skills
   (`pick(x,y)`), shared cross-arm world frame via `arm_base_poses`.
+- A per-embodiment free-text hint channel on `ActionSemantics` that would
+  let embodiments inject their own tool-description wording (referenced
+  from §8).
 - Any change to VLA policy paths or the joints default.
 
 ## 10. Rollout
