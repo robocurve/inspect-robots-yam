@@ -104,8 +104,8 @@ def test_reset_returns_observation_and_homes() -> None:
     assert all(b >= a for a, b in itertools.pairwise(j0))  # monotonic, no jump
     home_cmd = drv.commands[-1]
     assert home_cmd[0] == pytest.approx(0.1)
-    assert home_cmd[6] == pytest.approx(11.0)  # 10 + 0.1 * (20 - 10)
-    assert home_cmd[13] == pytest.approx(11.0)
+    assert home_cmd[6] == pytest.approx(19.0)  # 20 + 0.1 * (10 - 20)
+    assert home_cmd[13] == pytest.approx(19.0)
 
 
 def test_reset_without_home_pose_issues_no_command() -> None:
@@ -121,7 +121,7 @@ def test_step_clamps_to_limits() -> None:
     emb.step(Action(data=np.full(14, 100.0)))
     cmd = drv.commands[-1]
     assert cmd[0] == pytest.approx(np.pi)  # joint clamped
-    # gripper slot clamped to 1.0 then de-normalized with default identity (0..1) -> 1.0
+    # Wire gripper 1 is open and stays driver 1.0 under the default identity calibration.
     assert cmd[6] == pytest.approx(1.0)
 
 
@@ -129,13 +129,62 @@ def test_step_gripper_denormalization() -> None:
     cfg = YamConfig(gripper_open=10.0, gripper_closed=20.0)
     emb, drv, _ = _build(cfg)
     emb.reset(Scene(id="s", instruction="x"))
-    emb.step(Action(data=np.zeros(14)))  # normalized gripper 0 -> open value
+    emb.step(Action(data=np.zeros(14)))  # normalized gripper 0 -> closed value
     cmd = drv.commands[-1]
-    assert cmd[6] == pytest.approx(10.0)
-    assert cmd[13] == pytest.approx(10.0)
+    assert cmd[6] == pytest.approx(20.0)
+    assert cmd[13] == pytest.approx(20.0)
     emb.step(Action(data=np.concatenate([np.zeros(6), [1.0], np.zeros(6), [1.0]])))
     cmd = drv.commands[-1]
-    assert cmd[6] == pytest.approx(20.0)  # normalized 1 -> closed value
+    assert cmd[6] == pytest.approx(10.0)  # normalized gripper 1 -> open value
+
+
+def test_gripper_wire_endpoints_map_one_to_open_and_zero_to_closed() -> None:
+    state = np.zeros(14)
+    state[6] = state[13] = 0.72  # driver starts at the open endpoint
+    cfg = YamConfig(gripper_open=0.72, gripper_closed=0.04)
+    emb, drv, _ = _build(cfg, driver=FakeDriver(state=state))
+    emb.reset(Scene(id="s", instruction="x"))
+
+    open_action = np.zeros(14)
+    open_action[6] = open_action[13] = 1.0
+    emb.step(Action(data=open_action))
+    assert drv.commands[-1][6] == pytest.approx(0.72)
+    assert drv.commands[-1][13] == pytest.approx(0.72)
+
+    emb.step(Action(data=np.zeros(14)))
+    assert drv.commands[-1][6] == pytest.approx(0.04)
+    assert drv.commands[-1][13] == pytest.approx(0.04)
+
+
+def test_gripper_driver_open_endpoint_observes_as_wire_one() -> None:
+    state = np.zeros(14)
+    state[6] = state[13] = 0.72
+    cfg = YamConfig(gripper_open=0.72, gripper_closed=0.04)
+    emb, _, _ = _build(cfg, driver=FakeDriver(state=state))
+
+    observation = emb.reset(Scene(id="s", instruction="x"))
+
+    assert observation.state["joint_pos"][6] == pytest.approx(1.0)
+    assert observation.state["joint_pos"][13] == pytest.approx(1.0)
+
+
+def test_gripper_default_calibration_is_identity_both_directions() -> None:
+    state = np.zeros(14)
+    state[6] = state[13] = 0.35
+    drv = EchoDriver(state=state)
+    emb, _, _ = _build(driver=drv)
+
+    observation = emb.reset(Scene(id="s", instruction="x"))
+    assert observation.state["joint_pos"][6] == pytest.approx(0.35)
+    assert observation.state["joint_pos"][13] == pytest.approx(0.35)
+
+    action = np.zeros(14)
+    action[6] = action[13] = 0.35
+    result = emb.step(Action(data=action))
+    assert drv.commands[-1][6] == pytest.approx(0.35)
+    assert drv.commands[-1][13] == pytest.approx(0.35)
+    assert result.observation.state["joint_pos"][6] == pytest.approx(0.35)
+    assert result.observation.state["joint_pos"][13] == pytest.approx(0.35)
 
 
 def test_step_delta_mode_adds_current() -> None:
@@ -156,27 +205,28 @@ def test_gripper_absolute_round_trip_non_identity() -> None:
     action = np.zeros(14)
     action[6] = action[13] = 0.3
     result = emb.step(Action(data=action))
-    # Outgoing: normalized 0.3 de-normalizes to 10 + 0.3 * (20 - 10) = 13 hw units.
-    assert drv.commands[-1][6] == pytest.approx(13.0)
-    assert drv.commands[-1][13] == pytest.approx(13.0)
-    # Incoming: the observed state re-normalizes 13 hw back to exactly 0.3.
+    # Outgoing: normalized 0.3 de-normalizes to 20 + 0.3 * (10 - 20) = 17 hw units.
+    assert drv.commands[-1][6] == pytest.approx(17.0)
+    assert drv.commands[-1][13] == pytest.approx(17.0)
+    # Incoming: the observed state re-normalizes 17 hw back to exactly 0.3.
     state = result.observation.state["joint_pos"]
     assert state[6] == pytest.approx(0.3)
     assert state[13] == pytest.approx(0.3)
 
 
-def test_gripper_inverted_polarity_round_trip() -> None:
-    cfg = YamConfig(gripper_open=20.0, gripper_closed=10.0)  # negative span
+def test_gripper_positive_span_round_trip() -> None:
+    cfg = YamConfig(gripper_open=20.0, gripper_closed=10.0)
     drv = EchoDriver()
     emb, _, _ = _build(cfg, driver=drv)
     emb.reset(Scene(id="s", instruction="x"))
     action = np.zeros(14)
     action[6] = action[13] = 0.3
     result = emb.step(Action(data=action))
-    # Outgoing: 20 + 0.3 * (10 - 20) = 17 hw units.
-    assert drv.commands[-1][6] == pytest.approx(17.0)
-    assert drv.commands[-1][13] == pytest.approx(17.0)
-    # Incoming: (17 - 20) / (10 - 20) = 0.3 — bijection holds under inversion.
+    # Open 20 and closed 10 is a normal calibration with a positive span:
+    # outgoing wire 0.3 maps to 10 + 0.3 * (20 - 10) = 13 hw units.
+    assert drv.commands[-1][6] == pytest.approx(13.0)
+    assert drv.commands[-1][13] == pytest.approx(13.0)
+    # Incoming: (13 - 10) / (20 - 10) = 0.3, so the bijection holds.
     state = result.observation.state["joint_pos"]
     assert state[6] == pytest.approx(0.3)
     assert state[13] == pytest.approx(0.3)
@@ -193,9 +243,9 @@ def test_step_delta_mode_gripper_uses_normalized_base() -> None:
     cmd = drv.commands[-1]
     assert cmd[0] == pytest.approx(0.6)  # joints: plain radian addition
     # Gripper delta means fraction-of-stroke: 15 hw -> base 0.5 normalized,
-    # +0.1 -> 0.6, de-normalized back out to 16 hw (NOT 15.1 or denorm(0.51)).
-    assert cmd[6] == pytest.approx(16.0)
-    assert cmd[13] == pytest.approx(16.0)
+    # +0.1 -> 0.6, de-normalized back out to 14 hw (NOT 15.1 or denorm(0.51)).
+    assert cmd[6] == pytest.approx(14.0)
+    assert cmd[13] == pytest.approx(14.0)
 
 
 def test_reset_twice_reuses_driver() -> None:
@@ -350,7 +400,7 @@ def test_close_ramps_to_rest_pose_then_releases() -> None:
 def test_close_rest_pose_goes_through_clamp_and_denorm() -> None:
     # Out-of-range joints clamp to +/-pi; gripper slots de-normalize like actions.
     cfg = YamConfig(
-        rest_pose=(100.0,) * 6 + (0.5,) + (100.0,) * 6 + (0.5,),
+        rest_pose=(100.0,) * 6 + (0.3,) + (100.0,) * 6 + (0.3,),
         rest_secs=0.1,  # 1 waypoint
         gripper_open=10.0,
         gripper_closed=20.0,
@@ -360,7 +410,7 @@ def test_close_rest_pose_goes_through_clamp_and_denorm() -> None:
     emb.close()
     cmd = drv.commands[-1]
     assert cmd[0] == pytest.approx(np.pi)
-    assert cmd[6] == pytest.approx(15.0)  # 10 + 0.5 * (20 - 10)
+    assert cmd[6] == pytest.approx(17.0)  # 20 + 0.3 * (10 - 20)
 
 
 def test_close_without_rest_pose_ramps_to_captured_init_pose() -> None:
@@ -413,7 +463,7 @@ def test_close_explicit_rest_pose_wins_over_captured_init_pose() -> None:
 
 def test_close_init_pose_grippers_round_trip_through_normalized_units() -> None:
     init_pose = np.full(14, 0.2)
-    init_pose[6] = init_pose[13] = 15.0
+    init_pose[6] = init_pose[13] = 17.0
     cfg = YamConfig(
         rest_pose=None,
         rest_secs=0.2,
@@ -426,8 +476,8 @@ def test_close_init_pose_grippers_round_trip_through_normalized_units() -> None:
     emb.step(Action(data=np.full(14, 0.8)))
     emb.close()
 
-    assert drv.commands[-1][6] == pytest.approx(15.0)
-    assert drv.commands[-1][13] == pytest.approx(15.0)
+    assert drv.commands[-1][6] == pytest.approx(17.0)
+    assert drv.commands[-1][13] == pytest.approx(17.0)
     assert drv.closed is True
 
 
@@ -751,7 +801,7 @@ def test_delta_mode_declares_joint_delta_and_per_step_box() -> None:
     sem = emb.info.action_space.semantics
     assert sem is not None and sem.control_mode == "joint_delta"
     # The declared box is the per-step displacement limits, NOT the absolute
-    # joint limits: symmetric, so the gripper can open (negative delta) too.
+    # joint limits: symmetric, so the gripper can move in either direction.
     assert np.allclose(emb.info.action_space.low, cfg.delta_low)
     assert np.allclose(emb.info.action_space.high, cfg.delta_high)
     # The absolute-limit backstop still applies to the summed command in _send.

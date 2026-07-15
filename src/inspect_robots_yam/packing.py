@@ -37,14 +37,14 @@ DIM_LABELS: tuple[str, ...] = tuple(
 )
 
 # The canonical proprioception key MolmoAct2's YAM server expects as a flat 14-D
-# ``state``. Joints are radians, the trailing gripper of each arm is normalized;
-# we model it as a single field so ``StateSpec.keys == {"joint_pos"}`` stays
+# ``state``. Joints are radians, the trailing gripper of each arm is normalized
+# (1 = open); we model it as a single field so ``StateSpec.keys == {"joint_pos"}`` stays
 # consistent with the ``state_keys`` both components declare for compatibility.
 STATE_KEY = "joint_pos"
 
 
 def state_spec(key: str = STATE_KEY) -> StateSpec:
-    """A single-field flat 14-D ``StateSpec`` under ``key`` (rad + normalized grippers).
+    """A flat 14-D ``StateSpec`` under ``key`` (rad + normalized grippers, 1 = open).
 
     Deriving the spec from the key keeps ``state_keys`` and the ``StateField`` key
     consistent for any configured ``state_key`` — ``ObservationSpace`` rejects them

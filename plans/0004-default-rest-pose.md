@@ -5,7 +5,13 @@ Status: revised after critique rounds 1 (blank opt-out replaced by the
 core's existing `none` spelling; provenance clarified; test sweep
 enumerated), 2 (park gate predicate corrected to pose-captured, which
 preserves the #36 mid-reset-fault park), and 3 (verdict ready; wording and
-test-sharpness nits folded in); renumbered 0003 -> 0004 after #42 took 0003
+test-sharpness nits folded in); renumbered 0003 -> 0004 after #42 took 0003.
+Polarity correction (plan 0005): the wire gripper convention is now
+1 = open, 0 = closed. The captured value 0.0 below is unchanged and still
+correct as a *value*, but it is the CLOSED end of the stroke; this plan's
+original "0.0 = open" labels and the "parks with grippers open" rationale
+used the pre-0005 inverted doc convention and read backwards today. See
+plans/0005-gripper-open-polarity.md.
 
 ## Problem
 
