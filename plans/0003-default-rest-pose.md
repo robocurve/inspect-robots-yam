@@ -16,14 +16,15 @@ canonical resting pose, and the setup wizard never prompts for one (#43).
 
 ## Captured reference pose
 
-Read from a physical YAM pair posed at rest on 2026-07-14 (zero-gravity
+Read from a physical YAM pair posed at rest on 2026-07-14 (second
+capture, wrists squared to neutral) (zero-gravity
 connect; `gripper_limits_override` used, so only the gripper range sweep was
 skipped — joint readings come from the motors' own encoders and do not
 depend on that calibration; the two gripper slots are hand-set to 0.0 =
 open, not read):
 
 ```
-0.0372,0.0044,0.0006,-0.0898,-0.0517,-0.1539,0.0,0.0082,0.0010,0.0006,-0.0818,0.0727,0.1410,0.0
+0.0257,0.0044,0.0017,-0.0910,-0.0330,-0.0040,0.0,-0.0059,0.0017,0.0006,-0.0883,0.0059,0.0143,0.0
 ```
 
 Layout per `packing.py`: left arm indices 0-6, right arm 7-13, gripper last
