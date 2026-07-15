@@ -15,23 +15,23 @@ released 0.8.0 that means close() releases torque wherever the episode ended
 arms happened to be in at first reset. Neither gives a fresh user the
 canonical resting pose, and the setup wizard never prompts for one (#43).
 
-## Captured reference pose
+## Reference pose
 
-Read from a physical YAM pair posed at rest on 2026-07-14 (second
-capture, wrists squared to neutral) (zero-gravity
-connect; `gripper_limits_override` used, so only the gripper range sweep was
-skipped — joint readings come from the motors' own encoders and do not
-depend on that calibration; the two gripper slots are hand-set to 0.0 =
-open, not read):
+The canonical rest pose is all zeros: every joint at encoder zero, both
+grippers 0.0 = open.
 
 ```
-0.0257,0.0044,0.0017,-0.0910,-0.0330,-0.0040,0.0,-0.0059,0.0017,0.0006,-0.0883,0.0059,0.0143,0.0
+0,0,0,0,0,0,0,0,0,0,0,0,0,0
 ```
 
-Layout per `packing.py`: left arm indices 0-6, right arm 7-13, gripper last
-per arm, grippers normalized. Provenance comment in code must record: date,
-physical capture, grippers hand-normalized open, and the standard-upright-
-mounting assumption. Exotic mounts override per rig.
+Operator-confirmed on 2026-07-14 against two physical captures of a YAM
+pair posed at rest (zero-gravity connect, gripper range sweep skipped;
+joint readings from the motors' own encoders): every reading was within
+0.09 rad of zero, and the operator confirmed true rest is encoder zero.
+Layout per `packing.py`: left arm indices 0-6, right arm 7-13, gripper
+last per arm, grippers normalized. Provenance comment in code must record:
+date, operator confirmation over physical captures, grippers open, and the
+standard-upright-mounting assumption. Exotic mounts override per rig.
 
 ## Design
 
