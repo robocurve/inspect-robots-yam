@@ -114,23 +114,34 @@ every run so a model update cannot silently invalidate the defaults.
   interface value; position+yaw covers tabletop regrasp/alignment (fork
   rotation) without asking a VLM to emit 6-D rotation matrices, which the
   research says they are bad at.
-- Yaw convention, pinned: at the end of `reset()` each arm captures its FK
-  orientation `R0` and a reference `R_ref := Rz(−yaw0) · R0`, where
+- Yaw convention, pinned — and **relative to the reset orientation**: at
+  the end of `reset()` each arm captures its FK orientation `R0`, extracts
   `yaw0 = atan2(a_y, a_x)` for `a` the horizontal projection of the gripper
-  frame's x-axis. If that projection has norm < sin(5°) ≈ 0.087 (tool axis
-  near vertical), the gripper y-axis is used instead — and whichever axis
-  is chosen at reset is **pinned for the whole trial**, for both the
-  reference and every reported `eef_state` yaw, so measurement noise near
-  the threshold cannot flip the extraction branch mid-trial (a per-step
-  re-evaluation would jump the reported yaw by ~π/2 across the flip). At
-  the §5b default home orientation the x-axis projection is 0.5 — an order
-  of magnitude above the threshold — so the default path never sits near
-  the degeneracy. The commanded target orientation is
-  `R_target(yaw) = Rz(yaw) · R_ref`: no per-step extraction of the target,
-  and roll/pitch are held at their reset-captured values for the whole
-  trial — the reference is captured once, never re-read from measurements,
-  so tracking error cannot integrate into orientation drift. A signed
-  FK-based test pins the sign convention.
+  frame's x-axis (fallback to the y-axis when that projection has norm
+  < sin(5°) ≈ 0.087 — tool axis near vertical — with the chosen branch
+  **pinned for the whole trial** for both reference and reporting, so
+  noise cannot flip it mid-trial), and stores `R0` itself as the
+  reference. Commanded yaw `c` targets `R_target(c) = Rz(c) · R0`, and the
+  reported `eef_state` yaw is `wrap(yaw_raw − yaw0)` via the pinned
+  branch. The two halves are consistent: at orientation `Rz(d) · R0` the
+  report reads `d`, and commanding `c = d` targets the current
+  orientation — echo-back holds still, and home reads and commands
+  **exactly 0** by construction. (Do NOT pair relative reporting with a
+  `Rz(−yaw0) · R0` reference — commanding the reported 0 would then
+  target a 180°-flipped orientation at this home, since `yaw0 = π`.) — this matters: the §5b home orientation's
+  raw x-axis projection points along −x (`atan2(0, −0.5) = π`), so an
+  absolute convention would park the default pose *on* the ±π wrap
+  discontinuity, where noise flips the reported sign and an agent echoing
+  the observed yaw back would command a full 360° wrist sweep through
+  zero. Under the relative convention the discontinuity sits at 180° from
+  home — a pose the bounded, non-wrapped interpolation already discourages
+  — and echo-back near home is stable (±ε reads as ±ε). Roll/pitch are
+  held at their reset-captured values for the whole trial; the reference
+  is captured once, never re-read from measurements, so tracking error
+  cannot integrate into orientation drift. A signed FK-based test pins the
+  sign convention, and a test pins home-reads-zero. (The x-axis projection
+  at home has norm 0.5 ≈ 5.7× the fallback threshold — comfortably clear,
+  not "an order of magnitude".)
 - Semantics: `control_mode="eef_abs_pose"`, `rotation_repr="none"`,
   `gripper="continuous"`, `frame="base"`, the labels above. `"none"` is the
   honest declared repr for per-dim clamping purposes: no packed 3-D rotation
@@ -144,27 +155,43 @@ every run so a model update cannot silently invalidate the defaults.
 
 ## 5. Execution: IK inside the embodiment
 
-Per-arm `Kinematics` instances are constructed lazily at embodiment init
-(combined arm+gripper model, `grasp_site`).
+Per-arm `Kinematics` instances are constructed at **first `reset()`**
+(combined arm+gripper model, `grasp_site`) — the same lazy point as the
+drivers and cameras, keeping heavy imports out of `__init__` per the
+repo's established pattern. A bad kinematics config therefore errors at
+reset, exactly like a bad CAN channel does today.
 
 - `step(action)` in eef mode: split the 10-D action per arm; build the
   target as (position, `R_target(yaw)` per §4); differential IK
   warm-started from the arm's **last commanded** joints (`q_cmd_prev`, not
   the measured joints — path-continuity of the warm start is what keeps
   differential IK on one solution branch; warm-starting from measurements
-  reintroduces branch flips through tracking noise), iteration-capped
+  reintroduces branch flips through tracking noise). `q_cmd_prev` is
+  seeded from the final home-ramp command at the end of `reset()` and
+  cleared on `close()`; the warm start is clipped into the model's joint
+  ranges before each solve (mink's limit check warns on epsilon-outside
+  starts, which would spam stderr at 10 Hz). IK is iteration-capped
   (`ik_max_iters`, default 20 — warm starts make centimeter steps converge
   in a few iterations, and the cap bounds the non-convergent worst case
   well inside the 100 ms budget); take mink's best iterate — convergence
   failure is NOT an exception: the best-effort joints move toward the
   target and the truth shows up in the next observation's FK state,
   closing the loop.
-- No-progress guard (anti-livelock): if the clamped command reduces the
-  Cartesian target error by less than 1 mm for 5 consecutive steps, the arm
-  holds its last command for the remainder of the chunk. Without this, a
-  branch-flip clamp cycle could oscillate ±`ik_step_joint_limit` at 10 Hz
-  for a full 10 s chunk; with it, the stall becomes visible in the next
-  observation and the agent replans.
+- Oscillation damping (anti-livelock), per joint and step-observable —
+  `step()` has no chunk concept, so the guard cannot reference chunk
+  boundaries, and a position-progress rule would falsely freeze pure-yaw
+  regrasps (position error is static during rotation). Instead: for each
+  arm joint, if the commanded direction reverses more than
+  `osc_reversals = 2` times within a sliding `osc_window = 6`-step window,
+  that joint's command holds at its current value for
+  `osc_hold_steps = 10` steps (1 s at 10 Hz), then re-evaluates (all three
+  are config knobs). A branch-flip clamp cycle — the failure this kills —
+  reverses direction every step and gets duty-cycled to ≤ 3 reversals per
+  1.6 s per joint instead of oscillating ±`ik_step_joint_limit` at 10 Hz
+  for a full 10 s chunk; monotone approaches and single overshoots never
+  trigger it; a legitimate fine-positioning dither at worst pauses that
+  joint for 1 s and resumes. The observation meanwhile reports true state,
+  so a persistent stall is visible to the agent, which replans.
 - **Joint-space rate backstop (safety-critical).** The Cartesian
   `DeltaLimitApprover` cannot see joint deltas, and an IK branch flip
   (elbow reconfiguration near a singularity or limit) can return a solution
@@ -180,14 +207,20 @@ Per-arm `Kinematics` instances are constructed lazily at embodiment init
   the residual exposure is bounded, brief, and visible in the observation,
   and joint mode's own step limits carry the same order of exposure. The
   absolute joint limits additionally stay enforced in `_send()` as today.
-- Config joint limits and IK: `YamConfig.joint_low/high`, where tighter
-  than the MuJoCo model ranges, are applied by tightening the loaded
-  model's `jnt_range` for the six arm joints at wrapper construction (the
-  wrapper owns its private `MjModel`; mink's `ConfigurationLimit` reads
-  ranges from the model, so this is the supported mechanism — no XML
-  rewriting). The solver then respects operator-tightened limits instead of
-  having `_send()`'s clamp silently distort the Cartesian solution
-  afterward.
+- Config joint limits and IK: the effective range for each of the six arm
+  joints is the **per-side intersection**
+  `[max(model_lo, cfg_lo), min(model_hi, cfg_hi)]` (the default config
+  ±π is *wider* than the model's one-sided [0, 3.65] shoulder/elbow ranges
+  below and tighter above — a one-sided "where tighter" rule would get
+  this wrong). Mechanism, chosen explicitly: the default factory mutates
+  `jnt_range` on the wrapper-owned model
+  (`Kinematics._configuration.model`) right after construction — the
+  wrapper wholly owns that model instance, mink's `ConfigurationLimit`
+  reads ranges from it, and `Kinematics` exposes no limits seam of its
+  own, so owned-model mutation is the least-invasive supported path (no
+  XML rewriting). The solver then respects operator-tightened limits
+  instead of having `_send()`'s clamp silently distort the Cartesian
+  solution afterward.
 - Gripper joints in the IK model: the gripper joint count varies by gripper
   type — LINEAR_* grippers contribute two equality-coupled, meter-ranged
   slide joints; CRANK_4310 contributes none (its XML has no joints). The
@@ -225,12 +258,15 @@ yaw extraction robust (§4). The joint-space zero rest pose is NOT a valid
 eef-mode start: its EEF sits outside the default box and its vertical tool
 axis is yaw-degenerate.
 
-At embodiment init in eef mode, the configured (or default) home pose is
-validated: FK(home) must lie inside the workspace box, erroring out
-otherwise. This kills the out-of-box-start failure mode where the agent's
-first partial `move_to` would clip *held* dimensions to the box boundary
-and command unintended motion (the toolset clips every interpolant into
-the box, including unnamed held dims).
+At first `reset()` in eef mode (once kinematics exist, §5), the configured
+(or default) home pose is validated: FK(home) must lie inside the
+workspace box, erroring out otherwise. This kills the out-of-box-*start*
+failure mode where the agent's first partial `move_to` would clip *held*
+dimensions to the box boundary and command unintended motion (the toolset
+clips every interpolant into the box, including unnamed held dims).
+Mid-trial best-effort drift can still leave a held dimension epsilon
+outside the box, and the toolset then clips it back in-box — a small
+motion in the safe direction; documented, not prevented.
 
 `reset()` captures the per-arm yaw references (§4) after homing completes,
 and its returned observation already carries `eef_state`.
@@ -277,10 +313,16 @@ injected fake kinematics (§5c) and the existing fake driver.
   slide joints are pinned/stripped; best-effort on fake non-convergence
   (finite, in-limit joints commanded); `ik_max_iters` plumbed through;
   config joint limits forwarded to the IK seam.
-- Yaw: sign convention against a hand-built rotation; vertical-tool-axis
-  fallback extraction; references captured at reset and never re-read
-  (feed a drifting fake measurement, assert the target orientation is
-  unaffected).
+- Yaw: sign convention against a hand-built rotation; home reads exactly
+  0 under the relative convention; vertical-tool-axis fallback extraction
+  with the branch pinned across a threshold-crossing fake measurement;
+  references captured at reset and never re-read (feed a drifting fake
+  measurement, assert the target orientation is unaffected).
+- Oscillation damping: a fake IK alternating between two branches trips
+  the reversal counter and the joint holds for `osc_hold_steps`, then
+  re-evaluates; a monotone approach and a single overshoot never trigger
+  it; a pure-yaw motion is unaffected (named test — this is spec'd
+  safety behavior, not incidental coverage).
 - reset()/close(): joint-space homing/parking unchanged in eef mode;
   reset observation carries `eef_state`; yaw references captured
   post-homing.
@@ -290,7 +332,9 @@ injected fake kinematics (§5c) and the existing fake driver.
   `ChainApprover(Clamp, DeltaLimit)` untouched. Dependency mechanism,
   spelled out: this repo is not a uv workspace — add
   `inspect-robots-agent>=0.2.2` (PyPI) to the `dev` extra and re-run
-  `uv lock`.
+  `uv lock`. The integration test must not assert the move tool's *name*
+  (the §8 companion PR renames it in pose modes; fresh locks would pull
+  the renamed version and a name assertion would couple the repos).
 - Housekeeping the tiers force: the repo currently has zero skipif tests
   and `--strict-markers`, so the tier-2 module registers its markers
   (`real_kinematics`, `perf`) in pyproject and skips module-wide when i2rt
@@ -304,8 +348,12 @@ CI):**
 - FK/IK round trip on the bundled YAM model: position within 1 mm, yaw
   within 0.01 rad, via the pinned extraction rule.
 - All 15 default-box probe points (8 corners, 6 face centers, center)
-  reach IK convergence within 5 mm at the §5b held orientation with
-  radially-pointing yaw — the exact validation that produced the defaults.
+  reach **< 5 mm position error** at the §5b held orientation with
+  radially-pointing yaw (commanded in the §4 relative convention) — the
+  exact validation that produced the defaults. Assert position error, NOT
+  mink's success flag: the solver reports failure on its orientation
+  threshold at probe points that sit at sub-millimeter position error
+  (measured: (0.15, 0, 0.215) returns success=False at 0.75 mm).
 - Warm-start convergence over a straight-line sequence of centimeter
   steps; saturated non-convergent step (unreachable target at
   `ik_max_iters`) stays within a generous wall-clock budget (marked perf
