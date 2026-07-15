@@ -75,6 +75,40 @@ huggingface-cli download allenai/MolmoAct2-BimanualYAM
 python examples/yam/host_server_yam.py          # serves /act on :8202
 ```
 
+### Serving a GR00T fine-tune
+
+Run the shim from an [Isaac-GR00T](https://github.com/NVIDIA/Isaac-GR00T)
+environment with a CUDA, PyTorch, and flash-attn stack that supports the GPU.
+Blackwell GPUs (`sm_120`) require a matching PyTorch build. Download the YAM
+fine-tune and start its `/act` server on the default port 8203:
+
+```bash
+hf download robocurve/gr00t-n1.7-yam-molmoact2
+python scripts/serve_gr00t_act.py \
+    --model robocurve/gr00t-n1.7-yam-molmoact2
+```
+
+Then run it through the distinct `gr00t` policy entry point so eval logs carry
+the correct model family:
+
+```bash
+inspect-robots "stack the red block on the blue block" \
+    --policy gr00t --embodiment yam_arms
+```
+
+The client defaults to `http://127.0.0.1:8203`. Override a remote or alternate
+server with `-P server_url=http://gpu:8203`. The config key is `server_url`;
+`url` is a read-only property, and `ActServerConfig.from_kwargs` rejects it.
+For another GR00T fine-tune, pass `-P action_horizon=<its chunk length>` so the
+recorded policy metadata matches that checkpoint.
+
+> [!WARNING]
+> The shim's startup checks validate the packed layout and units ranges, but
+> joint polarity and absolute-vs-delta semantics cannot be detected from
+> dataset statistics. For the first runs with a new checkpoint family, run
+> `inspect-robots-yam-preflight`, leave guardrails on, and keep an operator at
+> the e-stop.
+
 ## Preflight: prove compatibility before any motion
 
 Check dims, semantics, cameras, and state keys:
@@ -414,11 +448,11 @@ bounds nothing).
 The current factory value is available for inspection as
 `inspect_robots_yam.config.DEFAULT_REST_POSE`; this is an informational constant,
 not a stable import.
-`MolmoActConfig`: `server_url`, `endpoint`, `num_steps` (the wire field: the
+`ActServerConfig`: `server_url`, `endpoint`, `num_steps` (the wire field: the
 server's flow-matching denoising steps, *not* the chunk length),
 `action_horizon` (the checkpoint's advertised chunk length, 30 for the bimanual
 YAM tag; metadata only), `timeout_s`, `camera_order`, `state_key`,
-`cam_height/width`.
+`cam_height/width`, `name` (the policy label recorded in eval logs).
 
 Scalar knobs are settable from the CLI:
 `inspect-robots run -P server_url=http://gpu:8202 -E left_channel=can0 ...`.

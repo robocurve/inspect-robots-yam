@@ -1,7 +1,7 @@
 # inspect-robots-yam — agent guide
 
 Inspect Robots adapters that let evals (e.g. [KitchenBench](https://github.com/robocurve/kitchenbench))
-run on real **I2RT YAM bimanual arms** driven by **MolmoAct2**. This is a
+run on real **I2RT YAM bimanual arms** driven by `/act`-served policies. This is a
 **plugin package** in the Inspect Robots ecosystem — the framework lives in
 [inspect-robots](https://github.com/robocurve/inspect-robots); benchmarks are separate repos
 indexed by [WorldEvals](https://github.com/robocurve/worldevals).
@@ -9,11 +9,12 @@ indexed by [WorldEvals](https://github.com/robocurve/worldevals).
 ## The one big idea
 
 Inspect Robots evals swap two inputs: a `Policy` (VLA brain) and an `Embodiment` (robot
-body + world). We ship both for one real stack:
+body + world). We ship both sides for the YAM stack:
 
-- **`molmoact2` policy** — a thin HTTP client for MolmoAct2's first-party
-  bimanual-YAM `/act` server. The model runs in its own process (GPU + weights);
-  we never import torch here.
+- **`molmoact2` and `gr00t` policies** — a generic HTTP client for bimanual-YAM
+  `/act` servers, with distinct defaults and honest eval-log names. Models run
+  in their own processes (GPU + weights); the installable package never imports
+  torch.
 - **`yam_arms` embodiment** — the i2rt joint-position driver.
 
 Both declare the **same 14-D `joint_pos` contract** (2 arms × [6 joints +
@@ -46,7 +47,7 @@ gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
   D1; state the contract instead of restating the symbol name.
 - **mypy + numpy:** numpy 2.5's stubs use 3.12-only syntax that mypy (py3.10
   target) rejects; the dev extra pins `numpy<2.5` and CI runs mypy on 3.11.
-- **No torch.** The model lives in the MolmoAct2 server. The base dependencies
+- **No torch.** Models live in external `/act` servers. The base dependencies
   include `requests`, `json_numpy`, and OpenCV, but those modules remain lazily
   imported behind seams. The git-only `i2rt` driver is also loaded lazily and
   produces guided installation help when absent. The `import-hygiene` CI job
