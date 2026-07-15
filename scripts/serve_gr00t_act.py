@@ -11,13 +11,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-import json_numpy
 import numpy as np
-import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
-from gr00t.policy.gr00t_policy import Gr00tPolicy
-from huggingface_hub import snapshot_download
+import numpy.typing as npt
 
 EMBODIMENT_TAG = "new_embodiment"
 TOTAL_DIM = 14
@@ -58,6 +53,8 @@ def _resolve_model(model: str) -> Path:
     local = Path(model).expanduser()
     if local.exists():
         return local.resolve()
+    from huggingface_hub import snapshot_download  # type: ignore[import-not-found]
+
     return Path(snapshot_download(repo_id=model))
 
 
@@ -79,6 +76,9 @@ def _parse_camera_map(raw: str) -> dict[str, str]:
             "--camera-map source names must equal "
             f"{sorted(CLIENT_CAMERA_NAMES)}, got {sorted(sources)}"
         )
+    targets = [pair[1] for pair in pairs]
+    if len(set(targets)) != len(targets):
+        raise ValueError("--camera-map target names must be distinct")
     return dict(pairs)
 
 
@@ -119,7 +119,7 @@ def _validate_modality_configs(
         for part_slice in CANONICAL_SLICES.values()
         for index in range(part_slice.start, part_slice.stop)
     ]
-    if sorted(covered) != list(range(TOTAL_DIM)) or len(covered) != TOTAL_DIM:
+    if sorted(covered) != list(range(TOTAL_DIM)):
         raise ValueError("canonical state/action slices must exactly partition indices 0..13")
 
 
@@ -178,12 +178,16 @@ def _build_observation(
     video_t = len(video_config.delta_indices)
     state_t = len(state_config.delta_indices)
 
+    if "state" not in payload:
+        raise ValueError("/act request is missing field 'state'")
     state = np.asarray(payload["state"], dtype=np.float32)
     if state.shape != (TOTAL_DIM,):
         raise ValueError(f"state must have shape ({TOTAL_DIM},), got {state.shape}")
 
     video_observation: dict[str, Any] = {}
     for source, target in camera_map.items():
+        if source not in payload:
+            raise ValueError(f"/act request is missing field {source!r}")
         frame = np.asarray(payload[source], dtype=np.uint8)
         video_observation[target] = np.repeat(frame[None, None, ...], video_t, axis=1)
 
@@ -192,6 +196,8 @@ def _build_observation(
         part = state[CANONICAL_SLICES[key]]
         state_observation[key] = np.repeat(part[None, None, :], state_t, axis=1)
 
+    if "instruction" not in payload:
+        raise ValueError("/act request is missing field 'instruction'")
     instruction = str(payload["instruction"])
     language_observation = {key: [[instruction]] for key in language_config.modality_keys}
     return {
@@ -201,7 +207,7 @@ def _build_observation(
     }
 
 
-def _pack_actions(actions: Mapping[str, Any], action_keys: list[str]) -> np.ndarray:
+def _pack_actions(actions: Mapping[str, Any], action_keys: list[str]) -> npt.NDArray[np.float32]:
     """Scatter name-keyed GR00T actions into the canonical packed 14-D chunk."""
     if set(actions) != set(action_keys):
         raise ValueError(
@@ -224,24 +230,28 @@ def _create_app(
     camera_map: Mapping[str, str],
     model_label: str,
     dt_ms: float,
-) -> FastAPI:
+) -> Any:
     """Create the health and inference endpoints around one loaded policy."""
+    import json_numpy
+    from fastapi import Body, FastAPI  # type: ignore[import-not-found]
+    from fastapi.responses import JSONResponse, Response  # type: ignore[import-not-found]
+
     app = FastAPI()
     inference_lock = threading.Lock()
     num_steps_logged = False
     action_keys = list(modality_configs["action"].modality_keys)
 
-    @app.get("/act")
+    @app.get("/act")  # type: ignore[untyped-decorator]
     def health() -> dict[str, str]:
         """Report server health and the requested model id or path."""
         return {"status": "ok", "model": model_label}
 
-    @app.post("/act", response_model=None)
-    async def act(request: Request) -> Response:
+    @app.post("/act", response_model=None)  # type: ignore[untyped-decorator]
+    def act(body: bytes = Body(...)) -> Any:
         """Run one locked GR00T inference and return a packed action chunk."""
         nonlocal num_steps_logged
         try:
-            payload = await request.json()
+            payload = json.loads(body)
             if not isinstance(payload, dict):
                 raise ValueError("/act request body must be a JSON object")
             observation = _build_observation(payload, modality_configs, camera_map)
@@ -265,6 +275,10 @@ def _create_app(
 
 def main() -> None:
     """Load and validate the checkpoint, then serve its ``/act`` endpoints."""
+    import json_numpy
+    import uvicorn  # type: ignore[import-not-found]
+    from gr00t.policy.gr00t_policy import Gr00tPolicy  # type: ignore[import-not-found]
+
     logging.basicConfig(level=logging.INFO)
     json_numpy.patch()
     args = _parse_args()
