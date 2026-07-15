@@ -15,6 +15,7 @@ from inspect_robots.types import Action
 import inspect_robots_yam.embodiment as embodiment_module
 from inspect_robots_yam.config import DEFAULT_EEF_HOME_POSE, EEF_DIM_LABELS, YamConfig
 from inspect_robots_yam.embodiment import YAMEmbodiment, _default_kinematics_factory
+from inspect_robots_yam.operator import OperatorIO
 
 
 def _pose(position: Sequence[float] = (0.3, 0.0, 0.2)) -> np.ndarray:
@@ -162,6 +163,49 @@ def test_home_fk_must_start_inside_workspace_box() -> None:
     with pytest.raises(ValueError, match=r"left EEF home state.*workspace"):
         emb.reset(Scene(id="eef", instruction="move"))
     assert driver.commands == []
+
+
+def _build_attended(
+    left: FakeRawKinematics | None = None,
+) -> tuple[YAMEmbodiment, EchoDriver, list[tuple[str, int]]]:
+    """Attended EEF embodiment whose prompts are recorded with command counts."""
+    drv = EchoDriver()
+    prompt_calls: list[tuple[str, int]] = []
+
+    def _input(prompt: str) -> str:
+        prompt_calls.append((prompt, len(drv.commands)))
+        return ""
+
+    emb = YAMEmbodiment(
+        YamConfig(control_interface="eef_pos", rest_secs=0.1),
+        driver_factory=lambda _cfg: drv,
+        kinematics_factory=lambda _cfg: (left or FakeRawKinematics(), FakeRawKinematics()),
+        camera_reader=_cameras,
+        operator=OperatorIO(input_fn=_input, output_fn=lambda _message: None),
+        poll_end=lambda: False,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+        status_fn=lambda _message: None,
+    )
+    return emb, drv, prompt_calls
+
+
+def test_attended_eef_reset_gates_home_motion() -> None:
+    emb, drv, prompt_calls = _build_attended()
+    emb.reset(Scene(id="eef", instruction="move"))
+    stand_clear = [call for call in prompt_calls if "stand clear" in call[0]]
+    assert stand_clear == [
+        ("Arms will move to the home pose - stand clear, then press Enter...", 0)
+    ]
+    assert drv.commands  # homing ramp ran only after the gate
+
+
+def test_home_fk_failure_raises_before_stand_clear_prompt() -> None:
+    emb, drv, prompt_calls = _build_attended(left=FakeRawKinematics(pose=_pose((0.1, 0.0, 0.2))))
+    with pytest.raises(ValueError, match=r"left EEF home state.*workspace"):
+        emb.reset(Scene(id="eef", instruction="move"))
+    assert prompt_calls == []  # configuration errors fail fast, before any prompt
+    assert drv.commands == []
 
 
 @pytest.mark.parametrize(

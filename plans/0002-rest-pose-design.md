@@ -35,6 +35,9 @@ without a connected driver stays a no-op.
 > only happens after a pose was captured; a connection fault before capture
 > releases in place.
 
+> **Amended by plan 0007 (2026-07-15):** the factory rest tuple's gripper
+> slots are now open (1.0) and the park target equals the joint factory home.
+
 **Out of scope.** Capture tooling lives in the operator's run harness
 (`~/run_molmoact_yam.py --capture-rest-pose` writes `~/.yam_rest_pose.json`),
 not in this package: the package has no camera/TTY/file conventions, and the

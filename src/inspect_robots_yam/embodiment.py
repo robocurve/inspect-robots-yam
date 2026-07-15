@@ -43,6 +43,7 @@ from inspect_robots_yam._i2rt import (
 from inspect_robots_yam.config import (
     DEFAULT_CAMERAS,
     DEFAULT_EEF_HOME_POSE,
+    DEFAULT_JOINT_HOME_POSE,
     EEF_DIM_LABELS,
     YamConfig,
     action_box,
@@ -296,6 +297,10 @@ class YAMEmbodiment:
         self._right_kinematics: _ArmKinematics | None = None
         self._eef_home_validated = False
         self._init_pose: Vec | None = None
+        # Set only after the stand-clear prompt returns, so a gate fault
+        # (dead stdin) re-prompts on a retried reset instead of ramping
+        # unconfirmed; cleared on close() so every connection re-confirms.
+        self._home_gate_confirmed = False
         self._instruction: str | None = None
         self._t_last = 0.0
         self.num_steps = 0
@@ -362,15 +367,21 @@ class YAMEmbodiment:
                 packing.validate_dim(self._driver.get_joint_pos())
             )
         home_pose = self._home_pose()
-        if home_pose is not None:
-            if self._cfg.control_interface == "eef_pos" and not self._eef_home_validated:
-                self._validate_eef_home(np.clip(home_pose, self._cfg.low, self._cfg.high))
-                self._eef_home_validated = True
-            final_home_command = self._ramp_to(home_pose)
-        else:
-            final_home_command = self._norm_grippers(
-                packing.validate_dim(self._driver.get_joint_pos())
+        if self._cfg.control_interface == "eef_pos" and not self._eef_home_validated:
+            self._validate_eef_home(np.clip(home_pose, self._cfg.low, self._cfg.high))
+            self._eef_home_validated = True
+        if not self._cfg.unattended and not self._home_gate_confirmed:
+            self._operator.wait_ready(
+                "Arms will move to the home pose - stand clear, then press Enter..."
             )
+            self._home_gate_confirmed = True
+        if not self._cfg.unattended:
+            self._status("homing: ramping arms to start pose")
+        try:
+            final_home_command = self._ramp_to(home_pose)
+        finally:
+            if not self._cfg.unattended:
+                self._status(None)
         if self._cfg.control_interface == "eef_pos":
             left_kinematics, right_kinematics = self._require_kinematics()
             left_kinematics.seed(final_home_command[: packing.ARM_DOF])
@@ -466,9 +477,11 @@ class YAMEmbodiment:
                 self._driver.close()
             finally:
                 # Clear connection state even if the driver's own close()
-                # raises, so a later reset() reconnects and re-captures.
+                # raises, so a later reset() reconnects, re-captures, and
+                # re-confirms the stand-clear gate.
                 self._driver = None
                 self._init_pose = None
+                self._home_gate_confirmed = False
 
     def _ramp_to(self, target: Vec) -> Vec:
         """Linearly ramp from the current pose to ``target`` over ``rest_secs``.
@@ -507,14 +520,13 @@ class YAMEmbodiment:
             )
         return action_box(low=self._cfg.low, high=self._cfg.high)
 
-    def _home_pose(self) -> Vec | None:
-        """Select the configured joint home, with a mandatory EEF-mode default."""
+    def _home_pose(self) -> Vec:
+        """Select the configured joint home, defaulting per control interface."""
         if self._cfg.control_interface == "eef_pos":
             values = self._cfg.home_pose or DEFAULT_EEF_HOME_POSE
-            return np.asarray(values, dtype=np.float64)
-        if self._cfg.home_pose is None:
-            return None
-        return np.asarray(self._cfg.home_pose, dtype=np.float64)
+        else:
+            values = self._cfg.home_pose or DEFAULT_JOINT_HOME_POSE
+        return np.asarray(values, dtype=np.float64)
 
     def _construct_kinematics(self) -> None:
         """Construct per-arm wrappers and apply effective model/config limits."""

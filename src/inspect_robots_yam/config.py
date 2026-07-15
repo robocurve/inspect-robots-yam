@@ -43,12 +43,19 @@ _ARM_HIGH = (np.pi,) * ARM_DOF + (1.0,)
 _DEFAULT_LOW = _ARM_LOW * 2
 _DEFAULT_HIGH = _ARM_HIGH * 2
 
-# Operator-confirmed 2026-07-14 against two physical captures of a YAM pair at
-# rest: all joint readings were within 0.09 rad of encoder zero, with both
-# grippers reading 0.0 — the closed end of the stroke (wire 0 = closed; the
-# original capture note said "open" under the pre-0005 inverted doc convention).
-# Assumes standard upright mounting; exotic mounts override this pose per rig.
-DEFAULT_REST_POSE: tuple[float, ...] = (0.0,) * TOTAL_DIM
+# Dataset-verified MolmoAct2-BimanualYAM start pose (2,260 episodes,
+# 2026-07-14 audit): joints within noise of encoder zero, both grippers open
+# in effectively every episode start. Joints match the physically captured
+# rest; the gripper slots are commanded open (1.0) rather than the captured
+# closed reading so episodes begin in the training distribution.
+# Assumes standard upright mounting; exotic mounts override per rig.
+_JOINT_HOME_ARM = (0.0,) * ARM_DOF + (1.0,)
+DEFAULT_JOINT_HOME_POSE: tuple[float, ...] = _JOINT_HOME_ARM * 2
+
+# Park target == home target: the next episode starts in distribution with
+# no gripper re-open transient. (Torque release after parking still lets
+# the arms sag slightly, and reset always re-runs the homing ramp.)
+DEFAULT_REST_POSE: tuple[float, ...] = DEFAULT_JOINT_HOME_POSE
 
 # Conservative default per-step displacement limits for joints_are_delta mode:
 # 0.2 rad per joint per step, a full normalized stroke per gripper per step.
@@ -135,7 +142,9 @@ class YamConfig(_FromKwargs):
     osc_reversals: int = 2
     osc_window: int = 6
     osc_hold_steps: int = 10
-    # Optional reset target; gripper slots are normalized 0-1 (1 = open).
+    # Reset target; None selects the per-mode factory default
+    # (DEFAULT_JOINT_HOME_POSE / DEFAULT_EEF_HOME_POSE).
+    # Gripper slots are normalized 0-1 (1 = open).
     home_pose: tuple[float, ...] | None = None
     # Pose used to park on close() after reset() captures the initial pose. None
     # opts out of the factory target and parks at that captured pose instead.

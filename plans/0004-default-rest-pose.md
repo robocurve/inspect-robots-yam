@@ -27,6 +27,11 @@ canonical resting pose, and the setup wizard never prompts for one (#43).
 The canonical rest pose is all zeros: every joint at encoder zero, both
 grippers 0.0 = open.
 
+> **Amended by plan 0007 (2026-07-15):** the factory rest tuple now uses open
+> gripper slots (1.0), and the park target equals the joint factory home. The
+> operator-confirmed finding that the resting joints are at encoder zero still
+> stands.
+
 ```
 0,0,0,0,0,0,0,0,0,0,0,0,0,0
 ```

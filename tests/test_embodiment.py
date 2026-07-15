@@ -9,11 +9,15 @@ from typing import NoReturn
 import numpy as np
 import pytest
 from inspect_robots.embodiment import SELF_PACED
-from inspect_robots.errors import ConfigError
+from inspect_robots.errors import ConfigError, EmbodimentFault
 from inspect_robots.scene import Scene
 from inspect_robots.types import Action
 
-from inspect_robots_yam.config import DEFAULT_REST_POSE, YamConfig
+from inspect_robots_yam.config import (
+    DEFAULT_JOINT_HOME_POSE,
+    DEFAULT_REST_POSE,
+    YamConfig,
+)
 from inspect_robots_yam.embodiment import YAMEmbodiment
 from inspect_robots_yam.operator import OperatorIO
 
@@ -47,9 +51,17 @@ def _cameras(_cfg):
     return {"top_cam": img, "left_cam": img, "right_cam": img}
 
 
-def _operator(answers: list[str] | None = None) -> OperatorIO:
-    seq = list(answers or [""])
-    return OperatorIO(input_fn=lambda _p: seq.pop(0), output_fn=lambda _m: None)
+def _operator(answers: list[str] | None = None, *, prompts: list[str] | None = None) -> OperatorIO:
+    seq = list(answers or [])
+
+    def _input(prompt: str) -> str:
+        if prompts is not None:
+            prompts.append(prompt)
+        if "succeed" not in prompt:
+            return ""
+        return seq.pop(0)
+
+    return OperatorIO(input_fn=_input, output_fn=lambda _m: None)
 
 
 def _build(
@@ -108,10 +120,15 @@ def test_reset_returns_observation_and_homes() -> None:
     assert home_cmd[13] == pytest.approx(19.0)
 
 
-def test_reset_without_home_pose_issues_no_command() -> None:
-    emb, drv, _ = _build()
+def test_reset_without_home_pose_ramps_to_factory_joint_home() -> None:
+    state = np.zeros(14)
+    state[[6, 13]] = 20.0
+    cfg = YamConfig(rest_secs=0.1, gripper_open=10.0, gripper_closed=20.0)
+    emb, drv, _ = _build(cfg, driver=FakeDriver(state=state))
     emb.reset(Scene(id="s", instruction="x"))
-    assert drv.commands == []
+    expected = np.asarray(DEFAULT_JOINT_HOME_POSE).copy()
+    expected[[6, 13]] = cfg.gripper_open
+    assert drv.commands[-1] == pytest.approx(expected)
 
 
 def test_step_clamps_to_limits() -> None:
@@ -171,8 +188,9 @@ def test_gripper_driver_open_endpoint_observes_as_wire_one() -> None:
 def test_gripper_default_calibration_is_identity_both_directions() -> None:
     state = np.zeros(14)
     state[6] = state[13] = 0.35
+    home = (0.0,) * 6 + (0.35,) + (0.0,) * 6 + (0.35,)
     drv = EchoDriver(state=state)
-    emb, _, _ = _build(driver=drv)
+    emb, _, _ = _build(YamConfig(home_pose=home, rest_secs=0.1), driver=drv)
 
     observation = emb.reset(Scene(id="s", instruction="x"))
     assert observation.state["joint_pos"][6] == pytest.approx(0.35)
@@ -259,7 +277,7 @@ def test_reset_twice_reuses_driver() -> None:
         YamConfig(),
         driver_factory=_factory,
         camera_reader=_cameras,
-        operator=_operator(["", ""]),
+        operator=_operator(),
         poll_end=lambda: False,
         sleep_fn=lambda _d: None,
         clock=lambda: 0.0,
@@ -270,7 +288,7 @@ def test_reset_twice_reuses_driver() -> None:
 
 
 def test_step_terminates_success_on_operator_yes() -> None:
-    emb, _, _ = _build(poll_end_seq=[True], operator=_operator(["", "y"]))
+    emb, _, _ = _build(poll_end_seq=[True], operator=_operator(["y"]))
     emb.reset(Scene(id="s", instruction="x"))
     result = emb.step(Action(data=np.zeros(14)))
     assert result.terminated is True
@@ -279,11 +297,14 @@ def test_step_terminates_success_on_operator_yes() -> None:
 
 
 def test_step_terminates_failure_on_operator_no() -> None:
-    emb, _, _ = _build(poll_end_seq=[True], operator=_operator(["", "n"]))
+    prompts: list[str] = []
+    emb, _, _ = _build(poll_end_seq=[True], operator=_operator(["n"], prompts=prompts))
     emb.reset(Scene(id="s", instruction="x"))
     result = emb.step(Action(data=np.zeros(14)))
     assert result.terminated is True
     assert result.termination_reason == "failure"
+    assert result.info["operator_confirmed"] is False
+    assert sum("succeed" in prompt for prompt in prompts) == 1
 
 
 def test_step_continues_when_no_end_signal() -> None:
@@ -305,8 +326,10 @@ def test_pacing_skipped_when_hz_zero() -> None:
     cfg = YamConfig(control_hz=0.0)
     emb, _, sleeps = _build(cfg)
     emb.reset(Scene(id="s", instruction="x"))
+    reset_sleeps = sleeps.copy()
+    assert reset_sleeps
     emb.step(Action(data=np.zeros(14)))
-    assert sleeps == []  # no sleep attempted at hz=0
+    assert sleeps == reset_sleeps  # the step adds no pacing sleep at hz=0
 
 
 def test_close_idempotent_and_releases() -> None:
@@ -374,6 +397,76 @@ def test_unattended_skips_operator_prompts() -> None:
     assert result.terminated is False  # the end poll is skipped entirely
 
 
+def test_first_attended_reset_gates_home_motion_once_per_connection() -> None:
+    drv = EchoDriver()
+    prompt_calls: list[tuple[str, int]] = []
+
+    def _input(prompt: str) -> str:
+        prompt_calls.append((prompt, len(drv.commands)))
+        return ""
+
+    emb, _, _ = _build(
+        YamConfig(rest_secs=0.1),
+        driver=drv,
+        operator=OperatorIO(input_fn=_input, output_fn=lambda _message: None),
+    )
+    scene = Scene(id="s", instruction="x")
+    emb.reset(scene)
+    emb.reset(scene)
+
+    stand_clear_calls = [call for call in prompt_calls if "stand clear" in call[0]]
+    assert stand_clear_calls == [
+        ("Arms will move to the home pose - stand clear, then press Enter...", 0)
+    ]
+    assert len(drv.commands) == 2
+
+
+def test_gate_fault_reprompts_before_motion_on_retried_reset() -> None:
+    drv = EchoDriver()
+    prompts: list[str] = []
+
+    def _input(prompt: str) -> str:
+        prompts.append(prompt)
+        if "stand clear" in prompt and sum("stand clear" in p for p in prompts) == 1:
+            raise EOFError
+        return ""
+
+    emb, _, _ = _build(
+        YamConfig(rest_secs=0.1),
+        driver=drv,
+        operator=OperatorIO(input_fn=_input, output_fn=lambda _message: None),
+    )
+    scene = Scene(id="s", instruction="x")
+    with pytest.raises(EmbodimentFault):
+        emb.reset(scene)
+    assert drv.commands == []  # the gate fault preceded any motion
+    emb.reset(scene)
+    assert sum("stand clear" in p for p in prompts) == 2  # retry re-confirmed
+    assert drv.commands  # and only then homed
+
+
+def test_close_then_reset_reprompts_stand_clear_per_connection() -> None:
+    drv = EchoDriver()
+    prompt_calls: list[tuple[str, int]] = []
+
+    def _input(prompt: str) -> str:
+        prompt_calls.append((prompt, len(drv.commands)))
+        return ""
+
+    emb, _, _ = _build(
+        YamConfig(rest_secs=0.1),
+        driver=drv,
+        operator=OperatorIO(input_fn=_input, output_fn=lambda _message: None),
+    )
+    emb.reset(Scene(id="a", instruction="x"))
+    emb.close()
+    commands_after_park = len(drv.commands)
+    emb.reset(Scene(id="b", instruction="x"))
+    stand_clear_counts = [count for prompt, count in prompt_calls if "stand clear" in prompt]
+    # One prompt per connection, each before that connection's first motion.
+    assert stand_clear_counts == [0, commands_after_park]
+
+
 def test_default_camera_reader_not_implemented() -> None:
     from inspect_robots_yam.embodiment import _default_camera_reader
 
@@ -382,17 +475,18 @@ def test_default_camera_reader_not_implemented() -> None:
 
 
 def test_close_ramps_to_rest_pose_then_releases() -> None:
-    # 2 s at 10 Hz -> 20 waypoints from 0 to the rest pose, then torque-off.
+    # Reset and close each issue 20 waypoints at 10 Hz.
     cfg = YamConfig(rest_pose=(0.5,) * 14, rest_secs=2.0)
     drv = EchoDriver()
     emb, _, sleeps = _build(cfg, driver=drv)
     emb.reset(Scene(id="s", instruction="x"))
     emb.close()
-    assert len(drv.commands) == 20
-    assert drv.commands[-1] == pytest.approx(np.full(14, 0.5))
-    j0 = [c[0] for c in drv.commands]
+    assert len(drv.commands) == 40
+    park_commands = drv.commands[20:]
+    assert park_commands[-1] == pytest.approx(np.full(14, 0.5))
+    j0 = [c[0] for c in park_commands]
     assert all(b >= a for a, b in itertools.pairwise(j0))  # monotonic ramp, no jump
-    assert drv.commands[0][0] == pytest.approx(0.5 / 20)  # first step is 1/n of the way
+    assert park_commands[0][0] == pytest.approx(0.5 / 20)  # first step is 1/n of the way
     assert drv.closed is True
     assert sleeps[-1] == pytest.approx(0.1)  # paced at 1/control_hz
 
@@ -487,7 +581,7 @@ def test_close_parks_at_first_reset_pose_across_episodes() -> None:
     init_pose = np.full(14, 0.2)
     drv = EchoDriver(state=init_pose.copy())
     cfg = YamConfig(rest_pose=None, rest_secs=0.2)
-    emb, _, _ = _build(cfg, driver=drv, operator=_operator(["", ""]))
+    emb, _, _ = _build(cfg, driver=drv, operator=_operator())
     emb.reset(Scene(id="a", instruction="x"))
     emb.step(Action(data=np.full(14, 0.8)))
     emb.reset(Scene(id="b", instruction="x"))  # starts at 0.8, must not re-capture
@@ -561,7 +655,7 @@ def test_failed_driver_close_still_clears_connection_state() -> None:
     pose_b = np.full(14, 0.4)
     drv = FaultyClose(state=pose_a.copy())
     cfg = YamConfig(rest_pose=None, rest_secs=0.2)
-    emb, _, _ = _build(cfg, driver=drv, operator=_operator(["", ""]))
+    emb, _, _ = _build(cfg, driver=drv, operator=_operator())
     emb.reset(Scene(id="s", instruction="x"))
     with pytest.raises(RuntimeError, match="teardown"):
         emb.close()
@@ -584,7 +678,7 @@ def test_reconnect_after_close_recaptures_init_pose() -> None:
     pose_b = np.full(14, 0.4)
     drv = EchoDriver(state=pose_a.copy())
     cfg = YamConfig(rest_pose=None, rest_secs=0.2)
-    emb, _, _ = _build(cfg, driver=drv, operator=_operator(["", ""]))
+    emb, _, _ = _build(cfg, driver=drv, operator=_operator())
     emb.reset(Scene(id="a", instruction="x"))
     emb.close()
     drv.state = pose_b.copy()
@@ -625,12 +719,17 @@ def test_close_connected_before_pose_capture_only_releases(cfg: YamConfig) -> No
 
 def test_close_rest_fault_still_releases_driver() -> None:
     class FaultyDriver(FakeDriver):
+        fail_commands = False
+
         def command_joint_pos(self, target: np.ndarray) -> None:
-            raise RuntimeError("CAN fault")
+            if self.fail_commands:
+                raise RuntimeError("CAN fault")
+            super().command_joint_pos(target)
 
     drv = FaultyDriver()
     emb, _, _ = _build(YamConfig(rest_pose=(0.0,) * 14), driver=drv)
     emb.reset(Scene(id="s", instruction="x"))
+    drv.fail_commands = True
     with pytest.raises(RuntimeError, match="CAN fault"):
         emb.close()
     assert drv.closed is True  # handles released despite the fault
@@ -642,7 +741,7 @@ def test_close_rest_pose_zero_hz_falls_back_to_10hz() -> None:
     emb, drv, _ = _build(cfg)
     emb.reset(Scene(id="s", instruction="x"))
     emb.close()
-    assert len(drv.commands) == 10  # 1 s at the 10 Hz fallback
+    assert len(drv.commands) == 20  # reset and close each use the 10 Hz fallback
 
 
 def _build_with_status(cfg: YamConfig | None = None, poll_end_seq: list[bool] | None = None):
@@ -653,7 +752,7 @@ def _build_with_status(cfg: YamConfig | None = None, poll_end_seq: list[bool] | 
         cfg or YamConfig(),
         driver_factory=lambda _c: drv,
         camera_reader=_cameras,
-        operator=_operator(["", "y"]),
+        operator=_operator(["y"]),
         poll_end=lambda: polls.pop(0) if polls else False,
         sleep_fn=lambda _s: None,
         clock=lambda: 0.0,
@@ -667,8 +766,9 @@ def test_reset_announces_run_instructions() -> None:
         cfg = YamConfig(max_steps_hint=1200)
     emb, status = _build_with_status(cfg)
     emb.reset(Scene(id="s", instruction="x"))
-    assert len(status) == 1
-    msg = status[0]
+    assert len(status) == 3
+    assert status[:2] == ["homing: ramping arms to start pose", None]
+    msg = status[-1]
     assert msg is not None
     assert "any key" in msg and "y/N" in msg  # how to end + how scoring works
     assert "120s" in msg  # horizon from max_steps_hint / control_hz
@@ -679,9 +779,10 @@ def test_status_line_updates_once_per_second_with_horizon() -> None:
         cfg = YamConfig(max_steps_hint=1200)
     emb, status = _build_with_status(cfg)
     emb.reset(Scene(id="s", instruction="x"))
+    reset_entries = len(status)
     for _ in range(25):  # 2.5 s at 10 Hz
         emb.step(Action(data=np.zeros(14)))
-    updates = [m for m in status[1:] if m is not None]
+    updates = [m for m in status[reset_entries:] if m is not None]
     assert len(updates) == 2  # at steps 10 and 20
     assert "1s / 120s" in updates[0]
     assert "2s / 120s" in updates[1]
@@ -691,9 +792,10 @@ def test_status_line_updates_once_per_second_with_horizon() -> None:
 def test_status_line_without_hint_shows_elapsed_only() -> None:
     emb, status = _build_with_status()
     emb.reset(Scene(id="s", instruction="x"))
+    reset_entries = len(status)
     for _ in range(10):
         emb.step(Action(data=np.zeros(14)))
-    updates = [m for m in status[1:] if m is not None]
+    updates = [m for m in status[reset_entries:] if m is not None]
     assert updates and "1s" in updates[0] and "/" not in updates[0].split("|")[0]
 
 
@@ -723,14 +825,23 @@ class _Envelope:
     max_steps: int
 
 
+def _running_status(status: list[str | None]) -> str:
+    matches = [
+        message for message in status if message is not None and message.startswith("Running:")
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
 def test_bind_task_drives_the_countdown_horizon() -> None:
     emb, status = _build_with_status()
     emb.bind_task(_Envelope(name="adhoc", max_steps=1200))
     emb.reset(Scene(id="s", instruction="x"))
-    assert status[0] is not None and "Max 120s." in status[0]
+    assert "Max 120s." in _running_status(status)
+    reset_entries = len(status)
     for _ in range(10):
         emb.step(Action(data=np.zeros(14)))
-    updates = [m for m in status[1:] if m is not None]
+    updates = [m for m in status[reset_entries:] if m is not None]
     assert updates and "1s / 120s" in updates[0]
 
 
@@ -740,8 +851,9 @@ def test_bound_horizon_wins_over_deprecated_hint() -> None:
     emb, status = _build_with_status(cfg)
     emb.bind_task(_Envelope(name="adhoc", max_steps=1200))
     emb.reset(Scene(id="s", instruction="x"))
-    assert status[0] is not None and "Max 120s." in status[0]
-    assert "Max 10s." not in status[0]
+    running = _running_status(status)
+    assert "Max 120s." in running
+    assert "Max 10s." not in running
 
 
 def test_rebind_latest_envelope_wins() -> None:
@@ -749,7 +861,7 @@ def test_rebind_latest_envelope_wins() -> None:
     emb.bind_task(_Envelope(name="first", max_steps=100))
     emb.bind_task(_Envelope(name="second", max_steps=1200))
     emb.reset(Scene(id="s", instruction="x"))
-    assert status[0] is not None and "Max 120s." in status[0]
+    assert "Max 120s." in _running_status(status)
 
 
 def test_close_clears_the_bound_horizon() -> None:
@@ -759,7 +871,7 @@ def test_close_clears_the_bound_horizon() -> None:
     emb.bind_task(_Envelope(name="stale", max_steps=1200))
     emb.close()
     emb.reset(Scene(id="s", instruction="x"))
-    assert status[0] is not None and "Max" not in status[0]
+    assert "Max" not in _running_status(status)
 
 
 def test_real_envelope_shape_satisfies_the_protocol() -> None:

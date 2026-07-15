@@ -238,12 +238,14 @@ set. `eef_low` and `eef_high` override all ten bounds. The observation keeps
 the 14-D `joint_pos` field for logging and adds the command-aligned 10-D
 `eef_state` field.
 
-In EEF mode, `home_pose=None` selects the mandatory
-`DEFAULT_EEF_HOME_POSE` instead of skipping homing. Its provisional per-arm
-joints are `[-0.024, 0.794, 0.645, -0.375, -0.021, -0.012]`, with both
-grippers open. The first reset validates that the configured home FK lies in
-the workspace box before moving, then captures each arm's yaw reference after
-homing.
+In both control interfaces, `home_pose=None` selects a mandatory per-mode
+factory default instead of skipping homing. Joint mode uses the
+dataset-verified `DEFAULT_JOINT_HOME_POSE`, with every joint at encoder zero
+and both grippers open. EEF mode uses `DEFAULT_EEF_HOME_POSE`; its provisional
+per-arm joints are `[-0.024, 0.794, 0.645, -0.375, -0.021, -0.012]`, with both
+grippers open. The first EEF reset validates that the configured home FK lies
+in the workspace box before moving, then captures each arm's yaw reference
+after homing.
 
 > [!WARNING]
 > EEF mode has no arm-table or arm-arm collision checking. The workspace box,
@@ -270,14 +272,16 @@ homing.
 > file an issue with the numbers. Keep a hand on the e-stop for the first
 > runs.
 
-YAM ships with a factory resting pose at encoder zero for every joint and 0.0
-(the closed end of the stroke) for both grippers, so standard upright rigs end
-with a gentle 3-second park instead of going limp mid-air. Override it per rig when needed. Pose fields
-accept comma-separated values from the CLI and config.ini:
+YAM ships with a factory resting pose at encoder zero for every joint and 1.0
+(open) for both grippers. It equals the joint-mode factory home, so standard
+upright rigs end with a gentle 3-second park and the next episode begins with
+open grippers. Override it per rig when needed. Pose fields accept
+comma-separated values from the CLI and config.ini. For example, a per-rig
+rest target can retain measured joint offsets while parking open:
 
 ```ini
 [embodiment.args]
-rest_pose = -0.002,0.002,0.002,-0.089,0.007,-0.026,0.0,-0.006,0.002,0.001,-0.087,-0.007,-0.019,0.0
+rest_pose = -0.002,0.002,0.002,-0.089,0.007,-0.026,1.0,-0.006,0.002,0.001,-0.087,-0.007,-0.019,1.0
 ```
 
 Set `rest_pose = none` to opt out of the factory target and park at the pose
@@ -307,8 +311,11 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
   mode yet (tracked as a known issue). EEF mode applies a 0.2-rad-per-joint
   per-step IK backstop, but a six-joint branch transit can still move the EEF
   tens of centimetres because rate-clamped intermediate configurations are not
-  IK solutions. Stand clear when the episode starts, and set `home_pose` so
-  episodes begin from a validated start state.
+  IK solutions. Reset always moves the arms through the full homing ramp, and
+  every mode has a factory home. Attended runs issue a stand-clear prompt
+  before the first homing ramp of each connection. Stand clear when the
+  episode starts, and use `home_pose` as the per-rig override when the factory
+  start is not validated for your setup.
 - **EEF reachability and collision limits.** Iteration-cap non-convergence uses
   the solver's finite last iterate as best effort, and the next `eef_state`
   reports the true result. IK branch flips are joint-rate-clamped and repeated
@@ -318,18 +325,19 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
   `z_min=0.03` leaves only about 19 mm nominal fingertip clearance over a table
   at the arm-base plane, less up to 5 mm of IK error.
 - **Park pose must rest under gravity.** On close, the arms ramp back to an
-  explicit per-rig `rest_pose` or the factory all-zero target, and torque is
-  released once the ramp finishes. Set `rest_pose=none` to opt out and fall
-  back to the pose captured at the first reset. Verify that the factory target
-  is a supported resting pose on your rig, or start runs (or set `rest_pose`)
-  with the arms in one, not held mid-air: whatever pose the park ends in is the
-  pose the arms go limp from. The park path is not collision-checked, so keep
-  the workspace clear at episode end. The default parks with both grippers
-  closed (wire 0), so anything still held stays gripped at park: clear the
-  grippers before ending the run, or park open with a per-rig `rest_pose`
-  whose gripper slots are 1.0. Override `rest_pose` on rigs
-  whose joint limits exclude zero, since the park target is clamped through the
-  same per-joint box as every command.
+  explicit per-rig `rest_pose` or the factory zero-joint, open-gripper target,
+  and torque is released once the ramp finishes. Set `rest_pose=none` to opt
+  out and fall back to the pose captured at the first reset. Verify that the
+  factory target is a supported resting pose on your rig, or start runs (or set
+  `rest_pose`) with the arms in one, not held mid-air: whatever pose the park
+  ends in is the pose the arms go limp from. The park path is not
+  collision-checked, so keep the workspace clear at episode end. The default
+  parks with both grippers open (wire 1), so parking releases anything still
+  held during the ramp, wherever the arms happen to be. Rigs that must keep an
+  object gripped at park should override `rest_pose` with gripper slots 0.0.
+  Override both `home_pose` and `rest_pose` on rigs whose joint limits exclude
+  zero, since both targets are clamped through the same per-joint box as every
+  command.
 - **Absolute vs. delta joints: verify first.** MolmoAct2's YAM `actions` are
   treated as *absolute* joint targets by default. If your checkpoint emits
   deltas, set `YamConfig(joints_are_delta=True)` (the embodiment converts to
@@ -388,11 +396,12 @@ would break the 14-D packing and are rejected), `control_hz`, `cam_height/width`
 `joint_low/high`, `control_interface` (`joints` by default or `eef_pos`),
 `eef_low/high`, `ik_max_iters`, `ik_step_joint_limit`,
 `cmd_resync_threshold`, `osc_deadband`, `osc_reversals`, `osc_window`,
-`osc_hold_steps`, `home_pose` (reset ramps here smoothly over `rest_secs`; in
-EEF mode `none` selects `DEFAULT_EEF_HOME_POSE`), `rest_pose` (close park
-target; defaults to the factory all-zero pose, accepts a per-rig override, and
-accepts `none` to fall back to the pose captured at the first reset before
-torque is released),
+`osc_hold_steps`, `home_pose` (reset always ramps here smoothly over
+`rest_secs`; `none` selects `DEFAULT_JOINT_HOME_POSE` in joint mode or
+`DEFAULT_EEF_HOME_POSE` in EEF mode), `rest_pose` (close park target; defaults
+to the factory zero-joint, open-gripper pose equal to the joint factory home,
+accepts a per-rig override, and accepts `none` to fall back to the pose captured
+at the first reset before torque is released),
 `rest_secs` (ramp duration, default 3.0), `gripper_open/closed`,
 `joints_are_delta`, `zero_gravity_mode` (default `True`; see *Safety*),
 `unattended` (default `False`; skip operator prompts),
