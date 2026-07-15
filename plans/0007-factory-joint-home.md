@@ -1,7 +1,7 @@
 # 0007: Factory default joints-mode home pose
 
 Issue: robocurve/inspect-robots-yam#51
-Status: draft
+Status: approved (4-round critique, 2026-07-15)
 
 ## Problem
 
@@ -30,9 +30,9 @@ Give joints mode the same treatment EEF mode already has:
 1. `DEFAULT_JOINT_HOME_POSE`: zero joints, grippers open, per arm
    `(0, 0, 0, 0, 0, 0, 1.0)`, doubled for both arms. `_home_pose()` falls back
    to it when `home_pose is None` in joints mode.
-2. No opt-out. `_home_pose()` never returns `None`; the no-ramp else-branch in
-   `reset()` (now unreachable except as the joints-mode no-home path being
-   removed) goes away. This matches EEF mode, where the default is mandatory.
+2. No opt-out. `_home_pose()` never returns `None`, so the no-ramp
+   else-branch in `reset()` loses its only trigger and is deleted. This
+   matches EEF mode, where the default is mandatory.
 3. Park == home: `DEFAULT_REST_POSE` becomes the same tuple (gripper slots
    change from 0.0 to 1.0). The next episode starts in distribution with no
    gripper re-open transient. (Not "motionless back-to-back starts": `close()`
@@ -171,10 +171,13 @@ Field semantics that do NOT change:
     `["", "n"]`) keeps passing vacuously with the "n" never reaching
     `confirm_success`. Make the fake prompt-aware instead: ready/stand-clear
     prompts (any prompt that is not the success prompt) consume nothing and
-    return `""`; only the "Did the robot succeed" prompt pops from the
-    scripted answers. Scripts then read as verdict sequences and are immune
-    to prompt-count changes. Verify the "n" test actually exercises
-    `confirm_success` afterward (no vacuous pass).
+    return `""`; only the success prompt pops from the scripted answers,
+    keyed on a stable substring (`"succeed" in prompt`), so future prompt
+    copy edits fail loudly. Scripts then read as verdict sequences and are
+    immune to prompt-count changes; existing scripts drop their `""` ready
+    placeholders (`["", "y"]` becomes `["y"]`, `["", "n"]` becomes `["n"]`).
+    Verify the "n" test actually exercises `confirm_success` afterward (no
+    vacuous pass).
   - New: attended first-connect gate ordering test. With a scripted
     `OperatorIO` whose `input_fn` records prompts, the first `reset()`
     issues the stand-clear prompt (matched by prompt text) before the driver
