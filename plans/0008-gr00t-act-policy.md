@@ -156,16 +156,28 @@ Implementation contract (verified against the cached Isaac-GR00T checkout,
   video keys, default `base_view, left_wrist_view, right_wrist_view`,
   overridable via `--camera-map top_cam:base_view,...` for future
   checkpoints.
-- State: split the packed 14-D vector by the checkpoint's state modality keys
-  using this repo's layout (`left_arm [0:6]`, `left_gripper [6:7]`,
-  `right_arm [7:13]`, `right_gripper [13:14]`). Derive slice widths from the
-  checkpoint's `statistics.json`/modality config where possible; assert the
-  widths sum to 14 and fail at startup, not per-request.
-- Action: `get_action` returns a **tuple** — `actions, _info =
+- State and action mapping is **name-keyed, never order-keyed**. A
+  width-only check would let a checkpoint whose modality-config lists keys as
+  `right_arm, right_gripper, left_arm, left_gripper` pass validation and
+  silently swap the arms on real hardware. The shim owns one canonical map,
+  `{"left_arm": slice(0, 6), "left_gripper": slice(6, 7),
+  "right_arm": slice(7, 13), "right_gripper": slice(13, 14)}` (this repo's
+  packed layout, `packing.py` DIM_LABELS). At startup: every state and
+  action modality key from `get_modality_config()` must be present in the
+  map (hard-fail on unrecognized names) and its width from the checkpoint's
+  stats must equal the slice width. Per request: fill each state key from
+  its named slice; scatter each returned action key into its named slice of
+  a `(T, 14)` buffer. Modality-config order is never load-bearing.
+- Action return: `get_action` returns a **tuple** — `actions, _info =
   policy.get_action(observation)` with `actions: {key: (1, T, D) float32}`
-  (`BasePolicy.get_action` → `return action, info`); concatenate the action
-  keys in modality-config order along `D` → `(T, 14)`, assert width 14 at
-  startup against the same layout.
+  (`BasePolicy.get_action` → `return action, info`).
+- Fail at startup, not per-request: also assert
+  `len(delta_indices) == 1` for the video and state modalities (a
+  frame-history checkpoint is unservable by this stateless shim and must be
+  rejected at load, not as opaque per-request 500s), and assert the
+  camera-map target set equals `get_modality_config()["video"].modality_keys`
+  (a `--camera-map` typo must fail at startup with the valid key list, not
+  500 on every request with a GR00T-internal message).
 - `dt_ms`: `--dt-ms` flag, default `0.0` (client maps falsy → "no advertised
   rate", so the embodiment paces itself). Do not guess the trained rate.
 - FastAPI + `json_numpy.patch()`, single-request lock around inference (same
