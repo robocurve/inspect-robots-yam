@@ -462,13 +462,23 @@ def test_close_parks_at_pre_home_pose_when_home_pose_configured() -> None:
     assert drv.closed is True
 
 
-def test_close_after_mid_reset_fault_parks_at_captured_init_pose() -> None:
+@pytest.mark.parametrize(
+    ("rest_pose", "expected_park"),
+    [
+        (None, np.full(14, 0.2)),
+        (DEFAULT_REST_POSE, np.asarray(DEFAULT_REST_POSE)),
+    ],
+    ids=["opt-out-captured-init", "factory-default"],
+)
+def test_close_after_mid_reset_fault_parks(
+    rest_pose: tuple[float, ...] | None, expected_park: np.ndarray
+) -> None:
     def _camera_fault(_cfg: YamConfig) -> NoReturn:
         raise RuntimeError("camera open fault")
 
     init_pose = np.full(14, 0.2)
     drv = EchoDriver(state=init_pose.copy())
-    cfg = YamConfig(rest_pose=None, home_pose=(0.6,) * 14, rest_secs=0.2)
+    cfg = YamConfig(rest_pose=rest_pose, home_pose=(0.6,) * 14, rest_secs=0.2)
     emb = YAMEmbodiment(
         cfg,
         driver_factory=lambda _cfg: drv,
@@ -484,7 +494,7 @@ def test_close_after_mid_reset_fault_parks_at_captured_init_pose() -> None:
     emb.close()
 
     park_commands = drv.commands[command_count:]
-    assert park_commands[-1] == pytest.approx(init_pose)
+    assert park_commands[-1] == pytest.approx(expected_park)
     assert drv.closed is True
 
 
@@ -550,8 +560,14 @@ def test_close_before_connect_skips_rest_motion() -> None:
     ids=["factory-default", "explicit-override"],
 )
 def test_close_connected_before_pose_capture_only_releases(cfg: YamConfig) -> None:
-    emb, drv, _ = _build(cfg)
-    emb._driver = drv  # simulate a connection fault before reset captures its pose
+    class CaptureFault(FakeDriver):
+        def get_joint_pos(self) -> np.ndarray:
+            raise RuntimeError("encoder read fault")
+
+    drv = CaptureFault()
+    emb, _, _ = _build(cfg, driver=drv)
+    with pytest.raises(RuntimeError, match="encoder read fault"):
+        emb.reset(Scene(id="s", instruction="x"))
     emb.close()
     assert drv.commands == []
     assert drv.closed is True
