@@ -14,12 +14,13 @@ wiring; do not re-litigate the channel design.
 - New config key `docs_extra: str = ""` (embodiment arg, reachable via
   `-E docs_extra="…"` and config.ini): operator-supplied rig-specific notes
   (e.g. how the two arm bases are mounted relative to each other and the
-  table). When non-empty, appended to the built-in text separated by one
-  blank line, verbatim (may contain braces). The built-in text stays
-  rig-agnostic.
-- Raise the `inspect-robots` lower bound to the core release carrying
-  `EmbodimentInfo.docs` (constructing `EmbodimentInfo(docs=…)` raises
-  TypeError on older cores).
+  table). When non-empty after stripping outer whitespace, the stripped text
+  is appended to the built-in text separated by one blank line, with no other
+  transformation (it may contain braces; nothing passes through str.format).
+  The built-in text stays rig-agnostic.
+- Raise the `inspect-robots` lower bound to `>=0.12` (the release carrying
+  `EmbodimentInfo.docs`; constructing `EmbodimentInfo(docs=…)` raises
+  TypeError on older cores). Cut a yam minor release after merge.
 - Tests per core plan 0016 §4 "YAM plugin" bullets.
 
 ## 2. Content ground truth
@@ -30,12 +31,17 @@ sign-verified by FK probes on 2026-07-15; hardware motor
 `directions: [1,1,1,1,1,1]` makes model signs match hardware. Label naming
 and gripper polarity must additionally match this repo's code
 (`packing.py` DIM_LABELS / `config.py` EEF labels; `embodiment.py`
-`_denorm_grippers`: command 1 = open).
+`_denorm_grippers`: command 1 = open). The controller's IK/FK site is
+`grasp_site`, verified in the combined model to sit between the fingertips
+(0.135 m beyond the wrist-roll flange), so "grasp-point position between the
+fingertips" is the accurate description of what eef targets move.
 
 ## 3. Normative docs strings
 
 Implementation stores these as module constants and must reproduce them
-character for character (modulo trailing-whitespace stripping). They avoid
+character for character, where the constant is the fenced block with
+per-line trailing whitespace and the final newline stripped (so the
+`docs_extra` join in section 4 yields exactly one blank line). They avoid
 restating action bounds (the tool description owns bounds) and describe
 joint-level motion, not end-effector effect, because the folded rest pose
 makes end-effector effects counterintuitive.
@@ -52,15 +58,17 @@ Joint guide (positive direction, identical for both arms):
   arm counterclockwise seen from above (a forward-pointing gripper moves
   toward +y).
 - left_j1 / right_j1: shoulder pitch; 0 points the upper arm horizontally
-  backward, positive raises it (about 1.57 is straight up, about 3.14 is
-  horizontal forward).
+  backward and is the lower hard stop (it cannot go negative), positive
+  raises it (about 1.57 is straight up, about 3.14 is horizontal forward).
 - left_j2 / right_j2: elbow; 0 is fully folded with the forearm doubled back
-  against the upper arm, positive opens it.
+  against the upper arm and is the lower hard stop, positive opens it.
 - left_j3 / right_j3: wrist pitch, axis parallel to the elbow; positive tilts
   the gripper up.
 - left_j4 / right_j4: wrist yaw; positive swings the gripper toward the arm's
   right seen from above (opposite sign sense of j0).
-- left_j5 / right_j5: wrist roll about the gripper's pointing axis.
+- left_j5 / right_j5: wrist roll about the gripper's pointing axis; positive
+  turns clockwise when viewed from behind the gripper looking out along the
+  fingers.
 - left_gripper / right_gripper: 0 is fully closed, 1 is fully open (about
   9.5 cm between the jaws).
 Proportions: upper arm 0.26 m, forearm 0.25 m, wrist to grasp point 0.25 m
@@ -86,7 +94,7 @@ up; how the two bases are mounted relative to each other depends on the rig.
 - left_gripper / right_gripper: 0 is fully closed, 1 is fully open (about
   9.5 cm between the jaws).
 Proportions: upper arm 0.26 m, forearm 0.25 m, wrist to grasp point 0.25 m
-when straight.
+when straight; reach from the shoulder about 0.76 m.
 An inverse-kinematics layer converts targets into joint motion; unreachable
 or awkward targets may be tracked slowly or held, so prefer modest steps and
 re-check the observation after each motion.
@@ -97,8 +105,9 @@ re-check the observation after each motion.
 - The docs string is chosen at `EmbodimentInfo` construction time from
   `control_interface`; `docs_extra` (stripped of outer whitespace, appended
   as `built_in + "\n\n" + extra` when non-empty after strip) completes it.
-- `docs_extra` follows the existing scalar-kwargs config pattern; document it
-  in the README's embodiment-args table.
+- `docs_extra` follows the existing scalar-kwargs config pattern
+  (`_FromKwargs`, plain string field); document it in the `YamConfig` args
+  list in the README's configuration reference (a prose list, not a table).
 
 ## 5. Tests (from core plan 0016 §4, concretized)
 
