@@ -58,10 +58,13 @@ Give joints mode the same treatment EEF mode already has:
      ramp. The operator must not confirm "stand clear" only for reset to
      error out configuration-side.
    - Later resets do not re-prompt. So the homing motion is not silent, add a
-     `self._status("homing: ramping arms to start pose")` (attended only,
-     cleared after the ramp) before `_ramp_to`, mirroring close()'s
-     "parking:" status. Unattended mode is unchanged: motion without prompts
-     is what unattended opts into.
+     `self._status("homing: ramping arms to start pose")` before `_ramp_to`
+     on EVERY attended reset (including the first, right after the gate; no
+     `first_connect` condition on the status), cleared with
+     `self._status(None)` in a `try/finally` around the ramp exactly like
+     close()'s "parking:" status, so a mid-ramp fault's traceback never
+     prints appended to the status line. Unattended mode is unchanged:
+     motion without prompts is what unattended opts into.
    - Scope honesty: the gate's "no motion before confirmation" covers
      `reset()` only. If the gate itself raises `EmbodimentFault` (dead
      stdin), `_init_pose` is already captured, so a subsequent `close()`
@@ -158,12 +161,20 @@ Field semantics that do NOT change:
     pops from a finite list and raises `IndexError` on exhaustion, and the
     gate adds one consumed input to every attended first reset. Nearly every
     attended test in the file would die with `IndexError` inside `reset()`
-    (e.g. `test_reset_twice_reuses_driver` line 251 needs three inputs, the
-    `_build_with_status` tests line 648 exhaust before `confirm_success`,
-    `test_close_after_mid_reset_fault_parks` line 515 dies before its
-    expected camera fault). Fix the helper to return `""` when the scripted
-    answers are exhausted (keeping explicit scripts meaningful for the tests
-    that assert prompt content), rather than editing dozens of tests.
+    (e.g. `test_reset_twice_reuses_driver` line 251, the `_build_with_status`
+    tests line 648, `test_close_after_mid_reset_fault_parks` line 515 which
+    dies before its expected camera fault). A bare return-`""`-on-exhaustion
+    fix is NOT enough: it fixes the crash class but shifts answer-bearing
+    scripts by one prompt, e.g. `test_step_terminates_success_on_operator_yes`
+    (line 273, `["", "y"]`) has its "y" eaten by the ready prompt and fails,
+    while `test_step_terminates_failure_on_operator_no` (line 282,
+    `["", "n"]`) keeps passing vacuously with the "n" never reaching
+    `confirm_success`. Make the fake prompt-aware instead: ready/stand-clear
+    prompts (any prompt that is not the success prompt) consume nothing and
+    return `""`; only the "Did the robot succeed" prompt pops from the
+    scripted answers. Scripts then read as verdict sequences and are immune
+    to prompt-count changes. Verify the "n" test actually exercises
+    `confirm_success` afterward (no vacuous pass).
   - New: attended first-connect gate ordering test. With a scripted
     `OperatorIO` whose `input_fn` records prompts, the first `reset()`
     issues the stand-clear prompt (matched by prompt text) before the driver
@@ -189,6 +200,25 @@ Field semantics that do NOT change:
       `close()` under test; needs a driver that faults only after reset.
     - `test_close_rest_pose_zero_hz_falls_back_to_10hz` (line 640): command
       count doubles.
+  - Known breakage from the new "homing:" status line (an attended reset now
+    emits three status entries - "homing: ...", `None`, "Running: ..." -
+    where today it emits one; `_build_with_status` at line 648 records all of
+    them). Re-anchor assertions on prompt text or on the last pre-step
+    status entry, not positional `status[0]`/`status[1:]`:
+    - `test_reset_announces_run_instructions` (line 665): `len(status) == 1`
+      becomes 3.
+    - `test_status_line_updates_once_per_second_with_horizon` (line 677):
+      the `status[1:]` filter now includes the "Running:" line; count and
+      indexed asserts shift.
+    - `test_status_line_without_hint_shows_elapsed_only` (line 691):
+      `updates[0]` is now the "Running:" line.
+    - `test_bind_task_drives_the_countdown_horizon` (line 726),
+      `test_bound_horizon_wins_over_deprecated_hint` (line 737),
+      `test_rebind_latest_envelope_wins` (line 747): all assert on
+      `status[0]`, now the homing line without "Max ...".
+    - `test_close_clears_the_bound_horizon` (line 755): `"Max" not in
+      status[0]` would pass vacuously against the homing line; re-anchor it
+      to the "Running:" entry so it still tests the countdown fallback.
   - Audit remaining tests that assume the old all-zero `DEFAULT_REST_POSE`
     (parking assertions) and update gripper-slot expectations to 1.0.
 - `tests/test_config.py`: add
