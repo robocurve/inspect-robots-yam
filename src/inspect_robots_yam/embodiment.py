@@ -297,6 +297,10 @@ class YAMEmbodiment:
         self._right_kinematics: _ArmKinematics | None = None
         self._eef_home_validated = False
         self._init_pose: Vec | None = None
+        # Set only after the stand-clear prompt returns, so a gate fault
+        # (dead stdin) re-prompts on a retried reset instead of ramping
+        # unconfirmed; cleared on close() so every connection re-confirms.
+        self._home_gate_confirmed = False
         self._instruction: str | None = None
         self._t_last = 0.0
         self.num_steps = 0
@@ -354,7 +358,6 @@ class YAMEmbodiment:
             self._left_kinematics is None or self._right_kinematics is None
         ):
             self._construct_kinematics()
-        first_connect = self._init_pose is None
         if self._init_pose is None:
             # Capture BEFORE any motion of ours (incl. the home ramp): this is
             # exactly where the operator left the arms — the safest known
@@ -367,10 +370,11 @@ class YAMEmbodiment:
         if self._cfg.control_interface == "eef_pos" and not self._eef_home_validated:
             self._validate_eef_home(np.clip(home_pose, self._cfg.low, self._cfg.high))
             self._eef_home_validated = True
-        if first_connect and not self._cfg.unattended:
+        if not self._cfg.unattended and not self._home_gate_confirmed:
             self._operator.wait_ready(
                 "Arms will move to the home pose - stand clear, then press Enter..."
             )
+            self._home_gate_confirmed = True
         if not self._cfg.unattended:
             self._status("homing: ramping arms to start pose")
         try:
@@ -473,9 +477,11 @@ class YAMEmbodiment:
                 self._driver.close()
             finally:
                 # Clear connection state even if the driver's own close()
-                # raises, so a later reset() reconnects and re-captures.
+                # raises, so a later reset() reconnects, re-captures, and
+                # re-confirms the stand-clear gate.
                 self._driver = None
                 self._init_pose = None
+                self._home_gate_confirmed = False
 
     def _ramp_to(self, target: Vec) -> Vec:
         """Linearly ramp from the current pose to ``target`` over ``rest_secs``.

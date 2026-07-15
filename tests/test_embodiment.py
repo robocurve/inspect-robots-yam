@@ -9,7 +9,7 @@ from typing import NoReturn
 import numpy as np
 import pytest
 from inspect_robots.embodiment import SELF_PACED
-from inspect_robots.errors import ConfigError
+from inspect_robots.errors import ConfigError, EmbodimentFault
 from inspect_robots.scene import Scene
 from inspect_robots.types import Action
 
@@ -419,6 +419,52 @@ def test_first_attended_reset_gates_home_motion_once_per_connection() -> None:
         ("Arms will move to the home pose - stand clear, then press Enter...", 0)
     ]
     assert len(drv.commands) == 2
+
+
+def test_gate_fault_reprompts_before_motion_on_retried_reset() -> None:
+    drv = EchoDriver()
+    prompts: list[str] = []
+
+    def _input(prompt: str) -> str:
+        prompts.append(prompt)
+        if "stand clear" in prompt and sum("stand clear" in p for p in prompts) == 1:
+            raise EOFError
+        return ""
+
+    emb, _, _ = _build(
+        YamConfig(rest_secs=0.1),
+        driver=drv,
+        operator=OperatorIO(input_fn=_input, output_fn=lambda _message: None),
+    )
+    scene = Scene(id="s", instruction="x")
+    with pytest.raises(EmbodimentFault):
+        emb.reset(scene)
+    assert drv.commands == []  # the gate fault preceded any motion
+    emb.reset(scene)
+    assert sum("stand clear" in p for p in prompts) == 2  # retry re-confirmed
+    assert drv.commands  # and only then homed
+
+
+def test_close_then_reset_reprompts_stand_clear_per_connection() -> None:
+    drv = EchoDriver()
+    prompt_calls: list[tuple[str, int]] = []
+
+    def _input(prompt: str) -> str:
+        prompt_calls.append((prompt, len(drv.commands)))
+        return ""
+
+    emb, _, _ = _build(
+        YamConfig(rest_secs=0.1),
+        driver=drv,
+        operator=OperatorIO(input_fn=_input, output_fn=lambda _message: None),
+    )
+    emb.reset(Scene(id="a", instruction="x"))
+    emb.close()
+    commands_after_park = len(drv.commands)
+    emb.reset(Scene(id="b", instruction="x"))
+    stand_clear_counts = [count for prompt, count in prompt_calls if "stand clear" in prompt]
+    # One prompt per connection, each before that connection's first motion.
+    assert stand_clear_counts == [0, commands_after_park]
 
 
 def test_default_camera_reader_not_implemented() -> None:
