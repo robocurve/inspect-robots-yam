@@ -90,12 +90,12 @@ def _validate_modality_configs(
     state_config = modality_configs["state"]
     action_config = modality_configs["action"]
 
-    assert len(video_config.delta_indices) == 1, (
-        "video delta_indices must contain exactly one frame for this stateless shim"
-    )
-    assert len(state_config.delta_indices) == 1, (
-        "state delta_indices must contain exactly one frame for this stateless shim"
-    )
+    for modality_name, config in (("video", video_config), ("state", state_config)):
+        if len(config.delta_indices) != 1:
+            raise ValueError(
+                f"{modality_name} delta_indices must contain exactly one frame for this "
+                "stateless shim (frame-history checkpoints are unservable)"
+            )
 
     video_keys = set(video_config.modality_keys)
     camera_targets = set(camera_map.values())
