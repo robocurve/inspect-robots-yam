@@ -7,7 +7,15 @@ import threading
 import time
 from typing import Any
 
-I2RT_INSTALL_COMMAND = 'uv pip install "i2rt @ git+https://github.com/i2rt-robotics/i2rt"'
+# The build constraint is required while every published ruckig (i2rt's pinned
+# dependency) is a source-only release that no longer builds under
+# scikit-build-core 1.0; drop it once ruckig ships the fix from pantor/ruckig#261
+# and i2rt moves off ruckig==0.15.3 (#47).
+I2RT_INSTALL_COMMAND = (
+    "echo 'scikit-build-core<0.10' > build-constraints.txt && "
+    "uv pip install --build-constraints build-constraints.txt "
+    '"i2rt @ git+https://github.com/i2rt-robotics/i2rt"'
+)
 _CONTROL_THREAD_JOIN_TIMEOUT = 5.0
 _CONTROL_THREAD_GRACE_PERIOD = 0.05
 

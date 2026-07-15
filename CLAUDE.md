@@ -88,7 +88,10 @@ non-YAM I2RT robots, and model fine-tuning.
   the tests, and opens an issue on failure — catching ecosystem breakage that
   locked CI can't see. A green canary means `uv lock --upgrade` is safe.
 - The `i2rt` driver is git-only and intentionally absent from `uv.lock`. Install
-  it with `uv pip install "i2rt @ git+https://github.com/i2rt-robotics/i2rt"`.
+  it with the README's Install snippet — a build-constraints file pinning
+  `scikit-build-core<0.10` is required (ruckig's published sdists no longer
+  build under scikit-build-core 1.0; see pantor/ruckig#261 and issue #47).
+  `I2RT_INSTALL_COMMAND` in `_i2rt.py` is the runtime copy of that remedy.
 - **Releases are one-click**: Actions → Release → Run workflow → pick
   patch/minor/major. The version is derived from the git tag by hatch-vcs —
   never add a static `version =` back to pyproject (`__version__` comes from importlib.metadata). The same

@@ -51,7 +51,8 @@ uv venv && source .venv/bin/activate
 uv pip install inspect-robots-yam
 # The i2rt driver is git-only and not on PyPI. Install it directly.
 # The build-constraints file works around a build failure in i2rt's ruckig
-# dependency (source-only releases that no longer build under scikit-build-core 1.0):
+# dependency (source-only releases that no longer build under scikit-build-core
+# 1.0; the pin below 0.10 matches i2rt's own in-repo workaround):
 echo 'scikit-build-core<0.10' > build-constraints.txt
 uv pip install --build-constraints build-constraints.txt "i2rt @ git+https://github.com/i2rt-robotics/i2rt"
 ```
