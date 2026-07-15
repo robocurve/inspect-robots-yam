@@ -43,6 +43,7 @@ from inspect_robots_yam._i2rt import (
 from inspect_robots_yam.config import (
     DEFAULT_CAMERAS,
     DEFAULT_EEF_HOME_POSE,
+    DEFAULT_JOINT_HOME_POSE,
     EEF_DIM_LABELS,
     YamConfig,
     action_box,
@@ -353,6 +354,7 @@ class YAMEmbodiment:
             self._left_kinematics is None or self._right_kinematics is None
         ):
             self._construct_kinematics()
+        first_connect = self._init_pose is None
         if self._init_pose is None:
             # Capture BEFORE any motion of ours (incl. the home ramp): this is
             # exactly where the operator left the arms — the safest known
@@ -362,15 +364,20 @@ class YAMEmbodiment:
                 packing.validate_dim(self._driver.get_joint_pos())
             )
         home_pose = self._home_pose()
-        if home_pose is not None:
-            if self._cfg.control_interface == "eef_pos" and not self._eef_home_validated:
-                self._validate_eef_home(np.clip(home_pose, self._cfg.low, self._cfg.high))
-                self._eef_home_validated = True
-            final_home_command = self._ramp_to(home_pose)
-        else:
-            final_home_command = self._norm_grippers(
-                packing.validate_dim(self._driver.get_joint_pos())
+        if self._cfg.control_interface == "eef_pos" and not self._eef_home_validated:
+            self._validate_eef_home(np.clip(home_pose, self._cfg.low, self._cfg.high))
+            self._eef_home_validated = True
+        if first_connect and not self._cfg.unattended:
+            self._operator.wait_ready(
+                "Arms will move to the home pose - stand clear, then press Enter..."
             )
+        if not self._cfg.unattended:
+            self._status("homing: ramping arms to start pose")
+        try:
+            final_home_command = self._ramp_to(home_pose)
+        finally:
+            if not self._cfg.unattended:
+                self._status(None)
         if self._cfg.control_interface == "eef_pos":
             left_kinematics, right_kinematics = self._require_kinematics()
             left_kinematics.seed(final_home_command[: packing.ARM_DOF])
@@ -507,14 +514,13 @@ class YAMEmbodiment:
             )
         return action_box(low=self._cfg.low, high=self._cfg.high)
 
-    def _home_pose(self) -> Vec | None:
-        """Select the configured joint home, with a mandatory EEF-mode default."""
+    def _home_pose(self) -> Vec:
+        """Select the configured joint home, defaulting per control interface."""
         if self._cfg.control_interface == "eef_pos":
             values = self._cfg.home_pose or DEFAULT_EEF_HOME_POSE
-            return np.asarray(values, dtype=np.float64)
-        if self._cfg.home_pose is None:
-            return None
-        return np.asarray(self._cfg.home_pose, dtype=np.float64)
+        else:
+            values = self._cfg.home_pose or DEFAULT_JOINT_HOME_POSE
+        return np.asarray(values, dtype=np.float64)
 
     def _construct_kinematics(self) -> None:
         """Construct per-arm wrappers and apply effective model/config limits."""

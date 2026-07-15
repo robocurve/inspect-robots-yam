@@ -15,6 +15,7 @@ from inspect_robots_yam.config import (
     DEFAULT_EEF_HIGH,
     DEFAULT_EEF_HOME_POSE,
     DEFAULT_EEF_LOW,
+    DEFAULT_JOINT_HOME_POSE,
     DEFAULT_REST_POSE,
     EEF_DIM_LABELS,
     MolmoActConfig,
@@ -155,6 +156,14 @@ def test_default_eef_home_pose_has_provisional_joint_values_and_open_grippers() 
     )
     assert DEFAULT_EEF_HOME_POSE[6] == DEFAULT_EEF_HOME_POSE[13] == 1.0
     assert DEFAULT_EEF_HOME_POSE[7:13] == pytest.approx(DEFAULT_EEF_HOME_POSE[:6])
+
+
+def test_default_joint_home_pose_is_zero_joints_open_grippers() -> None:
+    assert len(DEFAULT_JOINT_HOME_POSE) == 14
+    assert DEFAULT_JOINT_HOME_POSE[:6] == pytest.approx((0.0,) * 6)
+    assert DEFAULT_JOINT_HOME_POSE[6] == DEFAULT_JOINT_HOME_POSE[13] == 1.0
+    assert DEFAULT_JOINT_HOME_POSE[7:13] == pytest.approx(DEFAULT_JOINT_HOME_POSE[:6])
+    assert DEFAULT_REST_POSE == DEFAULT_JOINT_HOME_POSE
 
 
 def test_eef_action_space_shape_labels_bounds_and_semantics() -> None:
