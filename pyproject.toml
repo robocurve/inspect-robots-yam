@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "inspect-robots-yam"
 dynamic = ["version", "readme"]
-description = "Inspect Robots adapters for I2RT YAM bimanual arms driven by MolmoAct2."
+description = "Inspect Robots adapters for I2RT YAM bimanual arms driven by /act-served policies (MolmoAct2, GR00T)."
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
