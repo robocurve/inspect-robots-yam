@@ -55,6 +55,55 @@ from inspect_robots_yam.operator import OperatorIO, default_poll_end
 ImageMap = Mapping[str, npt.NDArray[np.uint8]]
 Vec = npt.NDArray[np.float64]
 
+_DOCS_JOINTS = """Two identical 6-DoF arms, prefixed left_ and right_, each with a parallel-jaw
+gripper. Each arm has its own base frame: +x points forward out of the base
+(the direction the folded gripper points at all-zero joints), +y left, +z up;
+how the two bases are mounted relative to each other depends on the rig.
+Joint guide (positive direction, identical for both arms):
+- left_j0 / right_j0: base yaw about the vertical axis; positive swings the
+  arm counterclockwise seen from above (a forward-pointing gripper moves
+  toward +y).
+- left_j1 / right_j1: shoulder pitch; 0 points the upper arm horizontally
+  backward and is the lower hard stop (it cannot go negative), positive
+  raises it (about 1.57 is straight up, about 3.14 is horizontal forward).
+- left_j2 / right_j2: elbow; 0 is fully folded with the forearm doubled back
+  against the upper arm and is the lower hard stop, positive opens it.
+- left_j3 / right_j3: wrist pitch, axis parallel to the elbow; positive tilts
+  the gripper up.
+- left_j4 / right_j4: wrist yaw; positive swings the gripper toward the arm's
+  right seen from above (opposite sign sense of j0).
+- left_j5 / right_j5: wrist roll about the gripper's pointing axis; positive
+  turns clockwise when viewed from behind the gripper looking out along the
+  fingers.
+- left_gripper / right_gripper: 0 is fully closed, 1 is fully open (about
+  9.5 cm between the jaws).
+Proportions: upper arm 0.26 m, forearm 0.25 m, wrist to grasp point 0.25 m
+when straight; reach from the shoulder about 0.76 m.
+At all-zero joints the arm rests folded low with the gripper pointing
+forward. While the arm is folded, a single joint's effect on the gripper
+position can be counterintuitive; move deliberately and re-check the
+observation after each motion. The joint values above are positions as shown
+in the observation; when actions are per-step changes (delta mode), the same
+sign conventions apply to each change."""
+
+_DOCS_EEF_POS = """Two identical 6-DoF arms, prefixed left_ and right_, each with a parallel-jaw
+gripper, controlled by Cartesian end-effector targets. Each arm's targets are
+in that arm's own base frame: +x points forward out of the base, +y left, +z
+up; how the two bases are mounted relative to each other depends on the rig.
+- left_x / right_x, left_y / right_y, left_z / right_z: grasp-point position
+  in meters in the arm's base frame (the grasp point sits between the
+  fingertips).
+- left_yaw / right_yaw: tool rotation in radians about vertical, relative to
+  the trial's start orientation; 0 keeps the start orientation and positive
+  turns counterclockwise seen from above.
+- left_gripper / right_gripper: 0 is fully closed, 1 is fully open (about
+  9.5 cm between the jaws).
+Proportions: upper arm 0.26 m, forearm 0.25 m, wrist to grasp point 0.25 m
+when straight; reach from the shoulder about 0.76 m.
+An inverse-kinematics layer converts targets into joint motion; unreachable
+or awkward targets may be tracked slowly or held, so prefer modest steps and
+re-check the observation after each motion."""
+
 
 @runtime_checkable
 class TaskEnvelopeLike(Protocol):
@@ -306,6 +355,10 @@ class YAMEmbodiment:
         self.num_steps = 0
         self._bound_max_steps: int | None = None
 
+        docs = _DOCS_EEF_POS if self._cfg.control_interface == "eef_pos" else _DOCS_JOINTS
+        docs_extra = self._cfg.docs_extra.strip()
+        if docs_extra:
+            docs += "\n\n" + docs_extra
         self.info = EmbodimentInfo(
             name="yam_arms",
             # Delta mode declares the per-step displacement box (symmetric,
@@ -321,6 +374,7 @@ class YAMEmbodiment:
             control_hz=self._cfg.control_hz,
             is_simulated=False,
             capabilities=frozenset({SELF_PACED}),
+            docs=docs,
         )
 
     # -- lifecycle ---------------------------------------------------------
