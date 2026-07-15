@@ -49,15 +49,21 @@ inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2 --embodimen
 ```bash
 uv venv && source .venv/bin/activate
 uv pip install inspect-robots-yam
-# The i2rt driver is git-only and not on PyPI. Install it directly:
-uv pip install "i2rt @ git+https://github.com/i2rt-robotics/i2rt"
+# The i2rt driver is git-only and not on PyPI. Install it directly.
+# The build-constraints file works around a build failure in i2rt's ruckig
+# dependency (source-only releases that no longer build under scikit-build-core 1.0):
+echo 'scikit-build-core<0.10' > build-constraints.txt
+uv pip install --build-constraints build-constraints.txt "i2rt @ git+https://github.com/i2rt-robotics/i2rt"
 ```
 
 The base package includes the `/act` transport and builtin OpenCV camera reader.
 Only `i2rt`, the I2RT YAM arm driver required for real hardware, needs the
-separate git install. The camera reader depends on `opencv-python-headless`;
-if your environment also carries `opencv-python`, the two share the `cv2`
-module and the last one installed wins.
+separate git install. The `scikit-build-core` build constraint can be dropped
+once ruckig ships a release with the fix from
+[pantor/ruckig#261](https://github.com/pantor/ruckig/issues/261) and i2rt
+moves off `ruckig==0.15.3`. The camera reader depends on
+`opencv-python-headless`; if your environment also carries `opencv-python`,
+the two share the `cv2` module and the last one installed wins.
 
 Then download the model weights (needs a Hugging Face token) and start the server,
 from the [MolmoAct2 repo](https://github.com/allenai/molmoact2):
