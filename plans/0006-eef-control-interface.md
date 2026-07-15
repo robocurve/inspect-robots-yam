@@ -81,7 +81,7 @@ straight-line interpolation, bounds/delta guardrails) applies unchanged:
 |---|---|---|---|
 | 0-2 | `left_x, left_y, left_z` | m | x [0.15, 0.48], y [-0.25, 0.25], z [0.03, 0.40] |
 | 3 | `left_yaw` | rad | [-np.pi, np.pi] (exactly, so an observed yaw of π echoes back in-bounds) |
-| 4 | `left_gripper` | — | [0, 1] (1 = open, plan 0005 polarity) |
+| 4 | `left_gripper` | — | [0, 1] (1 = open, plan 0005 polarity; a full 0→1 stroke alone computes 101 steps and trips the toolset's split-the-move error at default speed — inherited joint-mode behavior, recoverable by the agent) |
 | 5-9 | `right_*` | same | same |
 
 Default bounds are **empirically validated on the bundled YAM +
@@ -188,8 +188,11 @@ reset, exactly like a bad CAN channel does today.
      obstructed arm.
   3. **IK.** Build the target (position, `R_target(yaw)` per §4);
      differential IK warm-started from `q_cmd_prev` clipped into the
-     model's joint ranges (mink's limit check warns on epsilon-outside
-     starts, which would spam stderr at 10 Hz), iteration-capped
+     model's joint ranges (mink's limit check logs epsilon-outside starts
+     at DEBUG level in the pinned version — clipping is still required:
+     it keeps the solve well-posed and immune to `check_limits`'
+     construction-time-snapshotted ranges after the wrapper mutates
+     `jnt_range`), iteration-capped
      (`ik_max_iters`, default 20 — warm starts make centimeter steps
      converge in a few iterations, and the cap bounds the non-convergent
      worst case well inside the 100 ms budget). Convergence failure is
@@ -402,7 +405,12 @@ field whose shape matches the action dim (10,), which is exactly what the
 agent plugin's absolute mode requires for its proprioceptive reference —
 so the agent reads and re-checks the same quantities it commands
 (semantic-state-feedback finding, §1). `joint_pos` (14,) stays for logging
-and debugging; its shape cannot collide with (10,).
+and debugging — and, acknowledged deliberately: the agent plugin renders
+*every* state key into the observation text, so the LLM sees the raw joint
+vector alongside `eef_state` each turn. That is accepted, not fought: the
+extra 14 numbers are redundant context the model may ignore, and hiding
+them would take a core-plugin filtering feature this plan does not need.
+Its shape cannot collide with (10,).
 
 ## 7. yam tests (TDD, two tiers)
 
