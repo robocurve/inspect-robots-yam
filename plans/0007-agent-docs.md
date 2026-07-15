@@ -1,6 +1,6 @@
 # 0007 — Kinematic operating notes for LLM agent policies
 
-Status: draft
+Status: approved (2 critique rounds, 2026-07-15)
 Issue: robocurve/inspect-robots-yam#53
 Design authority: core plan 0016 (robocurve/inspect-robots, approved after 4
 critique rounds) §3.4 and §4. This plan only fixes the yam-side content and
@@ -33,8 +33,10 @@ and gripper polarity must additionally match this repo's code
 (`packing.py` DIM_LABELS / `config.py` EEF labels; `embodiment.py`
 `_denorm_grippers`: command 1 = open). The controller's IK/FK site is
 `grasp_site`, verified in the combined model to sit between the fingertips
-(0.135 m beyond the wrist-roll flange), so "grasp-point position between the
-fingertips" is the accurate description of what eef targets move.
+(0.135 m beyond the wrist-roll flange; the appendix's 0.247 m wrist-to-grasp
+figure measures from the wrist-pitch joint, so the two numbers agree), so
+"grasp-point position between the fingertips" is the accurate description of
+what eef targets move.
 
 ## 3. Normative docs strings
 
@@ -76,7 +78,9 @@ when straight; reach from the shoulder about 0.76 m.
 At all-zero joints the arm rests folded low with the gripper pointing
 forward. While the arm is folded, a single joint's effect on the gripper
 position can be counterintuitive; move deliberately and re-check the
-observation after each motion.
+observation after each motion. The joint values above are positions as shown
+in the observation; when actions are per-step changes (delta mode), the same
+sign conventions apply to each change.
 ```
 
 ### 3.2 eef_pos mode
@@ -90,7 +94,8 @@ up; how the two bases are mounted relative to each other depends on the rig.
   in meters in the arm's base frame (the grasp point sits between the
   fingertips).
 - left_yaw / right_yaw: tool rotation in radians about vertical, relative to
-  the trial's start orientation (0 keeps the start orientation).
+  the trial's start orientation; 0 keeps the start orientation and positive
+  turns counterclockwise seen from above.
 - left_gripper / right_gripper: 0 is fully closed, 1 is fully open (about
   9.5 cm between the jaws).
 Proportions: upper arm 0.26 m, forearm 0.25 m, wrist to grasp point 0.25 m
@@ -114,7 +119,9 @@ re-check the observation after each motion.
 - joints mode: every one of the 14 DIM_LABELS appears exactly once across
   the lines starting with `"- "`; the polarity literal "0 is fully closed,
   1 is fully open" present.
-- eef mode: all 10 EEF labels appear in the `"- "` lines; word-boundary
+- eef mode: all 10 EEF labels appear in the `"- "` lines (appearance check
+  only, never exactly-once substring counting: `left_y` is a substring of
+  `left_yaw`); the polarity literal present here too; word-boundary
   regexes for tokens `0.48`, `0.15`, `0.03` find nothing (bounds tripwire;
   `0.25`, `0.4`, yaw and gripper endpoints deliberately excluded per core
   plan).
