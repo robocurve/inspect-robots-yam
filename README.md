@@ -26,7 +26,8 @@ YAM + MolmoAct2 stack, so any embodiment-agnostic Inspect Robots task (e.g. all 
 
 - **`molmoact2` policy**: a thin client for MolmoAct2's first-party bimanual-YAM
   `/act` server (the model owns the GPU + weights in its own process).
-- **`yam_arms` embodiment**: the I2RT joint-position driver, with a hard safety
+- **`yam_arms` embodiment**: the I2RT driver with joint-position control by
+  default and an opt-in Cartesian end-effector interface, plus a hard safety
   clamp, operator-in-the-loop success, and self-paced control.
 
 Both declare the same 14-D joint-position contract (2 arms × [6 joints +
@@ -208,6 +209,49 @@ Safety guardrails (a bounds clamp plus a per-step delta limit derived from the
 declared action space) are wired in by default for every CLI run; turning them
 off requires an explicit `--disable-guardrails`.
 
+### Cartesian EEF mode
+
+For LLM-agent runs, opt into the 10-D absolute Cartesian interface:
+
+```ini
+[embodiment.args]
+control_interface = eef_pos
+```
+
+Each arm is controlled as `x, y, z, yaw, gripper`. Positions are metres in
+that arm's own base frame, with +x forward from the base and +z up. The two
+base frames are independent. On common mirrored bimanual mounts, the arms'
++y axes point in opposite world directions, so equal signed y targets do not
+mean equal world directions.
+
+Yaw is an absolute target relative to the orientation captured at reset:
+`0` means the reset orientation. It rotates about base +z while preserving the
+captured roll and pitch. Yaw interpolation does not wrap. A move from `3.1` to
+`-3.1` sweeps through zero instead of taking the short path, so use
+intermediate yaw targets for near-±π regrasps.
+
+The default workspace per arm is x `[0.15, 0.48]`, y `[-0.25, 0.25]`, and z
+`[0.03, 0.40]`, with yaw `[-π, π]` and gripper `[0, 1]`. These bounds were
+validated against the bundled YAM + LINEAR_4310 model at the default working
+orientation, but they are a conservative box rather than an exact reachable
+set. `eef_low` and `eef_high` override all ten bounds. The observation keeps
+the 14-D `joint_pos` field for logging and adds the command-aligned 10-D
+`eef_state` field.
+
+In EEF mode, `home_pose=None` selects the mandatory
+`DEFAULT_EEF_HOME_POSE` instead of skipping homing. Its provisional per-arm
+joints are `[-0.024, 0.794, 0.645, -0.375, -0.021, -0.012]`, with both
+grippers open. The first reset validates that the configured home FK lies in
+the workspace box before moving, then captures each arm's yaw reference after
+homing.
+
+> [!WARNING]
+> EEF mode has no arm-table or arm-arm collision checking. The workspace box,
+> Cartesian guardrails, joint-space IK rate limit, oscillation hold, and joint
+> limits are the only geometric protections. The two default y ranges overlap.
+> Keep an operator at the e-stop; using EEF mode unattended is operator
+> discretion and requires rig-specific validation.
+
 > [!WARNING]
 > Before any unattended agent run, verify on your rig that the arms hold
 > position while the LLM thinks (seconds between action chunks). Run the
@@ -258,10 +302,21 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
 - **Zero-gravity handoff jump.** The arms connect in zero-gravity mode by default
   (`YamConfig(zero_gravity_mode=True)`, passed through to the i2rt driver).
   Homing and rest-pose motions ramp at `control_hz`, but the first *policy*
-  action is still a stiff PD command that can jump from wherever the arm ended
-  up. Nothing bounds the per-step joint delta yet (tracked as a known issue);
-  stand clear when the episode starts, and set `home_pose` so episodes begin
-  from your checkpoint's trained start state.
+  action in joint mode is still a stiff PD command that can jump from wherever
+  the arm ended up. Nothing bounds the per-step joint delta in absolute joint
+  mode yet (tracked as a known issue). EEF mode applies a 0.2-rad-per-joint
+  per-step IK backstop, but a six-joint branch transit can still move the EEF
+  tens of centimetres because rate-clamped intermediate configurations are not
+  IK solutions. Stand clear when the episode starts, and set `home_pose` so
+  episodes begin from a validated start state.
+- **EEF reachability and collision limits.** Iteration-cap non-convergence uses
+  the solver's finite last iterate as best effort, and the next `eef_state`
+  reports the true result. IK branch flips are joint-rate-clamped and repeated
+  reversals hold the whole affected arm temporarily. These controls do not
+  check collisions or guarantee a Cartesian path during a clamped branch
+  transit. Raised work surfaces also need a raised EEF z minimum: the default
+  `z_min=0.03` leaves only about 19 mm nominal fingertip clearance over a table
+  at the arm-base plane, less up to 5 mm of IK error.
 - **Park pose must rest under gravity.** On close, the arms ramp back to an
   explicit per-rig `rest_pose` or the factory all-zero target, and torque is
   released once the ramp finishes. Set `rest_pose=none` to opt out and fall
@@ -303,7 +358,7 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
 
 ## Configuration
 
-### Units: every 14-D vector uses the same layout
+### Joint-space vectors
 
 `joint_low`/`joint_high`, `home_pose`, `rest_pose`, actions, and the observed
 `joint_pos` state all use *policy units*:
@@ -316,13 +371,28 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
 Hardware gripper units (via `gripper_open`/`gripper_closed`) exist only at the
 driver boundary; pose and limit vectors never use driver-native gripper units.
 
+In `control_interface="eef_pos"`, actions and `eef_low`/`eef_high` are 10-D:
+
+| Slots | Meaning | Unit |
+|-------|---------|------|
+| 0–2, 5–7 | left / right EEF x, y, z in each arm's base frame | metres |
+| 3, 8 | left / right yaw relative to reset orientation | radians |
+| 4, 9 | left / right gripper | normalized 0–1 (1 = open, 0 = closed) |
+
+`home_pose`, `rest_pose`, joint limits, and parking remain 14-D joint-space
+vectors in both control interfaces.
+
 `YamConfig`: `left_channel`, `right_channel`, `gripper_type` (i2rt `GripperType`
 enum *name*, e.g. `LINEAR_4310`; grippers only: `NO_GRIPPER`/`YAM_TEACHING_HANDLE`
 would break the 14-D packing and are rejected), `control_hz`, `cam_height/width`,
-`joint_low/high`, `home_pose` (reset ramps here smoothly over `rest_secs` rather
-than jumping), `rest_pose` (close park target; defaults to the factory all-zero
-pose, accepts a per-rig override, and accepts `none` to fall back to the pose
-captured at the first reset before torque is released),
+`joint_low/high`, `control_interface` (`joints` by default or `eef_pos`),
+`eef_low/high`, `ik_max_iters`, `ik_step_joint_limit`,
+`cmd_resync_threshold`, `osc_deadband`, `osc_reversals`, `osc_window`,
+`osc_hold_steps`, `home_pose` (reset ramps here smoothly over `rest_secs`; in
+EEF mode `none` selects `DEFAULT_EEF_HOME_POSE`), `rest_pose` (close park
+target; defaults to the factory all-zero pose, accepts a per-rig override, and
+accepts `none` to fall back to the pose captured at the first reset before
+torque is released),
 `rest_secs` (ramp duration, default 3.0), `gripper_open/closed`,
 `joints_are_delta`, `zero_gravity_mode` (default `True`; see *Safety*),
 `unattended` (default `False`; skip operator prompts),

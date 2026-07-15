@@ -91,3 +91,20 @@ def _load_i2rt() -> tuple[Any, Any]:
             name=exc.name,
         ) from exc
     return get_yam_robot, GripperType
+
+
+def _load_i2rt_kinematics() -> tuple[Any, Any, Any, Any, Any]:
+    """Load optional i2rt kinematics symbols without affecting package imports."""
+    try:
+        from i2rt.robots.kinematics import Kinematics
+        from i2rt.robots.utils import ArmType, GripperType, combine_arm_and_gripper_xml
+        from mink import NoSolutionFound
+    except ModuleNotFoundError as exc:
+        if exc.name != "i2rt" and not (exc.name or "").startswith("i2rt."):
+            raise
+        raise ModuleNotFoundError(
+            "i2rt is the I2RT YAM arm driver. It is git-only and not on PyPI. "
+            f"Install or update it with: {I2RT_INSTALL_COMMAND}",
+            name=exc.name,
+        ) from exc
+    return Kinematics, ArmType, GripperType, combine_arm_and_gripper_xml, NoSolutionFound

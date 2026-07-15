@@ -8,11 +8,12 @@ The package is `mypy --strict` clean, ships `py.typed`, and is 100%-covered.
 | Module | Responsibility |
 |--------|----------------|
 | `packing.py` | **Pure** 14-D bimanual packing — the single source of truth for how the flat vector maps to two arms (`[j0..j5, gripper]` per arm, left then right). `pack`/`split`/`validate_dim`, `STATE_KEY`, `STATE_SPEC`. No optional deps. |
-| `config.py` | `YamConfig` / `MolmoActConfig` (frozen, `from_kwargs` for CLI scalars) + shared `action_box()` / `observation_space()` / `ACTION_SEMANTICS` so both components declare an **identical** contract. |
+| `config.py` | `YamConfig` / `MolmoActConfig` (frozen, `from_kwargs` for CLI scalars) + joint and EEF action/observation-space builders. |
 | `operator.py` | `OperatorIO` (injectable stdin/stdout) for readiness + success prompts; `default_poll_end` (real TTY poll, `# pragma: no cover`). |
 | `_i2rt.py` | Lazy i2rt loader + `I2RT_INSTALL_COMMAND`, the single source of truth for the git-only driver remedy. Also `close_robot_safely`, which joins i2rt's discarded control thread before the CAN socket closes (#28 — i2rt's own `close()` races the two, crashing every teardown). |
 | `policy.py` | `MolmoAct2Policy` — `/act` client with `RUNTIME_REQUIREMENTS` for transport dependencies. `act()` packs cameras+instruction+state, POSTs via the injectable `post_fn`, returns an `ActionChunk`. Real transport is the pragma'd `_default_post`. |
-| `embodiment.py` | `YAMEmbodiment` — i2rt driver with `RUNTIME_REQUIREMENTS`. Clamp backstop, optional delta→abs, gripper de-norm, `SELF_PACED` pacing, operator-keypress success, and a park-at-init-pose fallback on close when `rest_pose` is unset. Hardware seams (`_default_driver_factory`, `_default_camera_reader`) are injected/pragma'd. |
+| `kinematics.py` | Always-importable `_ArmKinematics` wrapper. Owns model/config range intersections, gripper-joint pinning, relative yaw, warm starts, resync, rate clamp, and oscillation holds behind a raw NumPy protocol. |
+| `embodiment.py` | `YAMEmbodiment` — i2rt driver with joint and EEF control. Clamp backstop, optional delta→abs, lazy kinematics, gripper de-norm, `SELF_PACED` pacing, operator-keypress success, and joint-space homing/parking. Hardware seams are injected/pragma'd. |
 | `preflight.py` | `build` / `run_preflight` + the `inspect-robots-yam-preflight` CLI: run the compat check, print, exit non-zero on errors. |
 | `__init__.py` | Public API fenced by `__all__` (guarded by `tests/test_api_snapshot.py`). |
 

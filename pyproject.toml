@@ -38,6 +38,7 @@ dev = [
     "mypy>=1.11",
     "pre-commit>=3.5",
     "kitchenbench",
+    "inspect-robots-agent>=0.2.2",
     # numpy 2.5.0's type stubs use 3.12-only syntax that mypy (python_version 3.10)
     # rejects; pin the 2.4.x line for a deterministic dev/CI gate (runtime is free).
     "numpy<2.5",
@@ -98,13 +99,17 @@ files = ["src/inspect_robots_yam"]
 # Runtime integrations are lazily imported behind seams; ignore missing type
 # information from their third-party modules.
 [[tool.mypy.overrides]]
-module = ["requests.*", "json_numpy.*", "i2rt.*", "cv2.*"]
+module = ["requests.*", "json_numpy.*", "i2rt.*", "mink.*", "cv2.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+markers = [
+    "real_kinematics: requires the optional i2rt, mink, and mujoco runtime stack",
+    "perf: generous wall-clock regression check for optional real kinematics",
+]
 
 [tool.coverage.run]
 branch = true

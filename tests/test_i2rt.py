@@ -12,7 +12,12 @@ from types import ModuleType
 import pytest
 
 import inspect_robots_yam._i2rt as i2rt_module
-from inspect_robots_yam._i2rt import I2RT_INSTALL_COMMAND, _load_i2rt, close_robot_safely
+from inspect_robots_yam._i2rt import (
+    I2RT_INSTALL_COMMAND,
+    _load_i2rt,
+    _load_i2rt_kinematics,
+    close_robot_safely,
+)
 from inspect_robots_yam.config import YamConfig
 from inspect_robots_yam.embodiment import YAMEmbodiment
 from inspect_robots_yam.policy import MolmoAct2Policy
@@ -109,6 +114,69 @@ def test_load_i2rt_success(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setitem(sys.modules, name, module)
 
     assert _load_i2rt() == (fake_get_robot, fake_gripper_type)
+
+
+def test_load_i2rt_kinematics_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    symbols = [object() for _ in range(5)]
+    modules = {
+        "i2rt": ModuleType("i2rt"),
+        "i2rt.robots": ModuleType("i2rt.robots"),
+        "i2rt.robots.kinematics": ModuleType("i2rt.robots.kinematics"),
+        "i2rt.robots.utils": ModuleType("i2rt.robots.utils"),
+        "mink": ModuleType("mink"),
+    }
+    modules["i2rt"].__path__ = []
+    modules["i2rt.robots"].__path__ = []
+    modules["i2rt.robots.kinematics"].Kinematics = symbols[0]
+    modules["i2rt.robots.utils"].ArmType = symbols[1]
+    modules["i2rt.robots.utils"].GripperType = symbols[2]
+    modules["i2rt.robots.utils"].combine_arm_and_gripper_xml = symbols[3]
+    modules["mink"].NoSolutionFound = symbols[4]
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    assert _load_i2rt_kinematics() == tuple(symbols)
+
+
+@pytest.mark.parametrize("missing_name", ["i2rt", "i2rt.robots"])
+def test_load_i2rt_kinematics_guides_missing_driver(
+    monkeypatch: pytest.MonkeyPatch, missing_name: str
+) -> None:
+    real_import = builtins.__import__
+
+    def missing_i2rt(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.startswith("i2rt"):
+            raise ModuleNotFoundError(f"No module named {missing_name!r}", name=missing_name)
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", missing_i2rt)
+    with pytest.raises(ModuleNotFoundError) as exc_info:
+        _load_i2rt_kinematics()
+    assert I2RT_INSTALL_COMMAND in str(exc_info.value)
+
+
+@pytest.mark.parametrize("missing_name", [None, "mink"])
+def test_load_i2rt_kinematics_preserves_non_i2rt_import_failures(
+    monkeypatch: pytest.MonkeyPatch, missing_name: str | None
+) -> None:
+    real_import = builtins.__import__
+    original = ModuleNotFoundError("optional solver dependency is broken", name=missing_name)
+
+    def broken_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.startswith("i2rt"):
+            modules = sys.modules
+            if "i2rt" not in modules:
+                modules["i2rt"] = ModuleType("i2rt")
+                modules["i2rt"].__path__ = []
+                modules["i2rt.robots"] = ModuleType("i2rt.robots")
+                modules["i2rt.robots"].__path__ = []
+            raise original
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", broken_import)
+    with pytest.raises(ModuleNotFoundError) as exc_info:
+        _load_i2rt_kinematics()
+    assert exc_info.value is original
 
 
 @pytest.mark.parametrize("missing_name", ["i2rt", "i2rt.robots"])
