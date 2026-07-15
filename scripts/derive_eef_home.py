@@ -19,11 +19,14 @@ def main() -> None:
     sine_30 = 0.5
     cosine_30 = np.sqrt(3.0) / 2.0
     target = np.eye(4)
+    # Rows of the rotation, i.e. columns are the site axes in the base frame:
+    # x = (-s, 0, -c) jaw axis pitched 30 deg toward the base, y = (0, 1, 0),
+    # z = x cross y = (c, 0, -s).
     target[:3, :3] = np.asarray(
         (
-            (-sine_30, 0.0, -cosine_30),
-            (0.0, -1.0, 0.0),
-            (-cosine_30, 0.0, sine_30),
+            (-sine_30, 0.0, cosine_30),
+            (0.0, 1.0, 0.0),
+            (-cosine_30, 0.0, -sine_30),
         )
     )
     target[:3, 3] = (0.30, 0.0, 0.20)

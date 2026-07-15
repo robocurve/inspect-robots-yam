@@ -318,3 +318,10 @@ def test_seed_validates_shape_and_solve_requires_a_seed() -> None:
         kin.seed(np.zeros(7))
     with pytest.raises(RuntimeError, match="command reference"):
         kin.solve(np.asarray((0.3, 0.0, 0.2, 0.0)), np.zeros(6))
+
+
+def test_wrap_yaw_pi_boundary_maps_to_positive_pi() -> None:
+    """A raw difference of exactly -pi must report +pi, keeping (-pi, pi]."""
+    assert _ArmKinematics._wrap_yaw(-np.pi) == pytest.approx(np.pi)
+    assert _ArmKinematics._wrap_yaw(np.pi) == pytest.approx(np.pi)
+    assert _ArmKinematics._wrap_yaw(3 * np.pi) == pytest.approx(np.pi)
