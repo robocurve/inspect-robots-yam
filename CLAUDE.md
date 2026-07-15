@@ -27,7 +27,9 @@ gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
 - `tests/` — pytest; everything (driver, cameras, `/act`, clock, operator stdin)
   is injected, so the suite needs **no hardware, no server, no stdin**.
 - `plans/0001-yam-molmoact2-design.md` — the design + plan (approved after two
-  adversarial subagent critique rounds). Read it before changing the contract.
+  adversarial subagent critique rounds), with the gripper-polarity contract
+  superseded by `plans/0004-gripper-open-polarity.md`. Read both before changing
+  the contract.
 
 ## Working here
 

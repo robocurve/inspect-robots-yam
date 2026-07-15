@@ -43,9 +43,9 @@ _DEFAULT_HIGH = _ARM_HIGH * 2
 
 # Conservative default per-step displacement limits for joints_are_delta mode:
 # 0.2 rad per joint per step, a full normalized stroke per gripper per step.
-# Symmetric (the declared delta box is +/-step_limits), so the gripper can
-# open as well as close -- reusing the absolute [0, 1] box here would clamp
-# every negative gripper delta to zero.
+# Symmetric (the declared delta box is +/-step_limits) because opening and
+# closing require opposite-signed deltas. Reusing the absolute [0, 1] box here
+# would reject gripper motion in one direction.
 _STEP_ARM = (0.2,) * ARM_DOF + (1.0,)
 _DEFAULT_STEP_LIMITS = _STEP_ARM * 2
 
@@ -95,14 +95,17 @@ class YamConfig(_FromKwargs):
     cam_width: int = 224
     joint_low: tuple[float, ...] = _DEFAULT_LOW
     joint_high: tuple[float, ...] = _DEFAULT_HIGH
+    # Optional reset target; gripper slots are normalized 0-1 (1 = open).
     home_pose: tuple[float, ...] | None = None
     # Explicit override for the pose used to park on close(). Without it, close()
     # parks at the pose captured at the first reset() after connecting. Gripper
-    # slots are normalized 0-1.
+    # slots are normalized 0-1 (1 = open).
     rest_pose: tuple[float, ...] | None = None
     rest_secs: float = 3.0
-    gripper_open: float = 0.0
-    gripper_closed: float = 1.0
+    # Driver-native positions at the stroke endpoints. Wire gripper 1 maps to
+    # gripper_open, and wire gripper 0 maps to gripper_closed.
+    gripper_open: float = 1.0
+    gripper_closed: float = 0.0
     joints_are_delta: bool = False
     step_limits: tuple[float, ...] = _DEFAULT_STEP_LIMITS
     zero_gravity_mode: bool = True

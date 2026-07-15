@@ -262,16 +262,25 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
   absolute internally so the declared `joint_pos` stays honest). Inspect Robots's
   compat check *cannot* tell these apart: confirm with `--dry-run` and a single
   slow jog before running a task.
-- **Gripper polarity/trim.** The i2rt driver already exposes the YAM gripper as
-  normalized 0–1 in both directions, so the defaults (`gripper_open=0.0`,
-  `gripper_closed=1.0`) are an identity map and correct for standard grippers.
-  `YamConfig(gripper_open=..., gripper_closed=...)` is a polarity/trim remap over
-  that already-normalized range. Its main use is a gripper wired with inverted
-  polarity (`gripper_open=1.0, gripper_closed=0.0`). The remap is a bijection:
-  commands are de-normalized on the way out and observations are re-normalized on
-  the way back, so the model always sees 0–1. **Warning:** values outside [0, 1]
-  are forwarded on a path i2rt does *not* clip. Avoid them unless you have
-  verified your firmware's behavior.
+- **Gripper polarity/trim.** The wire convention is normalized 0–1, with 1 open
+  and 0 closed. The defaults (`gripper_open=1.0`, `gripper_closed=0.0`) preserve
+  an identity map for the standard i2rt driver. These fields are the measured
+  driver-native positions at the open and closed ends of the stroke. Configure
+  an inverted or offset gripper with its actual endpoints, for example
+  `gripper_open=0.72, gripper_closed=0.04`. Commands are de-normalized on the way
+  out and observations are re-normalized on the way back, so the model always
+  sees the wire convention. **Warning:** values outside [0, 1] are forwarded on
+  a path i2rt does *not* clip. Avoid them unless you have verified your firmware's
+  behavior.
+
+  Compatibility (pre-1.0): earlier releases interpreted these fields with the
+  opposite endpoint mapping. A config that explicitly copied the old defaults
+  (`gripper_open=0.0`, `gripper_closed=1.0`) now inverts its gripper. A config
+  that followed the old inversion recipe (`gripper_open=1.0`,
+  `gripper_closed=0.0`) no longer inverts because those values are now the
+  identity defaults. On identity-calibrated rigs, `home_pose`, `rest_pose`, and
+  custom `joint_low`/`joint_high` retain their numeric behavior, but their
+  gripper-slot meaning is now 1 open and 0 closed.
 
 ## Configuration
 
@@ -283,10 +292,10 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
 | Slots | Meaning | Unit |
 |-------|---------|------|
 | 0–5, 7–12 | left / right arm revolute joints | radians |
-| 6, 13 | left / right gripper | normalized 0–1 (0 = open, 1 = closed) |
+| 6, 13 | left / right gripper | normalized 0–1 (1 = open, 0 = closed) |
 
 Hardware gripper units (via `gripper_open`/`gripper_closed`) exist only at the
-driver boundary; nothing you configure here is in hardware gripper units.
+driver boundary; pose and limit vectors never use driver-native gripper units.
 
 `YamConfig`: `left_channel`, `right_channel`, `gripper_type` (i2rt `GripperType`
 enum *name*, e.g. `LINEAR_4310`; grippers only: `NO_GRIPPER`/`YAM_TEACHING_HANDLE`

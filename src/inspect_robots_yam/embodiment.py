@@ -440,22 +440,23 @@ class YAMEmbodiment:
         self._require_driver().command_joint_pos(physical)
 
     def _denorm_grippers(self, cmd: Vec) -> Vec:
+        """Map wire grippers (1 = open, 0 = closed) into driver-native units."""
         out: Vec = cmd.copy()
-        span = self._cfg.gripper_closed - self._cfg.gripper_open
+        span = self._cfg.gripper_open - self._cfg.gripper_closed
         for idx in (packing.ARM_DOF, packing.ARM_WIDTH + packing.ARM_DOF):  # 6, 13
-            out[idx] = self._cfg.gripper_open + cmd[idx] * span
+            out[idx] = self._cfg.gripper_closed + cmd[idx] * span
         return out
 
     def _norm_grippers(self, physical: Vec) -> Vec:
-        """Exact inverse of :meth:`_denorm_grippers` (driver units -> normalized 0-1).
+        """Map driver units to wire grippers (1 = open, 0 = closed).
 
         ``YamConfig.__post_init__`` guarantees ``gripper_open != gripper_closed``,
         so the span is never zero.
         """
         out: Vec = physical.copy()
-        span = self._cfg.gripper_closed - self._cfg.gripper_open
+        span = self._cfg.gripper_open - self._cfg.gripper_closed
         for idx in (packing.ARM_DOF, packing.ARM_WIDTH + packing.ARM_DOF):  # 6, 13
-            out[idx] = (physical[idx] - self._cfg.gripper_open) / span
+            out[idx] = (physical[idx] - self._cfg.gripper_closed) / span
         return out
 
     def _pace(self) -> None:
