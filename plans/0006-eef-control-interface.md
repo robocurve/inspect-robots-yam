@@ -209,8 +209,23 @@ reset, exactly like a bad CAN channel does today.
      from out-of-limit measured joints this differs from the pipeline
      value, and the reference must track reality).
 
-  `q_cmd_prev` is seeded from the final home-ramp command at the end of
-  `reset()` and cleared on `close()`.
+  State lifecycle and scope, normative: `q_cmd_prev`, the resync test, the
+  rate clamp, and the reversal machinery all cover the **six arm joints
+  only** — the gripper dimension never participates (it never enters IK,
+  and a gripper closed on an object holds a commanded-vs-measured gap of
+  ~0.4 normalized *by design*, which would otherwise mark every step
+  `resynced` and permanently disable reversal counting exactly during
+  contact-rich phases). `q_cmd_prev` (6-D per arm) is seeded from the
+  final home-ramp command at the end of `reset()`; `hold_counter`, the
+  reversal window, and the `resynced` flag are all cleared by `reset()`
+  (a hold must not leak across trials and freeze the opening steps of the
+  next one) and by `close()`. On the step that trips the guard, the hold
+  replaces that step's command — the reversing `q_cmd` is not sent. A
+  `resynced` step occupies a normal slot in the sliding window (recorded
+  as no-reversal); the window does not freeze. The resync re-seed clips
+  the measured joints into the same *effective* range the IK model
+  enforces (the §5 per-side intersection), keeping the warm-start and
+  clamp references aligned by construction.
 - Oscillation damping (anti-livelock), step-observable — `step()` has no
   chunk concept, so the guard cannot reference chunk boundaries, and a
   position-progress rule would falsely freeze pure-yaw regrasps (position
@@ -267,16 +282,23 @@ reset, exactly like a bad CAN channel does today.
   wrapper wholly owns that model instance, mink's `ConfigurationLimit`
   reads ranges from it, and `Kinematics` exposes no limits seam of its
   own, so owned-model mutation is the least-invasive supported path (no
-  XML rewriting). The solver then respects operator-tightened limits
-  instead of having `_send()`'s clamp silently distort the Cartesian
-  solution afterward.
+  XML rewriting). The intersection is validated **non-empty per joint** at
+  kinematics construction — an operator config whose range misses a
+  one-sided model range entirely (e.g. `cfg_hi < 0` on a [0, 3.65]
+  shoulder) would otherwise write an inverted `jnt_range` with undefined
+  solver behavior; it errors with the offending joint named instead. The
+  solver then respects operator-tightened limits instead of having
+  `_send()`'s clamp silently distort the Cartesian solution afterward.
 - Gripper joints in the IK model: the gripper joint count varies by gripper
   type — LINEAR_* grippers contribute two equality-coupled, meter-ranged
   slide joints; CRANK_4310 contributes none (its XML has no joints). The
   wrapper addresses the six arm joints positionally as the first six and
   handles 0..2 trailing gripper joints: whatever gripper joints exist are
-  pinned to their model mid-range in `init_q` and stripped from the
-  returned solution. The commanded normalized gripper value flows through
+  pinned to their model mid-range in `init_q` — and in every `fk()` call
+  (the observation's FK needs full-length q vectors too; `grasp_site`
+  lives in a static body, so the gripper joints have zero influence on
+  the site pose and the pin value is immaterial there) — and stripped
+  from the returned solution. The commanded normalized gripper value flows through
   the existing driver path untouched and never enters IK.
 - The agent-side chunk interpolates *in Cartesian space* (the plugin's
   existing linspace over the action dims), so motions are straight lines in
@@ -401,7 +423,14 @@ injected fake kinematics (§5c) and the existing fake driver.
   safety behavior, not incidental coverage).
 - reset()/close(): joint-space homing/parking unchanged in eef mode;
   reset observation carries `eef_state`; yaw references captured
-  post-homing.
+  post-homing; a hold active at trial end is cleared by the next
+  `reset()` (window, counters, and flag too) and does not freeze the next
+  trial's opening steps.
+- Gripper exclusion: a fake trial with the gripper commanded closed on an
+  "object" (large commanded-vs-measured gripper gap) never marks steps
+  resynced and keeps reversal counting live on the arm joints.
+- Empty limit intersection (config range disjoint from a one-sided model
+  range) errors at kinematics construction naming the joint.
 - Integration with the agent plugin: `build_toolset` on the eef space
   produces tooling with the 10 labels and correct bounds text; a scripted
   conversation drives a straight-line move and the emitted chunk passes
@@ -457,7 +486,14 @@ Small, mode-aware polish — no behavior change for joint-mode users:
   orientation — and interpolate linearly without wrapping, so prefer
   intermediate values for large rotations"). Without the latter the agent
   sees only `left_yaw: [-3.14, 3.14]` and §4's conventions never reach
-  the model that must obey them.
+  the model that must obey them. Scope, stated normatively: this
+  relative-to-start convention becomes the *tool surface's contract* for
+  scalar rotation dimensions in pose modes, documented as such in the
+  plugin — any embodiment declaring `eef_abs_pose` with
+  `rotation_repr="none"` scalar rotation dims must implement rotation
+  relative to the trial start (as this plan's yam mode does), or not use
+  this mode. A per-embodiment free-text hint channel that would let
+  embodiments override such wording is explicitly out of scope (§9).
   This is the only agent-visible surface (the LLM never reads READMEs), so
   the mirrored-mount caveat must live here, not only in yam docs. A richer
   per-embodiment hint channel (free-text surface notes on ActionSemantics)
