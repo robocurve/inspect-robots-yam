@@ -12,10 +12,16 @@ from inspect_robots_yam.config import (
     _DEFAULT_HIGH,
     _DEFAULT_LOW,
     DEFAULT_CAMERAS,
+    DEFAULT_EEF_HIGH,
+    DEFAULT_EEF_HOME_POSE,
+    DEFAULT_EEF_LOW,
     DEFAULT_REST_POSE,
+    EEF_DIM_LABELS,
     MolmoActConfig,
     YamConfig,
+    action_box,
     camera_specs,
+    observation_space,
 )
 
 
@@ -29,6 +35,7 @@ def test_yam_defaults() -> None:
     # gripper slot (index 6) bounded [0, 1]; joints bounded by +/-pi.
     assert cfg.low[6] == 0.0 and cfg.high[6] == 1.0
     assert cfg.low[0] == pytest.approx(-np.pi)
+    assert cfg.control_interface == "joints"
 
 
 def test_molmo_defaults_and_url() -> None:
@@ -75,6 +82,103 @@ def test_yam_rejects_bad_joint_limits() -> None:
 def test_yam_rejects_bad_home_pose() -> None:
     with pytest.raises(ValueError, match="home_pose must have 14 entries"):
         YamConfig(home_pose=(0.0,) * 10)
+
+
+def test_yam_control_interface_validation() -> None:
+    with pytest.raises(ValueError, match=r"control_interface.*eef_pos.*joints"):
+        YamConfig(control_interface="cartesian")
+    with pytest.raises(ValueError, match="joints_are_delta"):
+        YamConfig(control_interface="eef_pos", joints_are_delta=True)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"eef_low": (0.0,) * 9}, "eef_low must have 10"),
+        ({"eef_high": (1.0,) * 9}, "eef_high must have 10"),
+        (
+            {"eef_high": (*DEFAULT_EEF_HIGH[:2], np.nan, *DEFAULT_EEF_HIGH[3:])},
+            "only finite values",
+        ),
+        ({"eef_low": DEFAULT_EEF_HIGH}, "eef_low must be below eef_high"),
+        (
+            {"eef_low": (*DEFAULT_EEF_LOW[:3], -np.pi - 0.01, *DEFAULT_EEF_LOW[4:])},
+            "yaw bounds must stay within",
+        ),
+        (
+            {"eef_high": (*DEFAULT_EEF_HIGH[:8], np.pi + 0.01, *DEFAULT_EEF_HIGH[9:])},
+            "yaw bounds must stay within",
+        ),
+        ({"ik_max_iters": 0}, "ik_max_iters must be a positive integer"),
+        ({"ik_max_iters": 1.5}, "ik_max_iters must be a positive integer"),
+        ({"ik_max_iters": True}, "ik_max_iters must be a positive integer"),
+        ({"ik_step_joint_limit": 0.0}, "ik_step_joint_limit must be finite and > 0"),
+        ({"cmd_resync_threshold": np.inf}, "cmd_resync_threshold must be finite and > 0"),
+        ({"osc_deadband": -0.1}, "osc_deadband must be finite and >= 0"),
+        ({"osc_reversals": -1}, "osc_reversals must be a non-negative integer"),
+        ({"osc_reversals": 1.5}, "osc_reversals must be a non-negative integer"),
+        ({"osc_reversals": False}, "osc_reversals must be a non-negative integer"),
+        ({"osc_window": 0}, "osc_window must be a positive integer"),
+        ({"osc_window": 1.5}, "osc_window must be a positive integer"),
+        ({"osc_window": True}, "osc_window must be a positive integer"),
+        ({"osc_reversals": 6}, "osc_reversals must be less than osc_window"),
+        ({"osc_hold_steps": 0}, "osc_hold_steps must be a positive integer"),
+        ({"osc_hold_steps": False}, "osc_hold_steps must be a positive integer"),
+    ],
+)
+def test_eef_config_knob_validation(kwargs: dict[str, object], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        YamConfig(control_interface="eef_pos", **kwargs)
+
+
+def test_eef_config_defaults_and_cli_tuple_overrides() -> None:
+    cfg = YamConfig.from_kwargs(
+        control_interface="eef_pos",
+        eef_low=",".join(str(value) for value in DEFAULT_EEF_LOW),
+        eef_high=",".join(str(value) for value in DEFAULT_EEF_HIGH),
+    )
+    assert cfg.eef_low_array.shape == (10,)
+    assert cfg.eef_high_array.shape == (10,)
+    assert cfg.ik_max_iters == 20
+    assert cfg.ik_step_joint_limit == pytest.approx(0.2)
+    assert cfg.cmd_resync_threshold == pytest.approx(0.35)
+    assert cfg.osc_deadband == pytest.approx(0.005)
+    assert cfg.osc_reversals == 2
+    assert cfg.osc_window == 6
+    assert cfg.osc_hold_steps == 10
+
+
+def test_default_eef_home_pose_has_provisional_joint_values_and_open_grippers() -> None:
+    assert len(DEFAULT_EEF_HOME_POSE) == 14
+    assert DEFAULT_EEF_HOME_POSE[:6] == pytest.approx(
+        (-0.024, 0.794, 0.645, -0.375, -0.021, -0.012)
+    )
+    assert DEFAULT_EEF_HOME_POSE[6] == DEFAULT_EEF_HOME_POSE[13] == 1.0
+    assert DEFAULT_EEF_HOME_POSE[7:13] == pytest.approx(DEFAULT_EEF_HOME_POSE[:6])
+
+
+def test_eef_action_space_shape_labels_bounds_and_semantics() -> None:
+    space = action_box(
+        low=np.asarray(DEFAULT_EEF_LOW),
+        high=np.asarray(DEFAULT_EEF_HIGH),
+        control_interface="eef_pos",
+    )
+    assert space.shape == (10,)
+    assert space.low is not None and np.array_equal(space.low, DEFAULT_EEF_LOW)
+    assert space.high is not None and np.array_equal(space.high, DEFAULT_EEF_HIGH)
+    assert space.semantics.control_mode == "eef_abs_pose"
+    assert space.semantics.rotation_repr == "none"
+    assert space.semantics.gripper == "continuous"
+    assert space.semantics.frame == "base"
+    assert space.semantics.dim_labels == EEF_DIM_LABELS
+
+
+def test_eef_observation_space_declares_joint_and_eef_state_once() -> None:
+    space = observation_space(224, 224, DEFAULT_CAMERAS, control_interface="eef_pos")
+    assert space.state_keys == frozenset({"joint_pos", "eef_state"})
+    assert space.state is not None
+    fields = {field.key: field.shape for field in space.state.fields}
+    assert fields == {"joint_pos": (14,), "eef_state": (10,)}
 
 
 def test_yam_operational_defaults() -> None:

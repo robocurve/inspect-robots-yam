@@ -28,13 +28,27 @@ import numpy as np
 import numpy.typing as npt
 from inspect_robots.conformance import DeviceSlot
 from inspect_robots.embodiment import SELF_PACED, EmbodimentInfo
-from inspect_robots.errors import ConfigError
+from inspect_robots.errors import ConfigError, EmbodimentFault
 from inspect_robots.scene import Scene
+from inspect_robots.spaces import Box
 from inspect_robots.types import Action, Observation, StepResult
 
 from inspect_robots_yam import packing
-from inspect_robots_yam._i2rt import I2RT_INSTALL_COMMAND, _load_i2rt, close_robot_safely
-from inspect_robots_yam.config import DEFAULT_CAMERAS, YamConfig, action_box, observation_space
+from inspect_robots_yam._i2rt import (
+    I2RT_INSTALL_COMMAND,
+    _load_i2rt,
+    _load_i2rt_kinematics,
+    close_robot_safely,
+)
+from inspect_robots_yam.config import (
+    DEFAULT_CAMERAS,
+    DEFAULT_EEF_HOME_POSE,
+    EEF_DIM_LABELS,
+    YamConfig,
+    action_box,
+    observation_space,
+)
+from inspect_robots_yam.kinematics import RawKinematics, _ArmKinematics
 from inspect_robots_yam.operator import OperatorIO, default_poll_end
 
 ImageMap = Mapping[str, npt.NDArray[np.uint8]]
@@ -79,6 +93,7 @@ class BimanualDriver(Protocol):
 
 
 DriverFactory = Callable[[YamConfig], BimanualDriver]
+KinematicsFactory = Callable[[YamConfig], tuple[RawKinematics, RawKinematics]]
 CameraReader = Callable[[YamConfig], ImageMap]
 
 
@@ -116,6 +131,45 @@ def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cov
                     close_robot_safely(arm)
 
     return _Real()
+
+
+def _default_kinematics_factory(
+    cfg: YamConfig,
+) -> tuple[RawKinematics, RawKinematics]:  # pragma: no cover - optional runtime
+    Kinematics, ArmType, GripperType, combine_xml, NoSolutionFound = _load_i2rt_kinematics()
+    model_path = combine_xml(ArmType.YAM, GripperType[cfg.gripper_type])
+
+    class _Adapter:
+        def __init__(self) -> None:
+            self._solver = Kinematics(model_path, "grasp_site")
+
+        def get_joint_ranges(self) -> npt.NDArray[np.floating[Any]]:
+            return np.asarray(self._solver._configuration.model.jnt_range).copy()
+
+        def set_joint_ranges(self, ranges: npt.NDArray[np.floating[Any]]) -> None:
+            self._solver._configuration.model.jnt_range[:] = ranges
+
+        def fk(self, q: npt.NDArray[np.floating[Any]]) -> npt.NDArray[np.floating[Any]]:
+            return np.asarray(self._solver.fk(q))
+
+        def ik(
+            self,
+            target: npt.NDArray[np.floating[Any]],
+            init_q: npt.NDArray[np.floating[Any]],
+            max_iters: int,
+        ) -> tuple[bool, npt.NDArray[np.floating[Any]]]:
+            try:
+                success, q = self._solver.ik(
+                    target,
+                    "grasp_site",
+                    init_q=init_q,
+                    max_iters=max_iters,
+                )
+            except NoSolutionFound as exc:
+                raise EmbodimentFault("EEF inverse kinematics QP is infeasible") from exc
+            return bool(success), np.asarray(q)
+
+    return _Adapter(), _Adapter()
 
 
 def _default_status(line: str | None) -> None:  # pragma: no cover - real TTY output
@@ -186,7 +240,7 @@ def _default_camera_reader(cfg: YamConfig) -> ImageMap:
 
 
 class YAMEmbodiment:
-    """Inspect Robots embodiment for bimanual YAM arms (joint-position control)."""
+    """Inspect Robots embodiment for bimanual YAM joint or Cartesian control."""
 
     # cv2 is a base dependency, so its absence indicates a broken package install.
     RUNTIME_REQUIREMENTS: ClassVar[Mapping[str, str]] = {
@@ -212,6 +266,7 @@ class YAMEmbodiment:
         config: YamConfig | None = None,
         *,
         driver_factory: DriverFactory | None = None,
+        kinematics_factory: KinematicsFactory | None = None,
         camera_reader: CameraReader | None = None,
         operator: OperatorIO | None = None,
         poll_end: Callable[[], bool] | None = None,
@@ -222,6 +277,9 @@ class YAMEmbodiment:
     ) -> None:
         self._cfg = config if config is not None else YamConfig.from_kwargs(**flat)
         self._driver_factory: DriverFactory = driver_factory or _default_driver_factory
+        self._kinematics_factory: KinematicsFactory = (
+            kinematics_factory or _default_kinematics_factory
+        )
         if camera_reader is None and self._cfg.top_cam_device is not None:
             # All three device paths are set (YamConfig validates all-or-none):
             # use the builtin OpenCV reader, so config/CLI-only setups work.
@@ -234,6 +292,9 @@ class YAMEmbodiment:
         self._status: Callable[[str | None], None] = status_fn or _default_status
 
         self._driver: BimanualDriver | None = None
+        self._left_kinematics: _ArmKinematics | None = None
+        self._right_kinematics: _ArmKinematics | None = None
+        self._eef_home_validated = False
         self._init_pose: Vec | None = None
         self._instruction: str | None = None
         self._t_last = 0.0
@@ -245,15 +306,12 @@ class YAMEmbodiment:
             # Delta mode declares the per-step displacement box (symmetric,
             # honest for guardrail derivation); the absolute joint limits stay
             # enforced on the SUMMED command inside _send() either way.
-            action_space=(
-                action_box(
-                    low=self._cfg.delta_low, high=self._cfg.delta_high, joints_are_delta=True
-                )
-                if self._cfg.joints_are_delta
-                else action_box(low=self._cfg.low, high=self._cfg.high)
-            ),
+            action_space=self._action_space(),
             observation_space=observation_space(
-                self._cfg.cam_height, self._cfg.cam_width, DEFAULT_CAMERAS
+                self._cfg.cam_height,
+                self._cfg.cam_width,
+                DEFAULT_CAMERAS,
+                control_interface=self._cfg.control_interface,
             ),
             control_hz=self._cfg.control_hz,
             is_simulated=False,
@@ -291,6 +349,10 @@ class YAMEmbodiment:
             )
         if self._driver is None:
             self._driver = self._driver_factory(self._cfg)
+        if self._cfg.control_interface == "eef_pos" and (
+            self._left_kinematics is None or self._right_kinematics is None
+        ):
+            self._construct_kinematics()
         if self._init_pose is None:
             # Capture BEFORE any motion of ours (incl. the home ramp): this is
             # exactly where the operator left the arms — the safest known
@@ -299,8 +361,27 @@ class YAMEmbodiment:
             self._init_pose = self._norm_grippers(
                 packing.validate_dim(self._driver.get_joint_pos())
             )
-        if self._cfg.home_pose is not None:
-            self._ramp_to(np.asarray(self._cfg.home_pose, dtype=np.float64))
+        home_pose = self._home_pose()
+        if home_pose is not None:
+            if self._cfg.control_interface == "eef_pos" and not self._eef_home_validated:
+                self._validate_eef_home(np.clip(home_pose, self._cfg.low, self._cfg.high))
+                self._eef_home_validated = True
+            final_home_command = self._ramp_to(home_pose)
+        else:
+            final_home_command = self._norm_grippers(
+                packing.validate_dim(self._driver.get_joint_pos())
+            )
+        if self._cfg.control_interface == "eef_pos":
+            left_kinematics, right_kinematics = self._require_kinematics()
+            left_kinematics.seed(final_home_command[: packing.ARM_DOF])
+            right_kinematics.seed(
+                final_home_command[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF]
+            )
+            measured = self._norm_grippers(packing.validate_dim(self._driver.get_joint_pos()))
+            left_kinematics.capture_yaw_reference(measured[: packing.ARM_DOF])
+            right_kinematics.capture_yaw_reference(
+                measured[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF]
+            )
         if not self._cfg.unattended:
             self._operator.wait_ready()
             horizon = self._horizon_secs()
@@ -315,14 +396,19 @@ class YAMEmbodiment:
         """Clamp + command one action, pace to the control rate, then maybe end."""
         driver = self._require_driver()
         self.num_steps += 1
-        cmd = packing.validate_dim(action.data)
-        if self._cfg.joints_are_delta:
+        if self._cfg.control_interface == "eef_pos":
+            cmd = packing.validate_dim(action.data, len(EEF_DIM_LABELS))
+            self._step_eef(cmd, driver)
+        else:
+            cmd = packing.validate_dim(action.data)
+        if self._cfg.control_interface == "joints" and self._cfg.joints_are_delta:
             # Normalize the gripper slots of the current position first, so the
             # delta is applied in policy units (a fraction of the gripper stroke)
             # and the sum re-enters _send() in the same units as absolute mode.
             base = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
             cmd = base + cmd
-        self._send(cmd)
+        if self._cfg.control_interface == "joints":
+            self._send(cmd)
         self._pace()
         self._emit_status()
 
@@ -354,6 +440,9 @@ class YAMEmbodiment:
         # abort between bind_task and the first reset) must not carry a stale
         # horizon into a later framework-less run.
         self._bound_max_steps = None
+        for kinematics in (self._left_kinematics, self._right_kinematics):
+            if kinematics is not None:
+                kinematics.clear()
         if self._driver is None:
             return
         try:
@@ -381,7 +470,7 @@ class YAMEmbodiment:
                 self._driver = None
                 self._init_pose = None
 
-    def _ramp_to(self, target: Vec) -> None:
+    def _ramp_to(self, target: Vec) -> Vec:
         """Linearly ramp from the current pose to ``target`` over ``rest_secs``.
 
         Used for both homing (reset) and parking (close): a single raw jump to
@@ -393,12 +482,128 @@ class YAMEmbodiment:
         start = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
         hz = self._cfg.control_hz if self._cfg.control_hz > 0 else 10.0
         n = max(1, round(self._cfg.rest_secs * hz))
+        sent = start
         for i in range(1, n + 1):
             alpha = i / n
-            self._send((1.0 - alpha) * start + alpha * target)
+            sent = self._send((1.0 - alpha) * start + alpha * target)
             self._sleep(1.0 / hz)
+        return sent
 
     # -- internals ---------------------------------------------------------
+
+    def _action_space(self) -> Box:
+        """Build the declared action contract selected by the configuration."""
+        if self._cfg.control_interface == "eef_pos":
+            return action_box(
+                low=self._cfg.eef_low_array,
+                high=self._cfg.eef_high_array,
+                control_interface="eef_pos",
+            )
+        if self._cfg.joints_are_delta:
+            return action_box(
+                low=self._cfg.delta_low,
+                high=self._cfg.delta_high,
+                joints_are_delta=True,
+            )
+        return action_box(low=self._cfg.low, high=self._cfg.high)
+
+    def _home_pose(self) -> Vec | None:
+        """Select the configured joint home, with a mandatory EEF-mode default."""
+        if self._cfg.control_interface == "eef_pos":
+            values = self._cfg.home_pose or DEFAULT_EEF_HOME_POSE
+            return np.asarray(values, dtype=np.float64)
+        if self._cfg.home_pose is None:
+            return None
+        return np.asarray(self._cfg.home_pose, dtype=np.float64)
+
+    def _construct_kinematics(self) -> None:
+        """Construct per-arm wrappers and apply effective model/config limits."""
+        left_raw, right_raw = self._kinematics_factory(self._cfg)
+        left_kinematics = _ArmKinematics(
+            side="left",
+            raw=left_raw,
+            config_low=self._cfg.low[: packing.ARM_DOF],
+            config_high=self._cfg.high[: packing.ARM_DOF],
+            ik_max_iters=self._cfg.ik_max_iters,
+            ik_step_joint_limit=self._cfg.ik_step_joint_limit,
+            cmd_resync_threshold=self._cfg.cmd_resync_threshold,
+            osc_deadband=self._cfg.osc_deadband,
+            osc_reversals=self._cfg.osc_reversals,
+            osc_window=self._cfg.osc_window,
+            osc_hold_steps=self._cfg.osc_hold_steps,
+        )
+        right_start = packing.ARM_WIDTH
+        right_kinematics = _ArmKinematics(
+            side="right",
+            raw=right_raw,
+            config_low=self._cfg.low[right_start : right_start + packing.ARM_DOF],
+            config_high=self._cfg.high[right_start : right_start + packing.ARM_DOF],
+            ik_max_iters=self._cfg.ik_max_iters,
+            ik_step_joint_limit=self._cfg.ik_step_joint_limit,
+            cmd_resync_threshold=self._cfg.cmd_resync_threshold,
+            osc_deadband=self._cfg.osc_deadband,
+            osc_reversals=self._cfg.osc_reversals,
+            osc_window=self._cfg.osc_window,
+            osc_hold_steps=self._cfg.osc_hold_steps,
+        )
+        self._left_kinematics = left_kinematics
+        self._right_kinematics = right_kinematics
+
+    def _require_kinematics(self) -> tuple[_ArmKinematics, _ArmKinematics]:
+        """Return both constructed EEF wrappers."""
+        if self._left_kinematics is None or self._right_kinematics is None:
+            raise RuntimeError("EEF kinematics are unavailable before reset()")
+        return self._left_kinematics, self._right_kinematics
+
+    def _validate_eef_home(self, home: Vec) -> None:
+        """Reject a joint home whose grasp sites start outside the EEF box."""
+        left_kinematics, right_kinematics = self._require_kinematics()
+        arm_values = (
+            (
+                "left",
+                left_kinematics,
+                home[: packing.ARM_DOF],
+                float(home[packing.ARM_DOF]),
+                slice(0, 5),
+            ),
+            (
+                "right",
+                right_kinematics,
+                home[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF],
+                float(home[-1]),
+                slice(5, 10),
+            ),
+        )
+        for side, kinematics, joints, gripper, bounds in arm_values:
+            position = kinematics.fk(joints)[:3, 3]
+            home_state = np.asarray((*position, 0.0, gripper))
+            if np.any(home_state < self._cfg.eef_low_array[bounds]) or np.any(
+                home_state > self._cfg.eef_high_array[bounds]
+            ):
+                raise ValueError(
+                    f"{side} EEF home state {home_state.tolist()} is outside the "
+                    "configured action workspace bounds"
+                )
+
+    def _step_eef(self, action: Vec, driver: BimanualDriver) -> None:
+        """Convert one 10-D EEF action into the normative two-arm joint command."""
+        state = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+        left_kinematics, right_kinematics = self._require_kinematics()
+        left_command = left_kinematics.solve(
+            action[:4],
+            state[: packing.ARM_DOF],
+        )
+        right_command = right_kinematics.solve(
+            action[5:9],
+            state[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF],
+        )
+        command = packing.pack(
+            np.concatenate((left_command, action[4:5])),
+            np.concatenate((right_command, action[9:10])),
+        )
+        sent = self._send(command)
+        left_kinematics.update_sent(sent[: packing.ARM_DOF])
+        right_kinematics.update_sent(sent[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF])
 
     def _horizon_secs(self) -> float | None:
         """The episode horizon in seconds: the bound envelope, else the hint.
@@ -433,11 +638,12 @@ class YAMEmbodiment:
             raise RuntimeError("step() called before reset() (or after close())")
         return self._driver
 
-    def _send(self, cmd: Vec) -> None:
+    def _send(self, cmd: Vec) -> Vec:
         """Clamp to joint limits (safety backstop) and de-normalize grippers."""
         clamped = np.clip(cmd, self._cfg.low, self._cfg.high)
         physical = self._denorm_grippers(clamped)
         self._require_driver().command_joint_pos(physical)
+        return clamped
 
     def _denorm_grippers(self, cmd: Vec) -> Vec:
         """Map wire grippers (1 = open, 0 = closed) into driver-native units."""
@@ -472,8 +678,17 @@ class YAMEmbodiment:
         # exact units STATE_SPEC declares (and _send() accepts) — the inverse of
         # the de-normalization applied to outgoing commands.
         state = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+        values = {packing.STATE_KEY: state}
+        if self._cfg.control_interface == "eef_pos":
+            left_kinematics, right_kinematics = self._require_kinematics()
+            left = left_kinematics.observe(state[: packing.ARM_DOF], gripper=float(state[6]))
+            right = right_kinematics.observe(
+                state[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF],
+                gripper=float(state[13]),
+            )
+            values["eef_state"] = np.concatenate((left, right))
         return Observation(
             images=dict(self._camera_reader(self._cfg)),
-            state={packing.STATE_KEY: state},
+            state=values,
             instruction=instruction,
         )

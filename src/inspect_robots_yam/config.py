@@ -21,6 +21,8 @@ from inspect_robots.spaces import (
     Box,
     CameraSpec,
     ObservationSpace,
+    StateField,
+    StateSpec,
 )
 
 from inspect_robots_yam.packing import ARM_DOF, DIM_LABELS, STATE_KEY, TOTAL_DIM, state_spec
@@ -55,6 +57,19 @@ DEFAULT_REST_POSE: tuple[float, ...] = (0.0,) * TOTAL_DIM
 # would reject gripper motion in one direction.
 _STEP_ARM = (0.2,) * ARM_DOF + (1.0,)
 _DEFAULT_STEP_LIMITS = _STEP_ARM * 2
+
+EEF_DIM_LABELS: tuple[str, ...] = tuple(
+    f"{side}_{part}" for side in ("left", "right") for part in ("x", "y", "z", "yaw", "gripper")
+)
+_EEF_ARM_LOW = (0.15, -0.25, 0.03, -np.pi, 0.0)
+_EEF_ARM_HIGH = (0.48, 0.25, 0.40, np.pi, 1.0)
+DEFAULT_EEF_LOW: tuple[float, ...] = _EEF_ARM_LOW * 2
+DEFAULT_EEF_HIGH: tuple[float, ...] = _EEF_ARM_HIGH * 2
+
+# Provisional 2026-07-14 LINEAR_4310 solution for EEF position (0.30, 0, 0.20),
+# jaw axis pitched 30 degrees from vertical toward the arm base, and open grippers.
+_EEF_HOME_ARM = (-0.024, 0.794, 0.645, -0.375, -0.021, -0.012, 1.0)
+DEFAULT_EEF_HOME_POSE: tuple[float, ...] = _EEF_HOME_ARM * 2
 
 
 class _FromKwargs:
@@ -91,7 +106,15 @@ class YamConfig(_FromKwargs):
     """Static configuration for a bimanual YAM embodiment."""
 
     _FLOAT_TUPLE_FIELDS = frozenset(
-        {"joint_low", "joint_high", "home_pose", "rest_pose", "step_limits"}
+        {
+            "joint_low",
+            "joint_high",
+            "eef_low",
+            "eef_high",
+            "home_pose",
+            "rest_pose",
+            "step_limits",
+        }
     )
 
     left_channel: str = "can0"
@@ -102,6 +125,16 @@ class YamConfig(_FromKwargs):
     cam_width: int = 224
     joint_low: tuple[float, ...] = _DEFAULT_LOW
     joint_high: tuple[float, ...] = _DEFAULT_HIGH
+    control_interface: str = "joints"
+    eef_low: tuple[float, ...] = DEFAULT_EEF_LOW
+    eef_high: tuple[float, ...] = DEFAULT_EEF_HIGH
+    ik_max_iters: int = 20
+    ik_step_joint_limit: float = 0.2
+    cmd_resync_threshold: float = 0.35
+    osc_deadband: float = 0.005
+    osc_reversals: int = 2
+    osc_window: int = 6
+    osc_hold_steps: int = 10
     # Optional reset target; gripper slots are normalized 0-1 (1 = open).
     home_pose: tuple[float, ...] | None = None
     # Pose used to park on close() after reset() captures the initial pose. None
@@ -144,9 +177,63 @@ class YamConfig(_FromKwargs):
                 f"gripper_type {self.gripper_type!r} is not supported; expected one of "
                 f"{sorted(SUPPORTED_GRIPPER_TYPES)} (i2rt GripperType enum names)"
             )
+        valid_interfaces = {"eef_pos", "joints"}
+        if self.control_interface not in valid_interfaces:
+            raise ValueError(
+                f"control_interface must be one of {sorted(valid_interfaces)}, "
+                f"got {self.control_interface!r}"
+            )
+        if self.control_interface == "eef_pos" and self.joints_are_delta:
+            raise ValueError(
+                "joints_are_delta=True is incompatible with control_interface='eef_pos'"
+            )
         for name in ("joint_low", "joint_high"):
             if len(getattr(self, name)) != TOTAL_DIM:
                 raise ValueError(f"{name} must have {TOTAL_DIM} entries")
+        for name in ("eef_low", "eef_high"):
+            if len(getattr(self, name)) != len(EEF_DIM_LABELS):
+                raise ValueError(f"{name} must have {len(EEF_DIM_LABELS)} entries")
+        eef_low = self.eef_low_array
+        eef_high = self.eef_high_array
+        if not np.all(np.isfinite(eef_low)) or not np.all(np.isfinite(eef_high)):
+            raise ValueError("eef_low and eef_high must contain only finite values")
+        if np.any(eef_low >= eef_high):
+            raise ValueError("eef_low must be below eef_high in every dimension")
+        for yaw_index in (3, 8):
+            if eef_low[yaw_index] < -np.pi or eef_high[yaw_index] > np.pi:
+                raise ValueError("eef yaw bounds must stay within [-pi, pi]")
+        if (
+            not isinstance(self.ik_max_iters, int)
+            or isinstance(self.ik_max_iters, bool)
+            or self.ik_max_iters <= 0
+        ):
+            raise ValueError("ik_max_iters must be a positive integer")
+        for name in ("ik_step_joint_limit", "cmd_resync_threshold"):
+            value = getattr(self, name)
+            if not np.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and > 0")
+        if not np.isfinite(self.osc_deadband) or self.osc_deadband < 0:
+            raise ValueError("osc_deadband must be finite and >= 0")
+        if (
+            not isinstance(self.osc_reversals, int)
+            or isinstance(self.osc_reversals, bool)
+            or self.osc_reversals < 0
+        ):
+            raise ValueError("osc_reversals must be a non-negative integer")
+        if (
+            not isinstance(self.osc_window, int)
+            or isinstance(self.osc_window, bool)
+            or self.osc_window <= 0
+        ):
+            raise ValueError("osc_window must be a positive integer")
+        if self.osc_reversals >= self.osc_window:
+            raise ValueError("osc_reversals must be less than osc_window")
+        if (
+            not isinstance(self.osc_hold_steps, int)
+            or isinstance(self.osc_hold_steps, bool)
+            or self.osc_hold_steps <= 0
+        ):
+            raise ValueError("osc_hold_steps must be a positive integer")
         if self.home_pose is not None and len(self.home_pose) != TOTAL_DIM:
             raise ValueError(f"home_pose must have {TOTAL_DIM} entries")
         if self.rest_pose is not None and len(self.rest_pose) != TOTAL_DIM:
@@ -203,6 +290,16 @@ class YamConfig(_FromKwargs):
         """Return positive per-step limits in radians and normalized gripper units."""
         return np.asarray(self.step_limits, dtype=np.float64)
 
+    @property
+    def eef_low_array(self) -> npt.NDArray[np.float64]:
+        """Return Cartesian lower bounds in metres, radians, and gripper units."""
+        return np.asarray(self.eef_low, dtype=np.float64)
+
+    @property
+    def eef_high_array(self) -> npt.NDArray[np.float64]:
+        """Return Cartesian upper bounds in metres, radians, and gripper units."""
+        return np.asarray(self.eef_high, dtype=np.float64)
+
 
 @dataclass(frozen=True)
 class MolmoActConfig(_FromKwargs):
@@ -238,7 +335,9 @@ class MolmoActConfig(_FromKwargs):
 DEFAULT_CAMERAS: tuple[str, ...] = ("top_cam", "left_cam", "right_cam")
 
 
-def action_semantics(joints_are_delta: bool = False) -> ActionSemantics:
+def action_semantics(
+    joints_are_delta: bool = False, *, control_interface: str = "joints"
+) -> ActionSemantics:
     """The action *semantics* both the policy and the embodiment declare.
 
     Compatibility checking compares control_mode + rotation_repr (errors) and
@@ -249,6 +348,14 @@ def action_semantics(joints_are_delta: bool = False) -> ActionSemantics:
     label-addressed tooling (e.g. the LLM agent policy) can move joints by
     name.
     """
+    if control_interface == "eef_pos":
+        return ActionSemantics(
+            control_mode="eef_abs_pose",
+            rotation_repr="none",
+            gripper="continuous",
+            frame="base",
+            dim_labels=EEF_DIM_LABELS,
+        )
     return ActionSemantics(
         control_mode="joint_delta" if joints_are_delta else "joint_pos",
         rotation_repr="none",
@@ -268,28 +375,50 @@ def action_box(
     high: npt.NDArray[np.float64] | None = None,
     *,
     joints_are_delta: bool = False,
+    control_interface: str = "joints",
 ) -> Box:
-    """The shared 14-D action space. ``low``/``high`` are optional limits
-    (the embodiment supplies them; the policy leaves them unset): absolute
-    joint limits in absolute mode, per-step displacement limits in delta mode."""
+    """Build the selected joint or Cartesian action space with optional limits.
+
+    The embodiment supplies bounds while the policy may leave them unset. Joint
+    delta mode uses per-step displacement limits; all other modes use absolute
+    limits.
+    """
     return Box(
-        shape=(TOTAL_DIM,),
+        shape=((len(EEF_DIM_LABELS),) if control_interface == "eef_pos" else (TOTAL_DIM,)),
         low=low,
         high=high,
-        semantics=action_semantics(joints_are_delta),
+        semantics=action_semantics(joints_are_delta, control_interface=control_interface),
     )
 
 
 def observation_space(
-    height: int, width: int, names: tuple[str, ...], state_key: str = STATE_KEY
+    height: int,
+    width: int,
+    names: tuple[str, ...],
+    state_key: str = STATE_KEY,
+    *,
+    control_interface: str = "joints",
 ) -> ObservationSpace:
-    """The shared observation space: three cameras + the packed 14-D state.
+    """Build the camera and proprioception contract for the selected interface.
 
     ``state_key`` drives *both* ``state_keys`` and the ``StateSpec`` field key so
-    the space stays internally consistent for any configured key.
+    joint mode stays internally consistent for any configured key. Cartesian
+    mode additionally declares its 10-D ``eef_state`` reference.
     """
+    state = state_spec(state_key)
+    if control_interface == "eef_pos":
+        state = StateSpec(
+            fields=(
+                *state.fields,
+                StateField(
+                    key="eef_state",
+                    shape=(len(EEF_DIM_LABELS),),
+                    unit="m+rad+normalized",
+                ),
+            )
+        )
     return ObservationSpace(
         cameras=camera_specs(height, width, names),
-        state_keys=frozenset({state_key}),
-        state=state_spec(state_key),
+        state_keys=state.keys,
+        state=state,
     )
