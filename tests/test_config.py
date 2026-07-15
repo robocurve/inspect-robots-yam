@@ -1,4 +1,4 @@
-"""Tests for YamConfig / MolmoActConfig."""
+"""Tests for YamConfig and ActServerConfig."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from inspect_robots_yam.config import (
     DEFAULT_JOINT_HOME_POSE,
     DEFAULT_REST_POSE,
     EEF_DIM_LABELS,
+    ActServerConfig,
     MolmoActConfig,
     YamConfig,
     action_box,
@@ -40,11 +41,12 @@ def test_yam_defaults() -> None:
 
 
 def test_molmo_defaults_and_url() -> None:
-    cfg = MolmoActConfig()
+    cfg = ActServerConfig()
     assert cfg.num_steps == 10
     assert cfg.action_horizon == 30
     assert cfg.state_key == "joint_pos"
     assert cfg.camera_order == DEFAULT_CAMERAS
+    assert cfg.name == "molmoact2"
     assert cfg.url == "http://127.0.0.1:8202/act"
 
 
@@ -59,9 +61,12 @@ def test_molmo_url_adds_missing_endpoint_slash() -> None:
 
 
 def test_from_kwargs_populates_scalars() -> None:
-    cfg = MolmoActConfig.from_kwargs(server_url="http://gpu:8202", num_steps=20)
+    cfg = ActServerConfig.from_kwargs(
+        server_url="http://gpu:8202", num_steps=20, name="remote-model"
+    )
     assert cfg.server_url == "http://gpu:8202"
     assert cfg.num_steps == 20
+    assert cfg.name == "remote-model"
 
 
 def test_yam_from_kwargs() -> None:
