@@ -46,6 +46,15 @@ In `ActServerPolicy.__init__`, `PolicyInfo(name=self._cfg.name)` replaces the
 hardcoded string. The missing-camera error message
 (`"required by molmoact2"`) becomes `f"required by {cfg.name}"`.
 
+`act()` additionally gains a non-finite check after the existing shape check
+(`if not np.isfinite(actions).all(): raise ValueError("/act returned
+non-finite actions")`). Rationale: the approver-based clamp is optional
+(`--disable-guardrails`) and the embodiment's `np.clip` backstop propagates
+NaN, so per the repo's safety invariants the client must not rely on either;
+this also hardens existing `molmoact2` runs, and it is what makes the shim's
+NaN-initialized scatter buffer (§2.4) loud rather than silent. One test:
+a chunk containing NaN raises `ValueError` matching `"non-finite"`.
+
 Module docstring: rewrite to describe the generic /act client, naming
 MolmoAct2's `host_server_yam.py` as the canonical server and
 `scripts/serve_gr00t_act.py` as the GR00T one.
@@ -174,14 +183,21 @@ Implementation contract (verified against the cached Isaac-GR00T checkout,
   missing names (a subset-only check would let a left-arm-only fine-tune
   pass and silently command the right arm to encoder-zero with the gripper
   closed: unfilled dims land inside the embodiment's clamp bounds, so no
-  downstream guard catches it). Each key's width from the checkpoint's
-  stats must equal its slice width; together the slices exactly partition
-  indices 0..13. Per request: fill each state key from its named slice;
+  downstream guard catches it). Each key's width must equal its slice width;
+  together the slices exactly partition indices 0..13. Width source (the
+  modality config does not carry widths — `ModalityConfig` has only
+  `modality_keys` and `delta_indices`): read
+  `<model_dir>/experiment_cfg/dataset_statistics.json`, keyed by the
+  embodiment tag *value* (`new_embodiment`);
+  `width = len(stats[tag]["state"|"action"][key]["mean"])`. Verified present
+  in the target checkpoint with the expected widths for all four keys in
+  both modalities. Per request: fill each state key from its named slice;
   scatter each returned action key into its named slice of a `(T, 14)`
   buffer. With exact-partition validation every buffer element is written
   before use; initialize with `np.full(..., np.nan)` anyway so any future
-  validation regression produces NaNs (loud, and rejected upstream) instead
-  of plausible zeros. Modality-config order is never load-bearing.
+  validation regression produces NaNs, which the client's non-finite check
+  (§2.1) rejects loudly instead of plausible zeros. Modality-config order
+  is never load-bearing.
 - Action return: `get_action` returns a **tuple** — `actions, _info =
   policy.get_action(observation)` with `actions: {key: (1, T, D) float32}`
   (`BasePolicy.get_action` → `return action, info`).
@@ -232,6 +248,8 @@ All in existing files; mocked transport, no network, 100% coverage holds.
     defaults entirely; `post_fn` passthrough exercises `act()` once.
   - Missing-camera error message carries the configured name (construct with
     `name="gr00t"` and match `"required by gr00t"`).
+  - Non-finite chunk: a `post_fn` returning actions containing NaN raises
+    `ValueError` matching `"non-finite"`.
   - Alias identity: `MolmoAct2Policy is ActServerPolicy`,
     `MolmoActConfig is ActServerConfig`.
 - `tests/test_config.py`: `ActServerConfig().name == "molmoact2"`; `name`
