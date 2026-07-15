@@ -138,8 +138,10 @@ def test_step_gripper_denormalization() -> None:
 
 
 def test_gripper_wire_endpoints_map_one_to_open_and_zero_to_closed() -> None:
+    state = np.zeros(14)
+    state[6] = state[13] = 0.72  # driver starts at the open endpoint
     cfg = YamConfig(gripper_open=0.72, gripper_closed=0.04)
-    emb, drv, _ = _build(cfg)
+    emb, drv, _ = _build(cfg, driver=FakeDriver(state=state))
     emb.reset(Scene(id="s", instruction="x"))
 
     open_action = np.zeros(14)

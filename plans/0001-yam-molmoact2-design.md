@@ -111,9 +111,8 @@ robolens-yam/
   limits** (conservative YAM defaults: joints ±π, gripper 0..1) used for the action
   `Box` and the `step()` clamp backstop,
   `home_pose: tuple[float,...] | None`,
-  `gripper_open=0.0`, `gripper_closed=1.0` (calibration),
-  (Superseded by plan 0004: wire 1 maps to open, with defaults
-  `gripper_open=1.0`, `gripper_closed=0.0`.)
+  `gripper_open=0.0`, `gripper_closed=1.0` (calibration; superseded by plan
+  0004 — wire 1 now maps to open, defaults `gripper_open=1.0`, `gripper_closed=0.0`),
   `joints_are_delta=False` (**see §4 Risk #1 — does NOT change declared semantics**).
 - `MolmoActConfig` (frozen): `server_url="http://127.0.0.1:8202"`, `endpoint="/act"`,
   `num_steps=10`, `timeout_s=30.0`,
