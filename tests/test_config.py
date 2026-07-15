@@ -9,7 +9,10 @@ import pytest
 from inspect_robots.spaces import CameraSpec
 
 from inspect_robots_yam.config import (
+    _DEFAULT_HIGH,
+    _DEFAULT_LOW,
     DEFAULT_CAMERAS,
+    DEFAULT_REST_POSE,
     MolmoActConfig,
     YamConfig,
     camera_specs,
@@ -114,8 +117,19 @@ def test_camera_specs() -> None:
 
 def test_yam_rest_defaults() -> None:
     cfg = YamConfig()
-    assert cfg.rest_pose is None
+    assert cfg.rest_pose == DEFAULT_REST_POSE
     assert cfg.rest_secs == 3.0
+
+
+def test_default_rest_pose_is_valid_for_default_limits() -> None:
+    assert len(DEFAULT_REST_POSE) == 14
+    assert all(0.0 <= DEFAULT_REST_POSE[index] <= 1.0 for index in (6, 13))
+    arm_indices = set(range(14)) - {6, 13}
+    assert all(
+        _DEFAULT_LOW[index] <= DEFAULT_REST_POSE[index] <= _DEFAULT_HIGH[index]
+        for index in arm_indices
+    )
+    assert YamConfig(rest_pose=DEFAULT_REST_POSE).rest_pose == DEFAULT_REST_POSE
 
 
 def test_yam_rejects_bad_rest_pose() -> None:
@@ -220,6 +234,8 @@ def test_pose_fields_parse_comma_strings_from_flat_kwargs() -> None:
 def test_pose_string_parse_errors_are_guided() -> None:
     with pytest.raises(ValueError, match="rest_pose"):
         YamConfig.from_kwargs(rest_pose="0.1,zoom,0.3")
+    with pytest.raises(ValueError, match="rest_pose"):
+        YamConfig.from_kwargs(rest_pose="")
     with pytest.raises(ValueError, match="rest_pose must have 14"):
         YamConfig.from_kwargs(rest_pose="0.1,0.2")
 
