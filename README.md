@@ -219,14 +219,18 @@ off requires an explicit `--disable-guardrails`.
 > file an issue with the numbers. Keep a hand on the e-stop for the first
 > runs.
 
-Set a resting pose so runs end with a gentle 3-second park instead of the
-arms going limp mid-air (pose fields accept comma-separated values from the
-CLI and config.ini):
+YAM ships with a factory resting pose at encoder zero for every joint and 0.0
+(the closed end of the stroke) for both grippers, so standard upright rigs end
+with a gentle 3-second park instead of going limp mid-air. Override it per rig when needed. Pose fields
+accept comma-separated values from the CLI and config.ini:
 
 ```ini
 [embodiment.args]
-rest_pose = -0.002,0.002,0.002,-0.089,0.007,-0.026,1.0,-0.006,0.002,0.001,-0.087,-0.007,-0.019,1.0
+rest_pose = -0.002,0.002,0.002,-0.089,0.007,-0.026,0.0,-0.006,0.002,0.001,-0.087,-0.007,-0.019,0.0
 ```
+
+Set `rest_pose = none` to opt out of the factory target and park at the pose
+captured before the first commanded motion instead.
 
 In delta mode (`-E joints_are_delta=true`) the declared action space is the
 per-step displacement box (`YamConfig.step_limits`, default 0.2 rad per joint
@@ -252,10 +256,18 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
   stand clear when the episode starts, and set `home_pose` so episodes begin
   from your checkpoint's trained start state.
 - **Park pose must rest under gravity.** On close, the arms ramp back to an
-  explicit `rest_pose` or, by default, to the pose they were in at the first
-  reset, and torque is released once the ramp finishes. Start runs (or set
-  `rest_pose`) with the arms in a supported resting pose, not held mid-air:
-  whatever pose the park ends in is the pose the arms go limp from.
+  explicit per-rig `rest_pose` or the factory all-zero target, and torque is
+  released once the ramp finishes. Set `rest_pose=none` to opt out and fall
+  back to the pose captured at the first reset. Verify that the factory target
+  is a supported resting pose on your rig, or start runs (or set `rest_pose`)
+  with the arms in one, not held mid-air: whatever pose the park ends in is the
+  pose the arms go limp from. The park path is not collision-checked, so keep
+  the workspace clear at episode end. The default parks with both grippers
+  closed (wire 0), so anything still held stays gripped at park: clear the
+  grippers before ending the run, or park open with a per-rig `rest_pose`
+  whose gripper slots are 1.0. Override `rest_pose` on rigs
+  whose joint limits exclude zero, since the park target is clamped through the
+  same per-joint box as every command.
 - **Absolute vs. delta joints: verify first.** MolmoAct2's YAM `actions` are
   treated as *absolute* joint targets by default. If your checkpoint emits
   deltas, set `YamConfig(joints_are_delta=True)` (the embodiment converts to
@@ -301,9 +313,9 @@ driver boundary; pose and limit vectors never use driver-native gripper units.
 enum *name*, e.g. `LINEAR_4310`; grippers only: `NO_GRIPPER`/`YAM_TEACHING_HANDLE`
 would break the 14-D packing and are rejected), `control_hz`, `cam_height/width`,
 `joint_low/high`, `home_pose` (reset ramps here smoothly over `rest_secs` rather
-than jumping), `rest_pose` (explicit close park override; by default, close
-ramps back to the pose the arms were in at the first reset before torque is
-released),
+than jumping), `rest_pose` (close park target; defaults to the factory all-zero
+pose, accepts a per-rig override, and accepts `none` to fall back to the pose
+captured at the first reset before torque is released),
 `rest_secs` (ramp duration, default 3.0), `gripper_open/closed`,
 `joints_are_delta`, `zero_gravity_mode` (default `True`; see *Safety*),
 `unattended` (default `False`; skip operator prompts),
@@ -312,6 +324,9 @@ three or none), `max_steps_hint` (deprecated: on inspect-robots newer than
 0.8.1, framework runs feed the status line the real horizon automatically;
 the hint is only a fallback for direct `rollout()` calls or older cores;
 bounds nothing).
+The current factory value is available for inspection as
+`inspect_robots_yam.config.DEFAULT_REST_POSE`; this is an informational constant,
+not a stable import.
 `MolmoActConfig`: `server_url`, `endpoint`, `num_steps` (the wire field: the
 server's flow-matching denoising steps, *not* the chunk length),
 `action_horizon` (the checkpoint's advertised chunk length, 30 for the bimanual

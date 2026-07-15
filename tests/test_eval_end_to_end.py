@@ -57,7 +57,7 @@ def test_timer_runout_parks_at_init_pose_on_close() -> None:
     drv.state = init_pose.copy()
     policy = MolmoAct2Policy(MolmoActConfig(num_steps=1), post_fn=_post_away)
     embodiment = YAMEmbodiment(
-        YamConfig(unattended=True, rest_secs=0.2),
+        YamConfig(rest_pose=None, unattended=True, rest_secs=0.2),
         driver_factory=lambda _c: drv,
         camera_reader=_cameras,
         sleep_fn=lambda _d: None,

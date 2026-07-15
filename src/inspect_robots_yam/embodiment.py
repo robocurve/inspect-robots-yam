@@ -343,12 +343,12 @@ class YAMEmbodiment:
     def close(self) -> None:
         """Park the arms, then release the driver handles.
 
-        Parking uses an explicit ``rest_pose`` when configured, otherwise it
-        falls back to the pose captured at the first ``reset()`` of this
-        connection (before any commanded motion) so torque-off is harmless by
-        default. The release lives in a ``finally`` so a driver fault or
-        interrupt mid-ramp can never leave the handles held — but the arms may
-        then fall from a mid-ramp pose. No-op if never connected.
+        After ``reset()`` captures a pose, parking uses the configured
+        ``rest_pose`` or falls back to that captured pose when configured as
+        ``None``. A connection that faults before capture is released in place.
+        The release lives in a ``finally`` so a driver fault or interrupt
+        mid-ramp can never leave the handles held — but the arms may then fall
+        from a mid-ramp pose. No-op if never connected.
         """
         # Unconditionally first: a bound-but-never-reset instance (eval() can
         # abort between bind_task and the first reset) must not carry a stale
@@ -357,12 +357,12 @@ class YAMEmbodiment:
         if self._driver is None:
             return
         try:
-            target = (
-                np.asarray(self._cfg.rest_pose, dtype=np.float64)
-                if self._cfg.rest_pose is not None
-                else self._init_pose
-            )
-            if target is not None:
+            if self._init_pose is not None:
+                target = (
+                    np.asarray(self._cfg.rest_pose, dtype=np.float64)
+                    if self._cfg.rest_pose is not None
+                    else self._init_pose
+                )
                 if not self._cfg.unattended:
                     self._status("parking: ramping arms back before torque-off")
                 try:

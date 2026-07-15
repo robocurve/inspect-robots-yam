@@ -1,4 +1,4 @@
-# 0004 — Gripper normalization polarity: wire 1 = open
+# 0005 — Gripper normalization polarity: wire 1 = open
 
 ## Problem
 
@@ -79,7 +79,7 @@ stays the identity map.
   (`gripper_open=0.0, gripper_closed=1.0` at line ~114; "Gripper
   calibration" resolution at line ~256), and the plugin CLAUDE.md directs
   agents to read 0001 before changing the contract. Add a short
-  supersession note at both 0001 sites pointing to this plan (0004), and
+  supersession note at both 0001 sites pointing to this plan (0005), and
   mention 0004 next to the CLAUDE.md pointer. Do not rewrite 0001's
   history.
 
