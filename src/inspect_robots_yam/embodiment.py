@@ -42,6 +42,26 @@ Vec = npt.NDArray[np.float64]
 
 
 @runtime_checkable
+class TaskEnvelopeLike(Protocol):
+    """Structural mirror of ``inspect_robots.task.TaskEnvelope``.
+
+    Read-only property members (not plain attributes) so the frozen core
+    dataclass satisfies the protocol under mypy strict. Local rather than
+    imported: this package supports cores that predate ``TaskEnvelope``.
+    """
+
+    @property
+    def name(self) -> str:
+        """The task's registry/display name."""
+        ...
+
+    @property
+    def max_steps(self) -> int:
+        """The rollout horizon the framework will enforce."""
+        ...
+
+
+@runtime_checkable
 class BimanualDriver(Protocol):
     """The minimal 14-D joint-position driver the embodiment needs."""
 
@@ -218,6 +238,7 @@ class YAMEmbodiment:
         self._instruction: str | None = None
         self._t_last = 0.0
         self.num_steps = 0
+        self._bound_max_steps: int | None = None
 
         self.info = EmbodimentInfo(
             name="yam_arms",
@@ -240,6 +261,20 @@ class YAMEmbodiment:
         )
 
     # -- lifecycle ---------------------------------------------------------
+
+    def bind_task(self, envelope: TaskEnvelopeLike) -> None:
+        """Store the framework's rollout horizon for the operator countdown.
+
+        Optional-input hook (inspect-robots plan 0013): it never fires on
+        direct ``rollout()`` calls or on cores that predate it, in which case
+        the countdown falls back to the deprecated ``max_steps_hint`` (or
+        elapsed-only). Hardware-free — the framework calls it before
+        ``reset()`` ever connects the driver. One call per ``eval()``; the
+        latest envelope wins. On a caller-owned instance an aborted eval
+        (e.g. a compatibility failure after binding) leaves the envelope in
+        place until ``close()`` or the next bind.
+        """
+        self._bound_max_steps = int(envelope.max_steps)
 
     def reset(self, scene: Scene, *, seed: int | None = None) -> Observation:
         """Connect (if needed), drive to home, and block on operator readiness."""
@@ -315,6 +350,10 @@ class YAMEmbodiment:
         interrupt mid-ramp can never leave the handles held — but the arms may
         then fall from a mid-ramp pose. No-op if never connected.
         """
+        # Unconditionally first: a bound-but-never-reset instance (eval() can
+        # abort between bind_task and the first reset) must not carry a stale
+        # horizon into a later framework-less run.
+        self._bound_max_steps = None
         if self._driver is None:
             return
         try:
@@ -362,12 +401,18 @@ class YAMEmbodiment:
     # -- internals ---------------------------------------------------------
 
     def _horizon_secs(self) -> float | None:
-        """The episode horizon in seconds, if max_steps_hint is configured."""
-        hint = self._cfg.max_steps_hint
+        """The episode horizon in seconds: the bound envelope, else the hint.
+
+        Dividing by our own ``control_hz`` is honest because this embodiment
+        is ``SELF_PACED`` — that rate is the one ``_pace()`` sleeps to.
+        """
+        steps = (
+            self._bound_max_steps if self._bound_max_steps is not None else self._cfg.max_steps_hint
+        )
         hz = self._cfg.control_hz
-        if hint is None or not hz or hz <= 0:
+        if steps is None or not hz or hz <= 0:
             return None
-        return hint / hz
+        return steps / hz
 
     def _emit_status(self) -> None:
         """Once per second (of control time), tell the operator where they are."""
