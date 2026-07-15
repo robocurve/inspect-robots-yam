@@ -9,12 +9,15 @@ import inspect_robots_yam
 EXPECTED_API = {
     "STATE_KEY",
     "TOTAL_DIM",
+    "ActServerPolicy",
+    "ActServerConfig",
     "MolmoAct2Policy",
     "MolmoActConfig",
     "OperatorIO",
     "YAMEmbodiment",
     "YamConfig",
     "build",
+    "gr00t_policy",
     "pack",
     "run_preflight",
     "split",
@@ -40,6 +43,8 @@ def test_entry_points_resolve_via_registry() -> None:
     from inspect_robots.registry import resolve
 
     pol = resolve("policy", "molmoact2")
+    gr00t = resolve("policy", "gr00t")
     emb = resolve("embodiment", "yam_arms")
     assert pol.info.name == "molmoact2"
+    assert gr00t.info.name == "gr00t"
     assert emb.info.name == "yam_arms"
