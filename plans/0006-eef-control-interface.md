@@ -94,9 +94,16 @@ sided elbow) and unreachable below z ≈ 0.15 anywhere near the base, and the
 prior draft's box failed 8/14 probes. Reachability inside the box still
 depends on commanded yaw (the validation uses radial yaw); off-radial yaws
 at box extremes may fall back to best-effort IK, which the observation
-reports honestly. `z_min = 0.03` keeps table clearance against best-effort
-position error. The tier-2 test (§7) re-validates all 15 probe points on
-every run so a model update cannot silently invalidate the defaults.
+reports honestly. On `z_min = 0.03`, measured on the model: the fingertip
+meshes extend ~11 mm *below* `grasp_site` at the held orientation, so true
+table clearance at z_min is ~19 mm, less up to ~5 mm of best-effort IK
+error — adequate over a table at the arm-base plane, but a raised work
+surface needs a raised `z_min` (config-overridable like the rest of the
+box). The tier-2 test (§7) re-validates all 15 probe points on every run
+so a model update cannot silently invalidate the defaults.
+`eef_low`/`eef_high` overrides are validated: yaw bounds outside
+[−π, π] are rejected (reported yaw always wraps into (−π, π], so a wider
+bound would break echo-back).
 
 - Coordinates are in **each arm's own base frame** (+x forward from the arm
   base, +z up — a per-mount convention software cannot verify; on mirrored
@@ -107,7 +114,9 @@ every run so a model update cannot silently invalidate the defaults.
   space's `ActionSemantics.frame` ("base") and must be spelled out in the
   agent-facing bounds text via dim naming alone (the plugin already
   enumerates labels and bounds into the tool description).
-- `yaw` is rotation about base +z, absolute, bounded — NOT wrapped: a
+- `yaw` is rotation about base +z, absolute-not-delta (a target, not a
+  displacement; its zero point is relative to the reset orientation, per
+  the convention below), bounded — NOT wrapped: a
   3.1 → −3.1 command linearly sweeps ~2π through zero rather than taking
   the short way. The tool description must say so and advise intermediate
   yaws for near-±π regrasps. Full orientation (rot6d) is a possible later
@@ -177,27 +186,47 @@ reset, exactly like a bad CAN channel does today.
   failure is NOT an exception: the best-effort joints move toward the
   target and the truth shows up in the next observation's FK state,
   closing the loop.
-- Oscillation damping (anti-livelock), per joint and step-observable —
-  `step()` has no chunk concept, so the guard cannot reference chunk
-  boundaries, and a position-progress rule would falsely freeze pure-yaw
-  regrasps (position error is static during rotation). Instead: for each
-  arm joint, if the commanded direction reverses more than
-  `osc_reversals = 2` times within a sliding `osc_window = 6`-step window,
-  that joint's command holds at its current value for
-  `osc_hold_steps = 10` steps (1 s at 10 Hz), then re-evaluates (all three
-  are config knobs). A branch-flip clamp cycle — the failure this kills —
-  reverses direction every step and gets duty-cycled to ≤ 3 reversals per
-  1.6 s per joint instead of oscillating ±`ik_step_joint_limit` at 10 Hz
-  for a full 10 s chunk; monotone approaches and single overshoots never
-  trigger it; a legitimate fine-positioning dither at worst pauses that
-  joint for 1 s and resumes. The observation meanwhile reports true state,
-  so a persistent stall is visible to the agent, which replans.
+- Oscillation damping (anti-livelock), step-observable — `step()` has no
+  chunk concept, so the guard cannot reference chunk boundaries, and a
+  position-progress rule would falsely freeze pure-yaw regrasps (position
+  error is static during rotation). Per arm joint, a commanded-direction
+  *reversal* is counted only when both deltas exceed a deadband
+  (`osc_deadband`, default 0.005 rad — converged solves alternate delta
+  signs at floating-point scale and must not count). If any joint of an
+  arm accumulates more than `osc_reversals = 2` reversals within a sliding
+  `osc_window = 6`-step window, **the whole arm** holds its last command
+  for `osc_hold_steps = 10` steps (1 s at 10 Hz) — holding only the
+  tripped joint would execute a mixture of branch-A and held joints, a
+  configuration on neither IK branch with its own uncontrolled EEF
+  excursion. After a hold expires, that arm's window and counters clear.
+  All four are config knobs. A branch-flip clamp cycle — the failure this
+  kills — reverses direction every step and gets duty-cycled to ≤ 3
+  reversals per 1.6 s instead of oscillating ±`ik_step_joint_limit` at
+  10 Hz for a full 10 s chunk; monotone approaches and single overshoots
+  never trigger it; a legitimate fine-positioning dither at worst pauses
+  the arm for 1 s and resumes. The observation meanwhile reports true
+  state, so a persistent stall is visible to the agent, which replans.
+- Stated plainly for the safety record: rate-clamped intermediate
+  configurations are not IK solutions, so the EEF path during a clamped
+  branch transit is uncontrolled (bounded per step by the joint clamp,
+  bounded overall by joint limits and the hold guard) — this is the
+  mechanism behind the tens-of-centimeters residual excursion documented
+  below.
 - **Joint-space rate backstop (safety-critical).** The Cartesian
   `DeltaLimitApprover` cannot see joint deltas, and an IK branch flip
   (elbow reconfiguration near a singularity or limit) can return a solution
   radians away from the current pose. Before commanding, eef-mode `step()`
-  clamps the per-joint displacement: `q_cmd = q_now + clip(q_ik − q_now,
-  ±ik_step_joint_limit)` with `ik_step_joint_limit` a config knob
+  clamps the per-joint displacement against the **last commanded** joints:
+  `q_cmd = q_cmd_prev + clip(q_ik − q_cmd_prev, ±ik_step_joint_limit)` —
+  the same reference as the warm start, keeping the command path
+  deterministic and encoder-noise-free (clamping against measured joints
+  would feed noise into saturated deltas and the reversal counter). The
+  cost of that choice is windup: a physically stalled or obstructed arm
+  lets `q_cmd_prev` march ahead of reality, so if any joint's
+  `|q_cmd_prev − q_measured|` exceeds `cmd_resync_threshold` (config,
+  default 0.35 rad) the reference re-seeds from the measured joints — a
+  documented re-sync that bounds the divergence and may trigger one branch
+  re-evaluation. `ik_step_joint_limit` is a config knob
   defaulting to 0.2 rad per joint per step (the same scale as delta mode's
   `_STEP_ARM`). This restores in eef mode the "no wild swings" guarantee
   joint mode gets from the core guardrails — in *joint space*. Stated
@@ -249,14 +278,20 @@ Homing, `rest_pose`, and parking remain joint-space mechanisms — those
 poses are 14-D joint vectors regardless of `control_interface`. But eef
 mode changes the *default* home: `DEFAULT_EEF_HOME_POSE`, a 14-D joint
 vector placing each arm's EEF at (0.30, 0, 0.20) in its base frame with
-the tool pitched 30° from vertical toward the base and yaw 0 (per-arm
+the tool pitched 30° from vertical toward the base — precisely: the
+*gripper-frame x-axis* (jaw axis) is 30° from straight-down; the physical
+approach axis (site z) is 60° from vertical — and yaw 0 (per-arm
 joints ≈ [-0.024, 0.794, 0.645, -0.375, -0.021, -0.012], grippers open —
 provisional values from the 2026-07-14 probe; implementation re-derives
 them with the tier-2 test and records the derivation script). This
 orientation is what §4's box validation holds, and it is what makes the
 yaw extraction robust (§4). The joint-space zero rest pose is NOT a valid
 eef-mode start: its EEF sits outside the default box and its vertical tool
-axis is yaw-degenerate.
+axis is yaw-degenerate. Accordingly, `home_pose=None` — which in joint
+mode means "skip homing" — is redefined in eef mode to select
+`DEFAULT_EEF_HOME_POSE`: an un-homed eef-mode start would bypass the
+FK-in-box validation and begin yaw-degenerate, so skipping is not offered
+in this mode.
 
 At first `reset()` in eef mode (once kinematics exist, §5), the configured
 (or default) home pose is validated: FK(home) must lie inside the
@@ -277,10 +312,23 @@ and its returned observation already carries `eef_state`.
 the same seam pattern as the existing `driver_factory` constructor kwarg
 (NOT a `YamConfig` field: the config is a frozen, CLI-constructable
 dataclass of scalars/tuples reachable via `-E key=value`, and a callable
-would break that contract). The factory returns per-arm objects satisfying
-a small `fk(q) -> 4x4` / `ik(target, init_q) -> (bool, q)` protocol. The
-default factory lazily imports i2rt (`_i2rt.py` conventions) and wraps
-`i2rt.robots.kinematics.Kinematics`; tests inject a deterministic fake.
+would break that contract). The seam is placed so that every behavior this
+plan specifies is *plugin* code, tier-1 testable against fakes:
+
+- The factory returns per-arm **raw** solver objects satisfying the
+  minimal `fk(q) -> 4x4` / `ik(target, init_q) -> (bool, q)` protocol,
+  plus a way to read/write the model joint ranges. The default factory
+  lazily imports i2rt (`_i2rt.py` conventions) and hands back
+  `i2rt.robots.kinematics.Kinematics` instances; tests inject
+  deterministic fakes.
+- A plugin-level `_ArmKinematics` wrapper — ordinary, always-importable
+  plugin code — owns everything else: first-six positional arm-joint
+  addressing, gripper-joint pinning/stripping (0..2 trailing joints),
+  the per-side `jnt_range` intersection with config limits, warm-start
+  clipping, the rate backstop, and the oscillation guard. Tier-1 tests
+  exercise all of it through injected raw fakes; nothing spec'd lives
+  only inside the lazily-importing factory.
+
 This keeps the import-hygiene gate green (no mink/mujoco at import time)
 and makes 100% coverage achievable without i2rt installed.
 
@@ -303,8 +351,12 @@ and debugging; its shape cannot collide with (10,).
 injected fake kinematics (§5c) and the existing fake driver.
 
 - Config: `control_interface` validation (unknown value, delta+eef
-  combination), default unchanged; new knobs (`eef_low/high`,
-  `ik_max_iters`, `ik_step_joint_limit`, `kinematics_factory`) validated.
+  combination), default unchanged; new config knobs (`eef_low/high`
+  including the yaw-bounds-within-[−π, π] rule, `ik_max_iters`,
+  `ik_step_joint_limit`, `cmd_resync_threshold`, `osc_deadband`,
+  `osc_reversals`, `osc_window`, `osc_hold_steps`) validated.
+  (`kinematics_factory` is a constructor kwarg, not a config field — its
+  tests live with the embodiment, not the config.)
 - Space: eef space shape/labels/bounds/semantics; observation StateSpec
   declares `eef_state` at (10,) exactly once alongside `joint_pos` (14,).
 - step(): 10-D action → both arms commanded; joint-space rate backstop
@@ -329,7 +381,11 @@ injected fake kinematics (§5c) and the existing fake driver.
 - Integration with the agent plugin: `build_toolset` on the eef space
   produces tooling with the 10 labels and correct bounds text; a scripted
   conversation drives a straight-line move and the emitted chunk passes
-  `ChainApprover(Clamp, DeltaLimit)` untouched. Dependency mechanism,
+  `ChainApprover(Clamp, DeltaLimit)` untouched. (Clean-case only, noted:
+  after a best-effort divergence, `DeltaLimitApprover`'s store still
+  references the last *approved* action, so the next chunk's first steps
+  can clamp toward the stale target for a few steps — bounded, safe
+  direction, documented rather than tested.) Dependency mechanism,
   spelled out: this repo is not a uv workspace — add
   `inspect-robots-agent>=0.2.2` (PyPI) to the `dev` extra and re-run
   `uv lock`. The integration test must not assert the move tool's *name*
