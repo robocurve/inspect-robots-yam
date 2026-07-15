@@ -133,7 +133,7 @@ class YamConfig(_FromKwargs):
     joint_low: tuple[float, ...] = _DEFAULT_LOW
     joint_high: tuple[float, ...] = _DEFAULT_HIGH
     control_interface: str = "joints"
-    # Operator-supplied rig-specific notes appended to the builtin agent docs.
+    # Operator-supplied rig-specific notes appended to the built-in agent docs.
     docs_extra: str = ""
     eef_low: tuple[float, ...] = DEFAULT_EEF_LOW
     eef_high: tuple[float, ...] = DEFAULT_EEF_HIGH

@@ -394,7 +394,7 @@ vectors in both control interfaces.
 enum *name*, e.g. `LINEAR_4310`; grippers only: `NO_GRIPPER`/`YAM_TEACHING_HANDLE`
 would break the 14-D packing and are rejected), `control_hz`, `cam_height/width`,
 `joint_low/high`, `control_interface` (`joints` by default or `eef_pos`),
-`docs_extra` (rig-specific notes appended to the builtin agent documentation),
+`docs_extra` (rig-specific notes appended to the built-in agent documentation),
 `eef_low/high`, `ik_max_iters`, `ik_step_joint_limit`,
 `cmd_resync_threshold`, `osc_deadband`, `osc_reversals`, `osc_window`,
 `osc_hold_steps`, `home_pose` (reset always ramps here smoothly over
