@@ -55,6 +55,7 @@ yam_arms = "inspect_robots_yam.embodiment:YAMEmbodiment"
 
 [project.entry-points."inspect_robots.policies"]
 molmoact2 = "inspect_robots_yam.policy:MolmoAct2Policy"
+gr00t = "inspect_robots_yam.policy:gr00t_policy"
 
 [project.scripts]
 inspect-robots-yam-preflight = "inspect_robots_yam.preflight:main"

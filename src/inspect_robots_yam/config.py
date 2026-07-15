@@ -1,10 +1,11 @@
-"""Configuration for the YAM embodiment and the MolmoAct2 policy client.
+"""Configuration for the YAM embodiment and the generic ``/act`` policy client.
 
-Both configs are frozen dataclasses with defaults that match MolmoAct2's
+Both configs are frozen dataclasses. The client defaults match MolmoAct2's
 first-party bimanual-YAM server, so zero-arg construction "just works". Each
 exposes :meth:`from_kwargs` so the adapters can accept flat scalar keyword
-arguments — this is what lets ``inspect-robots run -P server_url=... -E left_channel=...``
-configure them, since the Inspect Robots CLI only forwards scalar ``key=value`` pairs.
+arguments. This is what lets ``inspect-robots run -P server_url=...
+-E left_channel=...`` configure them, since the Inspect Robots CLI only
+forwards scalar ``key=value`` pairs.
 """
 
 from __future__ import annotations
@@ -313,17 +314,17 @@ class YamConfig(_FromKwargs):
 
 
 @dataclass(frozen=True)
-class MolmoActConfig(_FromKwargs):
-    """Static configuration for the MolmoAct2 ``/act`` client.
+class ActServerConfig(_FromKwargs):
+    """Static configuration for the generic ``/act`` policy client.
 
     ``num_steps`` is the wire-protocol field of the same name: the number of
     flow-matching **denoising steps** the server runs per inference
     (``predict_action(num_steps=...)`` → ``flow_matching_num_steps``). It does
-    NOT control how many actions come back — the chunk length is fixed by the
-    checkpoint's norm stats (``action_horizon``/``n_action_steps``, 30 for
-    ``yam_dual_molmoact2``). ``action_horizon`` here is that advertised chunk
-    length, surfaced as :class:`~inspect_robots.policy.PolicyConfig` metadata;
-    the actual length is always taken from the server's response.
+    NOT control how many actions come back. ``action_horizon`` is the
+    checkpoint's advertised chunk length, surfaced as
+    :class:`~inspect_robots.policy.PolicyConfig` metadata; the actual length is
+    always taken from the server's response. Its 30-step default belongs to
+    MolmoAct2's bimanual-YAM checkpoint. ``name`` labels the policy in eval logs.
     """
 
     server_url: str = "http://127.0.0.1:8202"
@@ -336,11 +337,15 @@ class MolmoActConfig(_FromKwargs):
     state_key: str = "joint_pos"
     cam_height: int = 224
     cam_width: int = 224
+    name: str = "molmoact2"
 
     @property
     def url(self) -> str:
         """Join the server and endpoint with exactly one separating slash."""
         return self.server_url.rstrip("/") + "/" + self.endpoint.lstrip("/")
+
+
+MolmoActConfig = ActServerConfig
 
 
 DEFAULT_CAMERAS: tuple[str, ...] = ("top_cam", "left_cam", "right_cam")
