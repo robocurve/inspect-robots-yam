@@ -1,6 +1,6 @@
 # 0008 — GR00T fine-tunes behind /act: generic client + `gr00t` entry point + serving shim
 
-Status: draft
+Status: approved (6 critique rounds, 2026-07-15)
 Issue: robocurve/inspect-robots-yam#55
 
 ## 1. Problem
@@ -197,11 +197,14 @@ Implementation contract (verified against the cached Isaac-GR00T checkout,
   `width = len(stats[tag]["state"|"action"][key]["mean"])`. Verified present
   in the target checkpoint with the expected widths for all four keys in
   both modalities. From the same loaded stats, run a units sanity check at
-  startup: gripper keys' min/max within approximately [0, 1] and arm keys'
-  stats within ±π, hard-fail otherwise (catches a checkpoint trained in
-  degrees or with unnormalized grippers before it moves metal). Polarity and
-  absolute-vs-delta joints are **not** stats-detectable; those stay
-  first-run hardware checks (§2.5). Per request: fill each state key from
+  startup with explicit tolerances: arm keys' min/max must satisfy
+  `abs(v) <= math.pi + 0.05` and gripper keys' min/max must lie within
+  `[-0.05, 1.05]`, hard-fail otherwise. The slack is required: the target
+  checkpoint's own arm stats reach 3.150 rad (slightly past π), so a literal
+  ±π check would refuse to serve the very checkpoint this plan targets. A
+  degrees-trained checkpoint shows arm stats in the tens-to-hundreds and is
+  still caught. Polarity and absolute-vs-delta joints are **not**
+  stats-detectable; those stay first-run hardware checks (§2.5). Per request: fill each state key from
   its named slice; scatter each returned action key into its named slice of
   a `(chunk_len, 14)` buffer, where `chunk_len` is taken from the returned
   arrays (`actions[key].shape[1]`, 16 for this checkpoint) — NOT the
