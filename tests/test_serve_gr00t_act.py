@@ -177,6 +177,16 @@ def test_validate_statistics_rejects_degree_scale_arms() -> None:
         serve_gr00t_act._validate_statistics(stats, _modality_configs())
 
 
+def test_validate_statistics_arm_tolerance_boundary() -> None:
+    """The arm limit is pinned at pi + 0.05: 3.19 rad passes, 3.20 rad fails."""
+    stats = _statistics()
+    stats[serve_gr00t_act.EMBODIMENT_TAG]["action"]["right_arm"]["max"][0] = 3.19
+    serve_gr00t_act._validate_statistics(stats, _modality_configs())
+    stats[serve_gr00t_act.EMBODIMENT_TAG]["action"]["right_arm"]["max"][0] = 3.20
+    with pytest.raises(ValueError, match="exceed radians limit"):
+        serve_gr00t_act._validate_statistics(stats, _modality_configs())
+
+
 def test_validate_statistics_rejects_gripper_outside_normalized_range() -> None:
     """Gripper statistics must stay within the tolerated normalized range."""
     stats = _statistics()

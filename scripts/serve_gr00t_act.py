@@ -233,7 +233,8 @@ def _create_app(
 ) -> Any:
     """Create the health and inference endpoints around one loaded policy."""
     import json_numpy
-    from fastapi import Body, FastAPI  # type: ignore[import-not-found]
+    from fastapi import FastAPI  # type: ignore[import-not-found]
+    from fastapi.concurrency import run_in_threadpool  # type: ignore[import-not-found]
     from fastapi.responses import JSONResponse, Response  # type: ignore[import-not-found]
 
     app = FastAPI()
@@ -246,23 +247,39 @@ def _create_app(
         """Report server health and the requested model id or path."""
         return {"status": "ok", "model": model_label}
 
-    @app.post("/act", response_model=None)  # type: ignore[untyped-decorator]
-    def act(body: bytes = Body(...)) -> Any:
-        """Run one locked GR00T inference and return a packed action chunk."""
+    async def act(request: Any) -> Any:
+        """Run one locked GR00T inference and return a packed action chunk.
+
+        Registered through Starlette's ``add_route`` (below), NEVER through
+        FastAPI's decorator: json_numpy's patched ``json.loads`` makes a
+        JSON-shaped body poison FastAPI's parse-and-validate path (ndarrays in
+        the parsed dict fail pydantic validation, then the 422 encoder crashes
+        on them too, so every request dies as a 500 on fastapi<=0.115), and a
+        function-local ``Request`` annotation is unresolvable under
+        ``from __future__ import annotations`` anyway. The raw-route handler
+        receives the Starlette request directly and decodes the bytes itself.
+        """
         nonlocal num_steps_logged
         try:
-            payload = json.loads(body)
+            payload = json.loads(await request.body())
             if not isinstance(payload, dict):
                 raise ValueError("/act request body must be a JSON object")
             observation = _build_observation(payload, modality_configs, camera_map)
-            with inference_lock:
-                if "num_steps" in payload and not num_steps_logged:
-                    LOGGER.info(
-                        "Ignoring request num_steps=%r; GR00T uses its checkpoint setting",
-                        payload["num_steps"],
-                    )
-                    num_steps_logged = True
-                actions, _info = policy.get_action(observation)
+            if "num_steps" in payload and not num_steps_logged:
+                LOGGER.info(
+                    "Ignoring request num_steps=%r; GR00T uses its checkpoint setting",
+                    payload["num_steps"],
+                )
+                num_steps_logged = True
+
+            def _locked_inference() -> Any:
+                # Threadpool keeps GPU inference off the event loop, so the
+                # lock is genuinely load-bearing and health stays responsive.
+                with inference_lock:
+                    actions, _info = policy.get_action(observation)
+                return actions
+
+            actions = await run_in_threadpool(_locked_inference)
             packed = _pack_actions(actions, action_keys)
             response = {"actions": packed, "dt_ms": dt_ms}
             return Response(content=json_numpy.dumps(response), media_type="application/json")
@@ -270,6 +287,7 @@ def _create_app(
             LOGGER.exception("GR00T /act inference failed")
             return JSONResponse(status_code=500, content={"message": str(exc)})
 
+    app.add_route("/act", act, methods=["POST"])
     return app
 
 
