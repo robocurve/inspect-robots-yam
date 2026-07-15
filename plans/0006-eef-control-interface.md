@@ -170,22 +170,47 @@ drivers and cameras, keeping heavy imports out of `__init__` per the
 repo's established pattern. A bad kinematics config therefore errors at
 reset, exactly like a bad CAN channel does today.
 
-- `step(action)` in eef mode: split the 10-D action per arm; build the
-  target as (position, `R_target(yaw)` per §4); differential IK
-  warm-started from the arm's **last commanded** joints (`q_cmd_prev`, not
-  the measured joints — path-continuity of the warm start is what keeps
-  differential IK on one solution branch; warm-starting from measurements
-  reintroduces branch flips through tracking noise). `q_cmd_prev` is
-  seeded from the final home-ramp command at the end of `reset()` and
-  cleared on `close()`; the warm start is clipped into the model's joint
-  ranges before each solve (mink's limit check warns on epsilon-outside
-  starts, which would spam stderr at 10 Hz). IK is iteration-capped
-  (`ik_max_iters`, default 20 — warm starts make centimeter steps converge
-  in a few iterations, and the cap bounds the non-convergent worst case
-  well inside the 100 ms budget); take mink's best iterate — convergence
-  failure is NOT an exception: the best-effort joints move toward the
-  target and the truth shows up in the next observation's FK state,
-  closing the loop.
+- `step(action)` in eef mode runs this exact per-arm pipeline — the order
+  is normative, not illustrative:
+
+  1. **Hold check.** If the arm's `hold_counter > 0`: decrement, re-send
+     `q_cmd_prev` unchanged, and return for this arm — no IK, no resync,
+     no counter updates; frozen means frozen. (The gripper dimension is
+     NOT frozen: it never enters IK, cannot oscillate, and freezing an
+     in-flight grasp is strictly worse — it continues through the driver
+     path during a hold.)
+  2. **Resync check.** If any joint's `|q_cmd_prev − q_measured|` exceeds
+     `cmd_resync_threshold` (config, default 0.35 rad), re-seed
+     `q_cmd_prev := clip(q_measured, config limits)` and mark the step
+     `resynced` — bounding command windup ahead of a stalled or
+     obstructed arm.
+  3. **IK.** Build the target (position, `R_target(yaw)` per §4);
+     differential IK warm-started from `q_cmd_prev` clipped into the
+     model's joint ranges (mink's limit check warns on epsilon-outside
+     starts, which would spam stderr at 10 Hz), iteration-capped
+     (`ik_max_iters`, default 20 — warm starts make centimeter steps
+     converge in a few iterations, and the cap bounds the non-convergent
+     worst case well inside the 100 ms budget). Convergence failure is
+     NOT an exception: the solver's **last** iterate (that is what
+     `Kinematics.ik` returns on failure — not a best-of pick) still moves
+     toward the target, and the truth shows up in the next observation's
+     FK state, closing the loop.
+  4. **Rate clamp** (below) against `q_cmd_prev`.
+  5. **Reversal counting** on `q_cmd − q_cmd_prev`, skipped entirely on a
+     `resynced` step: the resync snap-back is corrective, not
+     oscillatory, and counting it would put an obstructed arm into a
+     perpetual hold/resync limit cycle. (The obstructed-arm steady state
+     is therefore a bounded press/resync cycle — at most two rate-limited
+     steps of advance before each re-seed, force bounded by the motor
+     drivers' own current limits, fully visible in the observation.) A
+     trip starts the whole-arm hold and clears the window.
+  6. **Send** through `_send()` (absolute config clamp, unchanged), then
+     `q_cmd_prev := the value actually sent` (post-clamp — after a resync
+     from out-of-limit measured joints this differs from the pipeline
+     value, and the reference must track reality).
+
+  `q_cmd_prev` is seeded from the final home-ramp command at the end of
+  `reset()` and cleared on `close()`.
 - Oscillation damping (anti-livelock), step-observable — `step()` has no
   chunk concept, so the guard cannot reference chunk boundaries, and a
   position-progress rule would falsely freeze pure-yaw regrasps (position
@@ -212,21 +237,16 @@ reset, exactly like a bad CAN channel does today.
   bounded overall by joint limits and the hold guard) — this is the
   mechanism behind the tens-of-centimeters residual excursion documented
   below.
-- **Joint-space rate backstop (safety-critical).** The Cartesian
-  `DeltaLimitApprover` cannot see joint deltas, and an IK branch flip
-  (elbow reconfiguration near a singularity or limit) can return a solution
-  radians away from the current pose. Before commanding, eef-mode `step()`
-  clamps the per-joint displacement against the **last commanded** joints:
+- **Joint-space rate backstop (safety-critical; pipeline step 4).** The
+  Cartesian `DeltaLimitApprover` cannot see joint deltas, and an IK branch
+  flip (elbow reconfiguration near a singularity or limit) can return a
+  solution radians away from the current pose. The clamp is
   `q_cmd = q_cmd_prev + clip(q_ik − q_cmd_prev, ±ik_step_joint_limit)` —
   the same reference as the warm start, keeping the command path
   deterministic and encoder-noise-free (clamping against measured joints
-  would feed noise into saturated deltas and the reversal counter). The
-  cost of that choice is windup: a physically stalled or obstructed arm
-  lets `q_cmd_prev` march ahead of reality, so if any joint's
-  `|q_cmd_prev − q_measured|` exceeds `cmd_resync_threshold` (config,
-  default 0.35 rad) the reference re-seeds from the measured joints — a
-  documented re-sync that bounds the divergence and may trigger one branch
-  re-evaluation. `ik_step_joint_limit` is a config knob
+  would feed noise into saturated deltas and the reversal counter); the
+  windup this invites is what pipeline step 2's resync bounds.
+  `ik_step_joint_limit` is a config knob
   defaulting to 0.2 rad per joint per step (the same scale as delta mode's
   `_STEP_ARM`). This restores in eef mode the "no wild swings" guarantee
   joint mode gets from the core guardrails — in *joint space*. Stated
@@ -316,11 +336,15 @@ would break that contract). The seam is placed so that every behavior this
 plan specifies is *plugin* code, tier-1 testable against fakes:
 
 - The factory returns per-arm **raw** solver objects satisfying the
-  minimal `fk(q) -> 4x4` / `ik(target, init_q) -> (bool, q)` protocol,
-  plus a way to read/write the model joint ranges. The default factory
-  lazily imports i2rt (`_i2rt.py` conventions) and hands back
-  `i2rt.robots.kinematics.Kinematics` instances; tests inject
-  deterministic fakes.
+  minimal protocol `fk(q) -> 4x4` / `ik(target, init_q, max_iters) ->
+  (bool, q)`, plus a way to read/write the model joint ranges
+  (`ik_max_iters` must be expressible through the seam — §5 requires it
+  plumbed to the solver). The default factory lazily imports i2rt
+  (`_i2rt.py` conventions) and returns a thin *adapter* binding
+  `site_name="grasp_site"` over `i2rt.robots.kinematics.Kinematics`
+  (whose `ik()` takes `site_name` as a required positional, so raw
+  instances do not satisfy the protocol); tests inject deterministic
+  fakes.
 - A plugin-level `_ArmKinematics` wrapper — ordinary, always-importable
   plugin code — owns everything else: first-six positional arm-joint
   addressing, gripper-joint pinning/stripping (0..2 trailing joints),
@@ -423,10 +447,17 @@ Small, mode-aware polish — no behavior change for joint-mode users:
 - When the bound space's control mode is in `_POSE_MODES`, the move tool is
   named `move_to` (not `move_joints`) and its description says Cartesian
   end-effector targets with units (meters/radians per the labels), still
-  enumerating per-dim bounds. The description also states the frame
-  contract in embodiment-agnostic terms: "coordinates are absolute in the
-  embodiment's declared frame; on multi-arm embodiments each arm uses its
-  own base frame and axes may differ between arms depending on mounting."
+  enumerating per-dim bounds. The description also states, in
+  embodiment-agnostic terms, the two contracts the agent cannot guess:
+  the frame contract ("coordinates are absolute in the embodiment's
+  declared frame; on multi-arm embodiments each arm uses its own base
+  frame and axes may differ between arms depending on mounting") and the
+  rotation contract ("rotation dimensions are absolute targets measured
+  relative to the trial's start orientation — 0 means the start
+  orientation — and interpolate linearly without wrapping, so prefer
+  intermediate values for large rotations"). Without the latter the agent
+  sees only `left_yaw: [-3.14, 3.14]` and §4's conventions never reach
+  the model that must obey them.
   This is the only agent-visible surface (the LLM never reads READMEs), so
   the mirrored-mount caveat must live here, not only in yam docs. A richer
   per-embodiment hint channel (free-text surface notes on ActionSemantics)
