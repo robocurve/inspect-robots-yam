@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass
+from typing import NoReturn
 
 import numpy as np
 import pytest
@@ -12,7 +13,7 @@ from inspect_robots.errors import ConfigError
 from inspect_robots.scene import Scene
 from inspect_robots.types import Action
 
-from inspect_robots_yam.config import YamConfig
+from inspect_robots_yam.config import DEFAULT_REST_POSE, YamConfig
 from inspect_robots_yam.embodiment import YAMEmbodiment
 from inspect_robots_yam.operator import OperatorIO
 
@@ -365,7 +366,8 @@ def test_close_rest_pose_goes_through_clamp_and_denorm() -> None:
 def test_close_without_rest_pose_ramps_to_captured_init_pose() -> None:
     init_pose = np.full(14, 0.2)
     drv = EchoDriver(state=init_pose.copy())
-    emb, _, _ = _build(YamConfig(rest_secs=0.3), driver=drv)
+    cfg = YamConfig.from_kwargs(rest_pose=None, rest_secs=0.3)
+    emb, _, _ = _build(cfg, driver=drv)
     emb.reset(Scene(id="s", instruction="x"))
     emb.step(Action(data=np.full(14, 0.8)))
     command_count = len(drv.commands)
@@ -376,6 +378,22 @@ def test_close_without_rest_pose_ramps_to_captured_init_pose() -> None:
     assert park_commands[-1] == pytest.approx(init_pose)
     j0 = [command[0] for command in park_commands]
     assert all(b <= a for a, b in itertools.pairwise(j0))
+    assert drv.closed is True
+
+
+def test_close_default_rest_pose_wins_over_captured_init_pose() -> None:
+    init_pose = np.full(14, 0.2)
+    drv = EchoDriver(state=init_pose.copy())
+    emb, _, _ = _build(YamConfig(), driver=drv)
+    emb.reset(Scene(id="s", instruction="x"))
+    emb.step(Action(data=np.full(14, 0.8)))
+    command_count = len(drv.commands)
+    emb.close()
+
+    park_commands = drv.commands[command_count:]
+    assert len(park_commands) > 1
+    assert park_commands[-1] == pytest.approx(DEFAULT_REST_POSE)
+    assert park_commands[-1] != pytest.approx(init_pose)
     assert drv.closed is True
 
 
@@ -396,7 +414,12 @@ def test_close_explicit_rest_pose_wins_over_captured_init_pose() -> None:
 def test_close_init_pose_grippers_round_trip_through_normalized_units() -> None:
     init_pose = np.full(14, 0.2)
     init_pose[6] = init_pose[13] = 15.0
-    cfg = YamConfig(rest_secs=0.2, gripper_open=10.0, gripper_closed=20.0)
+    cfg = YamConfig(
+        rest_pose=None,
+        rest_secs=0.2,
+        gripper_open=10.0,
+        gripper_closed=20.0,
+    )
     drv = EchoDriver(state=init_pose.copy())
     emb, _, _ = _build(cfg, driver=drv)
     emb.reset(Scene(id="s", instruction="x"))
@@ -413,7 +436,8 @@ def test_close_parks_at_first_reset_pose_across_episodes() -> None:
     # return to where the operator left the arms when the run began.
     init_pose = np.full(14, 0.2)
     drv = EchoDriver(state=init_pose.copy())
-    emb, _, _ = _build(YamConfig(rest_secs=0.2), driver=drv, operator=_operator(["", ""]))
+    cfg = YamConfig(rest_pose=None, rest_secs=0.2)
+    emb, _, _ = _build(cfg, driver=drv, operator=_operator(["", ""]))
     emb.reset(Scene(id="a", instruction="x"))
     emb.step(Action(data=np.full(14, 0.8)))
     emb.reset(Scene(id="b", instruction="x"))  # starts at 0.8, must not re-capture
@@ -428,12 +452,39 @@ def test_close_parks_at_pre_home_pose_when_home_pose_configured() -> None:
     # torque is released after parking, so the target must be gravity-stable.
     operator_pose = np.full(14, 0.1)
     drv = EchoDriver(state=operator_pose.copy())
-    emb, _, _ = _build(YamConfig(home_pose=(0.5,) * 14, rest_secs=0.2), driver=drv)
+    cfg = YamConfig(rest_pose=None, home_pose=(0.5,) * 14, rest_secs=0.2)
+    emb, _, _ = _build(cfg, driver=drv)
     emb.reset(Scene(id="s", instruction="x"))
     emb.step(Action(data=np.full(14, 0.8)))
     emb.close()
 
     assert drv.commands[-1] == pytest.approx(operator_pose)
+    assert drv.closed is True
+
+
+def test_close_after_mid_reset_fault_parks_at_captured_init_pose() -> None:
+    def _camera_fault(_cfg: YamConfig) -> NoReturn:
+        raise RuntimeError("camera open fault")
+
+    init_pose = np.full(14, 0.2)
+    drv = EchoDriver(state=init_pose.copy())
+    cfg = YamConfig(rest_pose=None, home_pose=(0.6,) * 14, rest_secs=0.2)
+    emb = YAMEmbodiment(
+        cfg,
+        driver_factory=lambda _cfg: drv,
+        camera_reader=_camera_fault,
+        operator=_operator(),
+        poll_end=lambda: False,
+        sleep_fn=lambda _delay: None,
+        clock=lambda: 0.0,
+    )
+    with pytest.raises(RuntimeError, match="camera open fault"):
+        emb.reset(Scene(id="s", instruction="x"))
+    command_count = len(drv.commands)
+    emb.close()
+
+    park_commands = drv.commands[command_count:]
+    assert park_commands[-1] == pytest.approx(init_pose)
     assert drv.closed is True
 
 
@@ -449,7 +500,8 @@ def test_failed_driver_close_still_clears_connection_state() -> None:
     pose_a = np.full(14, 0.2)
     pose_b = np.full(14, 0.4)
     drv = FaultyClose(state=pose_a.copy())
-    emb, _, _ = _build(YamConfig(rest_secs=0.2), driver=drv, operator=_operator(["", ""]))
+    cfg = YamConfig(rest_pose=None, rest_secs=0.2)
+    emb, _, _ = _build(cfg, driver=drv, operator=_operator(["", ""]))
     emb.reset(Scene(id="s", instruction="x"))
     with pytest.raises(RuntimeError, match="teardown"):
         emb.close()
@@ -471,7 +523,8 @@ def test_reconnect_after_close_recaptures_init_pose() -> None:
     pose_a = np.full(14, 0.2)
     pose_b = np.full(14, 0.4)
     drv = EchoDriver(state=pose_a.copy())
-    emb, _, _ = _build(YamConfig(rest_secs=0.2), driver=drv, operator=_operator(["", ""]))
+    cfg = YamConfig(rest_pose=None, rest_secs=0.2)
+    emb, _, _ = _build(cfg, driver=drv, operator=_operator(["", ""]))
     emb.reset(Scene(id="a", instruction="x"))
     emb.close()
     drv.state = pose_b.copy()
@@ -491,9 +544,14 @@ def test_close_before_connect_skips_rest_motion() -> None:
     assert drv.closed is False
 
 
-def test_close_connected_without_park_target_only_releases() -> None:
-    emb, drv, _ = _build()
-    emb._driver = drv  # simulate a connection interrupted before reset captures its pose
+@pytest.mark.parametrize(
+    "cfg",
+    [YamConfig(), YamConfig(rest_pose=(0.5,) * 14)],
+    ids=["factory-default", "explicit-override"],
+)
+def test_close_connected_before_pose_capture_only_releases(cfg: YamConfig) -> None:
+    emb, drv, _ = _build(cfg)
+    emb._driver = drv  # simulate a connection fault before reset captures its pose
     emb.close()
     assert drv.commands == []
     assert drv.closed is True

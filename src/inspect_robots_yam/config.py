@@ -41,6 +41,12 @@ _ARM_HIGH = (np.pi,) * ARM_DOF + (1.0,)
 _DEFAULT_LOW = _ARM_LOW * 2
 _DEFAULT_HIGH = _ARM_HIGH * 2
 
+# Operator-confirmed 2026-07-14 against two physical captures of a YAM pair at
+# rest: all joint readings were within 0.09 rad of encoder zero, with both
+# grippers open (0.0). Assumes standard upright mounting; exotic mounts override
+# this pose per rig.
+DEFAULT_REST_POSE: tuple[float, ...] = (0.0,) * TOTAL_DIM
+
 # Conservative default per-step displacement limits for joints_are_delta mode:
 # 0.2 rad per joint per step, a full normalized stroke per gripper per step.
 # Symmetric (the declared delta box is +/-step_limits), so the gripper can
@@ -96,10 +102,10 @@ class YamConfig(_FromKwargs):
     joint_low: tuple[float, ...] = _DEFAULT_LOW
     joint_high: tuple[float, ...] = _DEFAULT_HIGH
     home_pose: tuple[float, ...] | None = None
-    # Explicit override for the pose used to park on close(). Without it, close()
-    # parks at the pose captured at the first reset() after connecting. Gripper
-    # slots are normalized 0-1.
-    rest_pose: tuple[float, ...] | None = None
+    # Pose used to park on close() after reset() captures the initial pose. None
+    # opts out of the factory target and parks at that captured pose instead.
+    # Gripper slots are normalized 0-1.
+    rest_pose: tuple[float, ...] | None = DEFAULT_REST_POSE
     rest_secs: float = 3.0
     gripper_open: float = 0.0
     gripper_closed: float = 1.0
