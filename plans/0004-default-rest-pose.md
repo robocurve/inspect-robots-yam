@@ -3,8 +3,9 @@
 Date: 2026-07-14
 Status: revised after critique rounds 1 (blank opt-out replaced by the
 core's existing `none` spelling; provenance clarified; test sweep
-enumerated) and 2 (park gate predicate corrected to pose-captured, which
-preserves the #36 mid-reset-fault park); round 3 pending
+enumerated), 2 (park gate predicate corrected to pose-captured, which
+preserves the #36 mid-reset-fault park), and 3 (verdict ready; wording and
+test-sharpness nits folded in); renumbered 0003 -> 0004 after #42 took 0003
 
 ## Problem
 
@@ -35,8 +36,8 @@ standard-upright-mounting assumption. Exotic mounts override per rig.
 
 ## Design
 
-1. `config.py`: module-level `DEFAULT_REST_POSE: tuple[float, ...]` with the
-   captured values and the provenance comment above. Not exported in
+1. `config.py`: module-level `DEFAULT_REST_POSE: tuple[float, ...]` holding
+   the canonical zero pose with the provenance comment above. Not exported in
    `__all__` (tests/test_api_snapshot.py unchanged); it is reachable as
    `inspect_robots_yam.config.DEFAULT_REST_POSE` for the README to name.
 2. `YamConfig.rest_pose` default changes `None` -> `DEFAULT_REST_POSE`; the
@@ -81,7 +82,10 @@ standard-upright-mounting assumption. Exotic mounts override per rig.
    default parks with grippers open, so anything still held is released at
    park. Name `DEFAULT_REST_POSE` as an informational constant, not a
    stable import (it stays out of `__all__` on purpose; do not "fix" the
-   snapshot test by exporting it). Keep every existing safety qualifier.
+   snapshot test by exporting it). Add one clause: override rest_pose on
+   rigs whose joint limits exclude zero, since the park target is clamped
+   through the same per-joint box as every command. Keep every existing
+   safety qualifier.
 7. Stale prose sweep: the `rest_pose` field comment (config.py:98-101), the
    close() docstring (embodiment.py:309-316), and plans/0002-rest-pose-
    design.md gets an "Amended by PR #44" note mirroring the existing #36
@@ -96,8 +100,9 @@ New:
 - `YamConfig().rest_pose == DEFAULT_REST_POSE`.
 - kwargs `rest_pose=None` (the parsed form of `none`) -> captured-init
   fallback still works end to end.
-- close() with default config after a reset ramps to `DEFAULT_REST_POSE`
-  (fake driver records waypoints; final target equals the constant).
+- close() with default config after a reset ramps to `DEFAULT_REST_POSE`,
+  with the fake driver STARTED AT A NON-ZERO POSE so park-at-default is
+  distinguishable from park-at-captured-init (both are zeros otherwise).
 - close() before any pose capture releases in place for BOTH default and
   explicit rest_pose (the new gate); close() after a capture but with a
   mid-reset fault still parks (the #36 invariant the gate must preserve).
@@ -113,7 +118,7 @@ re-expressed under `rest_pose=None`, not weakened):
 - tests/test_embodiment.py:439 `test_failed_driver_close_still_clears_connection_state`
 - tests/test_embodiment.py:469 `test_reconnect_after_close_recaptures_init_pose`
 - tests/test_embodiment.py:493 `test_close_connected_without_park_target_only_releases`
-  (survives as-is under the reset gate; re-point its intent at the gate)
+  (survives as-is under the capture gate; re-point its intent at the gate)
 - tests/test_eval_end_to_end.py:54 `test_timer_runout_parks_at_init_pose_on_close`
 
 ## Constraints
