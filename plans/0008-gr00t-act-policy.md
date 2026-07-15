@@ -108,7 +108,9 @@ def gr00t_policy(
     policy name and the default port differ, so a GR00T /act server (see
     ``scripts/serve_gr00t_act.py``) and the MolmoAct2 server can run side by
     side and eval logs record which model actually ran. Explicit ``flat``
-    kwargs override the defaults; an explicit ``config`` wins outright.
+    kwargs override the defaults; an explicit ``config`` wins outright,
+    including its ``name`` — a caller passing ``config=ActServerConfig()``
+    gets the molmoact2 defaults and owns the resulting log label.
     """
     if config is None:
         config = ActServerConfig.from_kwargs(**{**GR00T_DEFAULTS, **flat})
@@ -170,7 +172,11 @@ Implementation contract (verified against the cached Isaac-GR00T checkout,
 - Camera mapping: client order `top_cam, left_cam, right_cam` → checkpoint
   video keys, default `base_view, left_wrist_view, right_wrist_view`,
   overridable via `--camera-map top_cam:base_view,...` for future
-  checkpoints.
+  checkpoints. Startup validation covers **both sides** of the map: the
+  source-name set must equal `{top_cam, left_cam, right_cam}` (a source typo
+  like `topcam:` must fail at startup with the valid names, not KeyError-500
+  per request) and the target set must equal
+  `get_modality_config()["video"].modality_keys`.
 - State and action mapping is **name-keyed, never order-keyed**. A
   width-only check would let a checkpoint whose modality-config lists keys as
   `right_arm, right_gripper, left_arm, left_gripper` pass validation and
@@ -179,25 +185,31 @@ Implementation contract (verified against the cached Isaac-GR00T checkout,
   "right_arm": slice(7, 13), "right_gripper": slice(13, 14)}` (this repo's
   packed layout, `packing.py` DIM_LABELS). At startup: the state and the
   action modality key sets from `get_modality_config()` must each **equal**
-  the canonical map's key set — hard-fail on unrecognized names AND on
-  missing names (a subset-only check would let a left-arm-only fine-tune
+  the canonical map's key set (no `ModalityConfig` field carries widths, so
+  key names are the only join point) — hard-fail on unrecognized names AND
+  on missing names (a subset-only check would let a left-arm-only fine-tune
   pass and silently command the right arm to encoder-zero with the gripper
   closed: unfilled dims land inside the embodiment's clamp bounds, so no
   downstream guard catches it). Each key's width must equal its slice width;
-  together the slices exactly partition indices 0..13. Width source (the
-  modality config does not carry widths — `ModalityConfig` has only
-  `modality_keys` and `delta_indices`): read
+  together the slices exactly partition indices 0..13. Width source: read
   `<model_dir>/experiment_cfg/dataset_statistics.json`, keyed by the
   embodiment tag *value* (`new_embodiment`);
   `width = len(stats[tag]["state"|"action"][key]["mean"])`. Verified present
   in the target checkpoint with the expected widths for all four keys in
-  both modalities. Per request: fill each state key from its named slice;
-  scatter each returned action key into its named slice of a `(T, 14)`
-  buffer. With exact-partition validation every buffer element is written
-  before use; initialize with `np.full(..., np.nan)` anyway so any future
-  validation regression produces NaNs, which the client's non-finite check
-  (§2.1) rejects loudly instead of plausible zeros. Modality-config order
-  is never load-bearing.
+  both modalities. From the same loaded stats, run a units sanity check at
+  startup: gripper keys' min/max within approximately [0, 1] and arm keys'
+  stats within ±π, hard-fail otherwise (catches a checkpoint trained in
+  degrees or with unnormalized grippers before it moves metal). Polarity and
+  absolute-vs-delta joints are **not** stats-detectable; those stay
+  first-run hardware checks (§2.5). Per request: fill each state key from
+  its named slice; scatter each returned action key into its named slice of
+  a `(chunk_len, 14)` buffer, where `chunk_len` is taken from the returned
+  arrays (`actions[key].shape[1]`, 16 for this checkpoint) — NOT the
+  observation horizon `T`, which is 1. With exact-partition validation every
+  buffer element is written before use; initialize with
+  `np.full(..., np.nan)` anyway so any future validation regression produces
+  NaNs, which the client's non-finite check (§2.1) rejects loudly instead of
+  plausible zeros. Modality-config order is never load-bearing.
 - Action return: `get_action` returns a **tuple** — `actions, _info =
   policy.get_action(observation)` with `actions: {key: (1, T, D) float32}`
   (`BasePolicy.get_action` → `return action, info`).
@@ -232,6 +244,13 @@ with notes that `-P server_url=...` overrides the default
 property and `from_kwargs` rejects it) and that a different GR00T fine-tune
 should pass `-P action_horizon=<its chunk length>` so the logged metadata is
 accurate.
+
+The subsection must repeat the first-run hardware verification caution
+(matching the repo's existing safety framing): the shim's startup checks
+validate layout and units ranges, but joint polarity and absolute-vs-delta
+semantics are not detectable from stats — first runs with a new checkpoint
+family need an operator at the e-stop, preflight
+(`inspect-robots-yam-preflight`), and guardrails left on.
 Follow the repo writing-style rules (worldevals model-cards.md): no em dashes
 in prose, bold only for definition lead-ins, no decorative emoji.
 
