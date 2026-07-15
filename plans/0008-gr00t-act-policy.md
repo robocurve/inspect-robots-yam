@@ -29,7 +29,9 @@ still the `molmoact2` entry-point target, so existing imports, isinstance
 checks, and the installed entry point all keep working).
 
 `config.py`: rename `MolmoActConfig` → `ActServerConfig`; keep
-`MolmoActConfig = ActServerConfig` alias. Add one field:
+`MolmoActConfig = ActServerConfig` alias. Add one field, **appended after the
+existing fields** (all fields have defaults, but inserting earlier would
+silently change positional construction like `MolmoActConfig("http://...")`):
 
 ```python
 name: str = "molmoact2"
@@ -48,6 +50,17 @@ Module docstring: rewrite to describe the generic /act client, naming
 MolmoAct2's `host_server_yam.py` as the canonical server and
 `scripts/serve_gr00t_act.py` as the GR00T one.
 
+Stale prose to update in the same commit (repo convention: CLAUDE.md stays
+current):
+
+- `config.py:1` module docstring ("the MolmoAct2 policy client" → the generic
+  /act client).
+- `src/inspect_robots_yam/__init__.py` docstring: "Registers two Inspect
+  Robots components" → three; add the `gr00t` policy line.
+- `src/inspect_robots_yam/CLAUDE.md` module table (`policy.py` row) and the
+  root `CLAUDE.md` wherever it says the package ships exactly the `molmoact2`
+  policy.
+
 ### 2.2 `gr00t` entry point
 
 The registry resolves entry points as plain callables
@@ -58,6 +71,14 @@ factory function carries the GR00T defaults:
 GR00T_DEFAULTS: Mapping[str, Any] = {
     "name": "gr00t",
     "server_url": "http://127.0.0.1:8203",
+    # robocurve/gr00t-n1.7-yam-molmoact2 predicts 16-step chunks
+    # (experiment_cfg delta_indices 0..15). Like every field, this is
+    # PolicyConfig *metadata* recorded in the eval log — rollout always uses
+    # the returned chunk — but leaving MolmoAct2's 30 here would record a
+    # false horizon for GR00T runs, the exact dishonesty this plan removes.
+    # Operators evaluating a different GR00T fine-tune pass
+    # -P action_horizon=<its chunk length>.
+    "action_horizon": 16,
 }
 
 
@@ -140,9 +161,11 @@ Implementation contract (verified against the cached Isaac-GR00T checkout,
   `right_arm [7:13]`, `right_gripper [13:14]`). Derive slice widths from the
   checkpoint's `statistics.json`/modality config where possible; assert the
   widths sum to 14 and fail at startup, not per-request.
-- Action: `get_action` returns `{key: (1, T, D) float32}`; concatenate the
-  action keys in modality-config order along `D` → `(T, 14)`, assert width 14
-  at startup against the same layout.
+- Action: `get_action` returns a **tuple** — `actions, _info =
+  policy.get_action(observation)` with `actions: {key: (1, T, D) float32}`
+  (`BasePolicy.get_action` → `return action, info`); concatenate the action
+  keys in modality-config order along `D` → `(T, 14)`, assert width 14 at
+  startup against the same layout.
 - `dt_ms`: `--dt-ms` flag, default `0.0` (client maps falsy → "no advertised
   rate", so the embodiment paces itself). Do not guess the trained rate.
 - FastAPI + `json_numpy.patch()`, single-request lock around inference (same
@@ -162,7 +185,11 @@ inspect-robots "stack the red block on the blue block" \
     --policy gr00t --embodiment yam_arms
 ```
 
-with a note that `-P url=...` overrides the default `http://127.0.0.1:8203`.
+with notes that `-P server_url=...` overrides the default
+`http://127.0.0.1:8203` (the config key is `server_url`; `url` is a read-only
+property and `from_kwargs` rejects it) and that a different GR00T fine-tune
+should pass `-P action_horizon=<its chunk length>` so the logged metadata is
+accurate.
 Follow the repo writing-style rules (worldevals model-cards.md): no em dashes
 in prose, bold only for definition lead-ins, no decorative emoji.
 
@@ -172,8 +199,8 @@ All in existing files; mocked transport, no network, 100% coverage holds.
 
 - `tests/test_policy.py`:
   - `gr00t_policy()` zero-arg: `info.name == "gr00t"`, URL
-    `http://127.0.0.1:8203/act`, chunk/space contract identical to
-    `molmoact2` (14-D, `control_hz is None`).
+    `http://127.0.0.1:8203/act`, `config.action_horizon == 16`, chunk/space
+    contract identical to `molmoact2` (14-D, `control_hz is None`).
   - `gr00t_policy(server_url=...)` keeps name `gr00t`;
     `gr00t_policy(name="x")` overrides; `gr00t_policy(config=cfg)` bypasses
     defaults entirely; `post_fn` passthrough exercises `act()` once.
@@ -189,8 +216,8 @@ All in existing files; mocked transport, no network, 100% coverage holds.
 
 ## 4. Out of scope
 
-- No new packages, no dependency changes, no floor bumps (uses existing
-  `inspect-robots>=0.8` APIs only).
+- No new packages, no dependency changes, no floor bumps (the current
+  `inspect-robots>=0.12` floor suffices; nothing here uses newer core APIs).
 - No launcher/lifecycle management for the shim (same stance as the
   XPolicyLab plugin: we connect to a URL).
 - No closed-loop success-rate reporting; that is a rig session, not code.
