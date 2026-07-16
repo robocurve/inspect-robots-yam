@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "inspect-robots-yam"
 dynamic = ["version", "readme"]
-description = "Inspect Robots adapters for I2RT YAM bimanual arms driven by MolmoAct2."
+description = "Inspect Robots adapters for I2RT YAM bimanual arms driven by /act-served policies (MolmoAct2, GR00T)."
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -19,14 +19,18 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
-dependencies = ["inspect-robots>=0.6", "numpy>=1.24"]
+dependencies = [
+    "inspect-robots>=0.12",  # EmbodimentInfo.docs (plan 0016)
+    "numpy>=1.24",
+    "requests>=2.31",
+    "json-numpy>=2.1",
+    "opencv-python-headless>=4.8",
+]
 
 [project.optional-dependencies]
-# Real /act transport (the model runs in MolmoAct2's own server process).
+# Deprecated aliases retained for compatibility with existing install commands.
 client = ["requests>=2.31", "json-numpy>=2.1"]
 cameras = ["opencv-python-headless>=4.8"]
-# Real YAM arm driver — not on PyPI; resolved from git (see [tool.uv.sources]).
-yam = ["i2rt"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -34,6 +38,7 @@ dev = [
     "mypy>=1.11",
     "pre-commit>=3.5",
     "kitchenbench",
+    "inspect-robots-agent>=0.2.2",
     # numpy 2.5.0's type stubs use 3.12-only syntax that mypy (python_version 3.10)
     # rejects; pin the 2.4.x line for a deterministic dev/CI gate (runtime is free).
     "numpy<2.5",
@@ -44,19 +49,13 @@ Homepage = "https://github.com/robocurve/inspect-robots-yam"
 Framework = "https://github.com/robocurve/inspect-robots"
 Collection = "https://github.com/robocurve/worldevals"
 
-# inspect_robots/kitchenbench resolve from PyPI. i2rt is GitHub-only. This is
-# uv-only metadata (stripped from the published wheel), so a plain PyPI install
-# cannot resolve the [yam] extra — install i2rt directly from git (see README).
-# For local dev against sibling checkouts: uv pip install -e ../inspect-robots -e ../kitchenbench
-[tool.uv.sources]
-i2rt = { git = "https://github.com/i2rt-robotics/i2rt" }
-
 # Inspect Robots discovers these by entry point — no import needed for `inspect-robots list`.
 [project.entry-points."inspect_robots.embodiments"]
 yam_arms = "inspect_robots_yam.embodiment:YAMEmbodiment"
 
 [project.entry-points."inspect_robots.policies"]
 molmoact2 = "inspect_robots_yam.policy:MolmoAct2Policy"
+gr00t = "inspect_robots_yam.policy:gr00t_policy"
 
 [project.scripts]
 inspect-robots-yam-preflight = "inspect_robots_yam.preflight:main"
@@ -84,7 +83,11 @@ target-version = "py310"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF", "D1"]
+ignore = ["D105", "D107"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D1"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["inspect_robots_yam"]
@@ -94,16 +97,20 @@ python_version = "3.10"
 strict = true
 files = ["src/inspect_robots_yam"]
 
-# Hardware/client deps are lazily imported behind pragma'd seams and are not test
-# deps; silence mypy's missing-import errors for them (mirrors inspect_robots' rerun override).
+# Runtime integrations are lazily imported behind seams; ignore missing type
+# information from their third-party modules.
 [[tool.mypy.overrides]]
-module = ["requests.*", "json_numpy.*", "i2rt.*", "cv2.*"]
+module = ["requests.*", "json_numpy.*", "i2rt.*", "mink.*", "cv2.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
+markers = [
+    "real_kinematics: requires the optional i2rt, mink, and mujoco runtime stack",
+    "perf: generous wall-clock regression check for optional real kinematics",
+]
 
 [tool.coverage.run]
 branch = true

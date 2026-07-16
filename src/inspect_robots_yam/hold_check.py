@@ -34,6 +34,8 @@ from typing import Any, Protocol
 import numpy as np
 import numpy.typing as npt
 
+from inspect_robots_yam._i2rt import _load_i2rt
+
 DEFAULT_SETTLE_RAD = 0.05
 DEFAULT_TREND_RAD = 0.01
 DEFAULT_DURATION_S = 60.0
@@ -43,9 +45,13 @@ DEFAULT_INTERVAL_S = 5.0
 class SingleArm(Protocol):
     """The one-arm slice of the i2rt driver this check needs."""
 
-    def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]: ...
+    def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]:
+        """Read one arm pose in driver-native units."""
+        ...
 
-    def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None: ...
+    def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None:
+        """Command a pose in the same units returned by ``get_joint_pos``."""
+        ...
 
 
 RobotFactory = Callable[[str, bool], SingleArm]
@@ -60,8 +66,7 @@ def _print_flushed(line: str) -> None:
 def _default_robot_factory(  # pragma: no cover - real hardware
     channel: str, zero_gravity_mode: bool
 ) -> SingleArm:
-    from i2rt.robots.get_robot import get_yam_robot
-    from i2rt.robots.utils import GripperType
+    get_yam_robot, GripperType = _load_i2rt()
 
     robot: SingleArm = get_yam_robot(
         channel=channel,
@@ -92,10 +97,12 @@ class HoldResult:
 
     @property
     def trend(self) -> float:
+        """Measure drift growth beyond the first sample, floored at zero radians."""
         return max(0.0, self.max_drift - self.settle)
 
     @property
     def passed(self) -> bool:
+        """Require settle and trend to stay within their independent radian limits."""
         return self.settle <= self.settle_rad and self.trend <= self.trend_rad
 
 

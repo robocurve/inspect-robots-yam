@@ -11,6 +11,7 @@ Run [Inspect Robots](https://github.com/robocurve/inspect-robots) evals on real
 [![PyPI](https://img.shields.io/pypi/v/inspect-robots-yam)](https://pypi.org/project/inspect-robots-yam/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/robocurve/inspect-robots-yam/actions/workflows/ci.yml)
+[![Docs coverage](https://img.shields.io/badge/public%20docstrings-100%25-brightgreen)](https://github.com/robocurve/inspect-robots-yam/actions/workflows/ci.yml)
 [![Built on Inspect Robots](https://img.shields.io/badge/built%20on-Inspect%20Robots-indigo)](https://github.com/robocurve/inspect-robots)
 
 </div>
@@ -25,7 +26,8 @@ YAM + MolmoAct2 stack, so any embodiment-agnostic Inspect Robots task (e.g. all 
 
 - **`molmoact2` policy**: a thin client for MolmoAct2's first-party bimanual-YAM
   `/act` server (the model owns the GPU + weights in its own process).
-- **`yam_arms` embodiment**: the I2RT joint-position driver, with a hard safety
+- **`yam_arms` embodiment**: the I2RT driver with joint-position control by
+  default and an opt-in Cartesian end-effector interface, plus a hard safety
   clamp, operator-in-the-loop success, and self-paced control.
 
 Both declare the same 14-D joint-position contract (2 arms × [6 joints +
@@ -46,16 +48,24 @@ inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2 --embodimen
 ## Install (on the robot/GPU machine)
 
 ```bash
-uv pip install "inspect-robots-yam[client]"
-# The i2rt driver is GitHub-only (not on PyPI), so the [yam] hardware extra
-# can't resolve from PyPI — install the driver directly instead:
-uv pip install "i2rt @ git+https://github.com/i2rt-robotics/i2rt"
+uv venv && source .venv/bin/activate
+uv pip install inspect-robots-yam
+# The i2rt driver is git-only and not on PyPI. Install it directly.
+# The build-constraints file works around a build failure in i2rt's ruckig
+# dependency (source-only releases that no longer build under scikit-build-core
+# 1.0; the pin below 0.10 matches i2rt's own in-repo workaround):
+echo 'scikit-build-core<0.10' > build-constraints.txt
+uv pip install --build-constraints build-constraints.txt "i2rt @ git+https://github.com/i2rt-robotics/i2rt"
 ```
 
-- `client` → `requests` + `json-numpy` (the `/act` transport).
-- `i2rt` → the I2RT YAM arm driver, required for real hardware (the `[yam]`
-  extra declares it, but only resolves in a git/dev install where
-  `[tool.uv.sources]` applies: from PyPI, install it directly as above).
+The base package includes the `/act` transport and builtin OpenCV camera reader.
+Only `i2rt`, the I2RT YAM arm driver required for real hardware, needs the
+separate git install. The `scikit-build-core` build constraint can be dropped
+once ruckig ships a release with the fix from
+[pantor/ruckig#261](https://github.com/pantor/ruckig/issues/261) and i2rt
+moves off `ruckig==0.15.3`. The camera reader depends on
+`opencv-python-headless`; if your environment also carries `opencv-python`,
+the two share the `cv2` module and the last one installed wins.
 
 Then download the model weights (needs a Hugging Face token) and start the server,
 from the [MolmoAct2 repo](https://github.com/allenai/molmoact2):
@@ -64,6 +74,40 @@ from the [MolmoAct2 repo](https://github.com/allenai/molmoact2):
 huggingface-cli download allenai/MolmoAct2-BimanualYAM
 python examples/yam/host_server_yam.py          # serves /act on :8202
 ```
+
+### Serving a GR00T fine-tune
+
+Run the shim from an [Isaac-GR00T](https://github.com/NVIDIA/Isaac-GR00T)
+environment with a CUDA, PyTorch, and flash-attn stack that supports the GPU.
+Blackwell GPUs (`sm_120`) require a matching PyTorch build. Download the YAM
+fine-tune and start its `/act` server on the default port 8203:
+
+```bash
+hf download robocurve/gr00t-n1.7-yam-molmoact2
+python scripts/serve_gr00t_act.py \
+    --model robocurve/gr00t-n1.7-yam-molmoact2
+```
+
+Then run it through the distinct `gr00t` policy entry point so eval logs carry
+the correct model family:
+
+```bash
+inspect-robots "stack the red block on the blue block" \
+    --policy gr00t --embodiment yam_arms
+```
+
+The client defaults to `http://127.0.0.1:8203`. Override a remote or alternate
+server with `-P server_url=http://gpu:8203`. The config key is `server_url`;
+`url` is a read-only property, and `ActServerConfig.from_kwargs` rejects it.
+For another GR00T fine-tune, pass `-P action_horizon=<its chunk length>` so the
+recorded policy metadata matches that checkpoint.
+
+> [!WARNING]
+> The shim's startup checks validate the packed layout and units ranges, but
+> joint polarity and absolute-vs-delta semantics cannot be detected from
+> dataset statistics. For the first runs with a new checkpoint family, run
+> `inspect-robots-yam-preflight`, leave guardrails on, and keep an operator at
+> the e-stop.
 
 ## Preflight: prove compatibility before any motion
 
@@ -91,13 +135,15 @@ same way. See *Safety* below.
 
 ## Run on hardware
 
-Install the builtin camera reader's dependency:
+Write your defaults once. The interactive wizard interviews this plugin's
+declared devices (three cameras and both arms' CAN channels) with live
+probes, including unplug-to-identify:
 
 ```bash
-uv pip install "inspect-robots-yam[cameras]"
+inspect-robots setup
 ```
 
-Write your defaults once, replacing the three camera paths with your rig's
+Or write the file yourself, replacing the three camera paths with your rig's
 V4L2 color nodes (use stable `/dev/v4l/by-id/...` or udev-symlink paths;
 bare `/dev/videoN` numbers reshuffle on every replug):
 
@@ -121,11 +167,14 @@ EOF
 Then tell the robot what to do:
 
 ```bash
-uv run inspect-robots "place the fork on the plate"
+inspect-robots "place the fork on the plate"
 ```
 
 The attended flow: position the scene, press Enter to start, press any key to
-end the episode, answer y/N to score.
+end the episode, answer y/N to score. The status line counts up against the
+run's real step limit (`t = 42s / 120s`) with no configuration needed
+(requires inspect-robots newer than 0.8.1; on older cores set
+`max_steps_hint`).
 
 For exotic camera stacks (or full programmatic control), the Python API takes
 a custom `camera_reader` returning
@@ -160,21 +209,84 @@ cameras and the labeled 14-D state, and moves joints by name
 (`left_j0`..`left_gripper`, `right_j0`..`right_gripper`) through smooth,
 approver-checked motions.
 
-```bash
-uv pip install inspect-robots-agent "inspect-robots-yam[cameras]"
-inspect-robots config set embodiment yam_arms     # once, per machine
-export ANTHROPIC_API_KEY=sk-ant-...
+Copy the env template and add your API key:
 
-# Cameras come from the builtin reader: set the three *_cam_device paths in
-# ~/.config/inspect-robots/config.ini (see Quickstart above) or pass them as
-# -E flags per run.
+```bash
+cp .env.example .env
+```
+
+Install the add-on:
+
+```bash
+uv pip install inspect-robots-agent inspect-robots-yam
+inspect-robots config set embodiment yam_arms     # once, per machine
+```
+
+Cameras come from the builtin reader: set the three `*_cam_device` paths in
+`~/.config/inspect-robots/config.ini` (see Quickstart above) or pass them as
+`-E` flags per run. Then run the LLM on the robot:
+
+```bash
 inspect-robots "place the fork on the plate" --policy agent \
     -P model=anthropic/claude-fable-5
 ```
 
+> [!NOTE]
+> Invoke the CLI as plain `inspect-robots`, not `uv run inspect-robots`.
+> Inside a uv project, `uv run` first re-syncs the environment to the
+> project's lockfile, which uninstalls add-ons that are not declared
+> dependencies (the run above then fails with `no policy named 'agent'`).
+> To use `uv run` anyway, pass `--no-sync` or make the add-on a real
+> dependency with `uv add inspect-robots-agent`.
+
 Safety guardrails (a bounds clamp plus a per-step delta limit derived from the
 declared action space) are wired in by default for every CLI run; turning them
 off requires an explicit `--disable-guardrails`.
+
+### Cartesian EEF mode
+
+For LLM-agent runs, opt into the 10-D absolute Cartesian interface:
+
+```ini
+[embodiment.args]
+control_interface = eef_pos
+```
+
+Each arm is controlled as `x, y, z, yaw, gripper`. Positions are metres in
+that arm's own base frame, with +x forward from the base and +z up. The two
+base frames are independent. On common mirrored bimanual mounts, the arms'
++y axes point in opposite world directions, so equal signed y targets do not
+mean equal world directions.
+
+Yaw is an absolute target relative to the orientation captured at reset:
+`0` means the reset orientation. It rotates about base +z while preserving the
+captured roll and pitch. Yaw interpolation does not wrap. A move from `3.1` to
+`-3.1` sweeps through zero instead of taking the short path, so use
+intermediate yaw targets for near-±π regrasps.
+
+The default workspace per arm is x `[0.15, 0.48]`, y `[-0.25, 0.25]`, and z
+`[0.03, 0.40]`, with yaw `[-π, π]` and gripper `[0, 1]`. These bounds were
+validated against the bundled YAM + LINEAR_4310 model at the default working
+orientation, but they are a conservative box rather than an exact reachable
+set. `eef_low` and `eef_high` override all ten bounds. The observation keeps
+the 14-D `joint_pos` field for logging and adds the command-aligned 10-D
+`eef_state` field.
+
+In both control interfaces, `home_pose=None` selects a mandatory per-mode
+factory default instead of skipping homing. Joint mode uses the
+dataset-verified `DEFAULT_JOINT_HOME_POSE`, with every joint at encoder zero
+and both grippers open. EEF mode uses `DEFAULT_EEF_HOME_POSE`; its provisional
+per-arm joints are `[-0.024, 0.794, 0.645, -0.375, -0.021, -0.012]`, with both
+grippers open. The first EEF reset validates that the configured home FK lies
+in the workspace box before moving, then captures each arm's yaw reference
+after homing.
+
+> [!WARNING]
+> EEF mode has no arm-table or arm-arm collision checking. The workspace box,
+> Cartesian guardrails, joint-space IK rate limit, oscillation hold, and joint
+> limits are the only geometric protections. The two default y ranges overlap.
+> Keep an operator at the e-stop; using EEF mode unattended is operator
+> discretion and requires rig-specific validation.
 
 > [!WARNING]
 > Before any unattended agent run, verify on your rig that the arms hold
@@ -194,14 +306,20 @@ off requires an explicit `--disable-guardrails`.
 > file an issue with the numbers. Keep a hand on the e-stop for the first
 > runs.
 
-Set a resting pose so runs end with a gentle 3-second park instead of the
-arms going limp mid-air (pose fields accept comma-separated values from the
-CLI and config.ini):
+YAM ships with a factory resting pose at encoder zero for every joint and 1.0
+(open) for both grippers. It equals the joint-mode factory home, so standard
+upright rigs end with a gentle 3-second park and the next episode begins with
+open grippers. Override it per rig when needed. Pose fields accept
+comma-separated values from the CLI and config.ini. For example, a per-rig
+rest target can retain measured joint offsets while parking open:
 
 ```ini
 [embodiment.args]
 rest_pose = -0.002,0.002,0.002,-0.089,0.007,-0.026,1.0,-0.006,0.002,0.001,-0.087,-0.007,-0.019,1.0
 ```
+
+Set `rest_pose = none` to opt out of the factory target and park at the pose
+captured before the first commanded motion instead.
 
 In delta mode (`-E joints_are_delta=true`) the declared action space is the
 per-step displacement box (`YamConfig.step_limits`, default 0.2 rad per joint
@@ -222,30 +340,67 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
 - **Zero-gravity handoff jump.** The arms connect in zero-gravity mode by default
   (`YamConfig(zero_gravity_mode=True)`, passed through to the i2rt driver).
   Homing and rest-pose motions ramp at `control_hz`, but the first *policy*
-  action is still a stiff PD command that can jump from wherever the arm ended
-  up. Nothing bounds the per-step joint delta yet (tracked as a known issue);
-  stand clear when the episode starts, and set `home_pose` so episodes begin
-  from your checkpoint's trained start state.
+  action in joint mode is still a stiff PD command that can jump from wherever
+  the arm ended up. Nothing bounds the per-step joint delta in absolute joint
+  mode yet (tracked as a known issue). EEF mode applies a 0.2-rad-per-joint
+  per-step IK backstop, but a six-joint branch transit can still move the EEF
+  tens of centimetres because rate-clamped intermediate configurations are not
+  IK solutions. Reset always moves the arms through the full homing ramp, and
+  every mode has a factory home. Attended runs issue a stand-clear prompt
+  before the first homing ramp of each connection. Stand clear when the
+  episode starts, and use `home_pose` as the per-rig override when the factory
+  start is not validated for your setup.
+- **EEF reachability and collision limits.** Iteration-cap non-convergence uses
+  the solver's finite last iterate as best effort, and the next `eef_state`
+  reports the true result. IK branch flips are joint-rate-clamped and repeated
+  reversals hold the whole affected arm temporarily. These controls do not
+  check collisions or guarantee a Cartesian path during a clamped branch
+  transit. Raised work surfaces also need a raised EEF z minimum: the default
+  `z_min=0.03` leaves only about 19 mm nominal fingertip clearance over a table
+  at the arm-base plane, less up to 5 mm of IK error.
+- **Park pose must rest under gravity.** On close, the arms ramp back to an
+  explicit per-rig `rest_pose` or the factory zero-joint, open-gripper target,
+  and torque is released once the ramp finishes. Set `rest_pose=none` to opt
+  out and fall back to the pose captured at the first reset. Verify that the
+  factory target is a supported resting pose on your rig, or start runs (or set
+  `rest_pose`) with the arms in one, not held mid-air: whatever pose the park
+  ends in is the pose the arms go limp from. The park path is not
+  collision-checked, so keep the workspace clear at episode end. The default
+  parks with both grippers open (wire 1), so parking releases anything still
+  held during the ramp, wherever the arms happen to be. Rigs that must keep an
+  object gripped at park should override `rest_pose` with gripper slots 0.0.
+  Override both `home_pose` and `rest_pose` on rigs whose joint limits exclude
+  zero, since both targets are clamped through the same per-joint box as every
+  command.
 - **Absolute vs. delta joints: verify first.** MolmoAct2's YAM `actions` are
   treated as *absolute* joint targets by default. If your checkpoint emits
   deltas, set `YamConfig(joints_are_delta=True)` (the embodiment converts to
   absolute internally so the declared `joint_pos` stays honest). Inspect Robots's
   compat check *cannot* tell these apart: confirm with `--dry-run` and a single
   slow jog before running a task.
-- **Gripper polarity/trim.** The i2rt driver already exposes the YAM gripper as
-  normalized 0–1 in both directions, so the defaults (`gripper_open=0.0`,
-  `gripper_closed=1.0`) are an identity map and correct for standard grippers.
-  `YamConfig(gripper_open=..., gripper_closed=...)` is a polarity/trim remap over
-  that already-normalized range. Its main use is a gripper wired with inverted
-  polarity (`gripper_open=1.0, gripper_closed=0.0`). The remap is a bijection:
-  commands are de-normalized on the way out and observations are re-normalized on
-  the way back, so the model always sees 0–1. **Warning:** values outside [0, 1]
-  are forwarded on a path i2rt does *not* clip. Avoid them unless you have
-  verified your firmware's behavior.
+- **Gripper polarity/trim.** The wire convention is normalized 0–1, with 1 open
+  and 0 closed. The defaults (`gripper_open=1.0`, `gripper_closed=0.0`) preserve
+  an identity map for the standard i2rt driver. These fields are the measured
+  driver-native positions at the open and closed ends of the stroke. Configure
+  an inverted or offset gripper with its actual endpoints, for example
+  `gripper_open=0.72, gripper_closed=0.04`. Commands are de-normalized on the way
+  out and observations are re-normalized on the way back, so the model always
+  sees the wire convention. **Warning:** values outside [0, 1] are forwarded on
+  a path i2rt does *not* clip. Avoid them unless you have verified your firmware's
+  behavior.
+
+  Compatibility (pre-1.0): earlier releases interpreted these fields with the
+  opposite endpoint mapping. A config that explicitly copied the old defaults
+  (`gripper_open=0.0`, `gripper_closed=1.0`) now inverts its gripper. A config
+  that followed the old inversion recipe (`gripper_open=1.0`,
+  `gripper_closed=0.0`) no longer inverts because those values are now the
+  identity defaults. On identity-calibrated rigs, `home_pose`, `rest_pose`, and
+  custom `joint_low`/`joint_high` retain their numeric behavior, but their
+  gripper-slot meaning is now 1 open and 0 closed.
 
 ## Configuration
 
-### Units: every 14-D vector uses the same layout
+### Joint-space vectors
 
 `joint_low`/`joint_high`, `home_pose`, `rest_pose`, actions, and the observed
 `joint_pos` state all use *policy units*:
@@ -253,28 +408,51 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
 | Slots | Meaning | Unit |
 |-------|---------|------|
 | 0–5, 7–12 | left / right arm revolute joints | radians |
-| 6, 13 | left / right gripper | normalized 0–1 (0 = open, 1 = closed) |
+| 6, 13 | left / right gripper | normalized 0–1 (1 = open, 0 = closed) |
 
 Hardware gripper units (via `gripper_open`/`gripper_closed`) exist only at the
-driver boundary; nothing you configure here is in hardware gripper units.
+driver boundary; pose and limit vectors never use driver-native gripper units.
+
+In `control_interface="eef_pos"`, actions and `eef_low`/`eef_high` are 10-D:
+
+| Slots | Meaning | Unit |
+|-------|---------|------|
+| 0–2, 5–7 | left / right EEF x, y, z in each arm's base frame | metres |
+| 3, 8 | left / right yaw relative to reset orientation | radians |
+| 4, 9 | left / right gripper | normalized 0–1 (1 = open, 0 = closed) |
+
+`home_pose`, `rest_pose`, joint limits, and parking remain 14-D joint-space
+vectors in both control interfaces.
 
 `YamConfig`: `left_channel`, `right_channel`, `gripper_type` (i2rt `GripperType`
 enum *name*, e.g. `LINEAR_4310`; grippers only: `NO_GRIPPER`/`YAM_TEACHING_HANDLE`
 would break the 14-D packing and are rejected), `control_hz`, `cam_height/width`,
-`joint_low/high`, `home_pose` (reset ramps here smoothly over `rest_secs` rather
-than jumping), `rest_pose` (close ramps here before torque is released, so the
-arms never fall; default `None` keeps the old release-in-place behavior),
+`joint_low/high`, `control_interface` (`joints` by default or `eef_pos`),
+`docs_extra` (rig-specific notes appended to the built-in agent documentation),
+`eef_low/high`, `ik_max_iters`, `ik_step_joint_limit`,
+`cmd_resync_threshold`, `osc_deadband`, `osc_reversals`, `osc_window`,
+`osc_hold_steps`, `home_pose` (reset always ramps here smoothly over
+`rest_secs`; `none` selects `DEFAULT_JOINT_HOME_POSE` in joint mode or
+`DEFAULT_EEF_HOME_POSE` in EEF mode), `rest_pose` (close park target; defaults
+to the factory zero-joint, open-gripper pose equal to the joint factory home,
+accepts a per-rig override, and accepts `none` to fall back to the pose captured
+at the first reset before torque is released),
 `rest_secs` (ramp duration, default 3.0), `gripper_open/closed`,
 `joints_are_delta`, `zero_gravity_mode` (default `True`; see *Safety*),
 `unattended` (default `False`; skip operator prompts),
 `top/left/right_cam_device` (V4L2 paths for the builtin camera reader; all
-three or none), `max_steps_hint` (display-only horizon for the operator
-status line; bounds nothing).
-`MolmoActConfig`: `server_url`, `endpoint`, `num_steps` (the wire field: the
+three or none), `max_steps_hint` (deprecated: on inspect-robots newer than
+0.8.1, framework runs feed the status line the real horizon automatically;
+the hint is only a fallback for direct `rollout()` calls or older cores;
+bounds nothing).
+The current factory value is available for inspection as
+`inspect_robots_yam.config.DEFAULT_REST_POSE`; this is an informational constant,
+not a stable import.
+`ActServerConfig`: `server_url`, `endpoint`, `num_steps` (the wire field: the
 server's flow-matching denoising steps, *not* the chunk length),
 `action_horizon` (the checkpoint's advertised chunk length, 30 for the bimanual
 YAM tag; metadata only), `timeout_s`, `camera_order`, `state_key`,
-`cam_height/width`.
+`cam_height/width`, `name` (the policy label recorded in eval logs).
 
 Scalar knobs are settable from the CLI:
 `inspect-robots run -P server_url=http://gpu:8202 -E left_channel=can0 ...`.
@@ -293,6 +471,9 @@ uv run pre-commit install
 uv run pytest --cov                        # 100% coverage required
 uv run ruff check . && uv run mypy
 ```
+
+Every public module, class, and function needs a docstring, enforced by Ruff D1;
+state the contract instead of restating the symbol name.
 
 The whole suite runs with no hardware, no server, and no stdin: the i2rt
 driver, cameras, the `/act` transport, the clock, and operator I/O are all

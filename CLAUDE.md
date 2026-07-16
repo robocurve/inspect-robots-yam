@@ -1,7 +1,7 @@
 # inspect-robots-yam — agent guide
 
 Inspect Robots adapters that let evals (e.g. [KitchenBench](https://github.com/robocurve/kitchenbench))
-run on real **I2RT YAM bimanual arms** driven by **MolmoAct2**. This is a
+run on real **I2RT YAM bimanual arms** driven by `/act`-served policies. This is a
 **plugin package** in the Inspect Robots ecosystem — the framework lives in
 [inspect-robots](https://github.com/robocurve/inspect-robots); benchmarks are separate repos
 indexed by [WorldEvals](https://github.com/robocurve/worldevals).
@@ -9,11 +9,12 @@ indexed by [WorldEvals](https://github.com/robocurve/worldevals).
 ## The one big idea
 
 Inspect Robots evals swap two inputs: a `Policy` (VLA brain) and an `Embodiment` (robot
-body + world). We ship both for one real stack:
+body + world). We ship both sides for the YAM stack:
 
-- **`molmoact2` policy** — a thin HTTP client for MolmoAct2's first-party
-  bimanual-YAM `/act` server. The model runs in its own process (GPU + weights);
-  we never import torch here.
+- **`molmoact2` and `gr00t` policies** — a generic HTTP client for bimanual-YAM
+  `/act` servers, with distinct defaults and honest eval-log names. Models run
+  in their own processes (GPU + weights); the installable package never imports
+  torch.
 - **`yam_arms` embodiment** — the i2rt joint-position driver.
 
 Both declare the **same 14-D `joint_pos` contract** (2 arms × [6 joints +
@@ -27,7 +28,9 @@ gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
 - `tests/` — pytest; everything (driver, cameras, `/act`, clock, operator stdin)
   is injected, so the suite needs **no hardware, no server, no stdin**.
 - `plans/0001-yam-molmoact2-design.md` — the design + plan (approved after two
-  adversarial subagent critique rounds). Read it before changing the contract.
+  adversarial subagent critique rounds), with the gripper-polarity contract
+  superseded by `plans/0005-gripper-open-polarity.md`. Read both before changing
+  the contract.
 
 ## Working here
 
@@ -40,12 +43,15 @@ gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
   `tool.uv.sources`).
 - Gates (all blocking in CI): `ruff check .`, `ruff format --check .`,
   `mypy` (strict), `pytest --cov` at **100%**.
+  Every public module, class, and function needs a docstring, enforced by Ruff
+  D1; state the contract instead of restating the symbol name.
 - **mypy + numpy:** numpy 2.5's stubs use 3.12-only syntax that mypy (py3.10
   target) rejects; the dev extra pins `numpy<2.5` and CI runs mypy on 3.11.
-- **No torch.** The model lives in the MolmoAct2 server. Hardware/client deps
-  (`requests`, `json_numpy`, `i2rt`) are optional extras, lazily imported behind
-  `# pragma: no cover` seams; the `import-hygiene` CI job enforces that
-  `import inspect_robots_yam` works with only inspect_robots + numpy.
+- **No torch.** Models live in external `/act` servers. The base dependencies
+  include `requests`, `json_numpy`, and OpenCV, but those modules remain lazily
+  imported behind seams. The git-only `i2rt` driver is also loaded lazily and
+  produces guided installation help when absent. The `import-hygiene` CI job
+  enforces that `import inspect_robots_yam` works with only inspect_robots + numpy.
 
 ## Safety invariants (do not weaken)
 
@@ -82,8 +88,11 @@ non-YAM I2RT robots, and model fine-tuning.
   dependency versions the pyproject ranges allow (ignoring the lockfile), runs
   the tests, and opens an issue on failure — catching ecosystem breakage that
   locked CI can't see. A green canary means `uv lock --upgrade` is safe.
-- The `i2rt` driver is GitHub-only; `uv.lock` pins it to a commit. To advance
-  it, run `uv lock --upgrade-package i2rt`.
+- The `i2rt` driver is git-only and intentionally absent from `uv.lock`. Install
+  it with the README's Install snippet — a build-constraints file pinning
+  `scikit-build-core<0.10` is required (ruckig's published sdists no longer
+  build under scikit-build-core 1.0; see pantor/ruckig#261 and issue #47).
+  `I2RT_INSTALL_COMMAND` in `_i2rt.py` is the runtime copy of that remedy.
 - **Releases are one-click**: Actions → Release → Run workflow → pick
   patch/minor/major. The version is derived from the git tag by hatch-vcs —
   never add a static `version =` back to pyproject (`__version__` comes from importlib.metadata). The same
