@@ -221,10 +221,10 @@ cameras and the labeled 14-D state, and moves joints by name
 (`left_j0`..`left_gripper`, `right_j0`..`right_gripper`) through smooth,
 approver-checked motions.
 
-Copy the env template and add your API key:
+Put a `.env` with your API key in the working directory, reusing one you already have or copying the [.env.example](.env.example) template (the CLI loads it automatically; real environment variables take precedence over its values):
 
-```bash
-cp .env.example .env
+```ini
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 Install the add-on:
@@ -235,7 +235,7 @@ inspect-robots config set embodiment yam_arms     # once, per machine
 ```
 
 Cameras come from the builtin reader: set the three `*_cam_device` paths in
-`~/.config/inspect-robots/config.ini` (see Quickstart above) or pass them as
+`~/.config/inspect-robots/config.ini` (see Run on hardware above) or pass them as
 `-E` flags per run. Then run the LLM on the robot:
 
 ```bash
@@ -246,10 +246,11 @@ inspect-robots "place the fork on the plate" --policy agent \
 > [!NOTE]
 > Invoke the CLI as plain `inspect-robots`, not `uv run inspect-robots`.
 > Inside a uv project, `uv run` first re-syncs the environment to the
-> project's lockfile, which uninstalls add-ons that are not declared
-> dependencies (the run above then fails with `no policy named 'agent'`).
-> To use `uv run` anyway, pass `--no-sync` or make the add-on a real
-> dependency with `uv add inspect-robots-agent`.
+> project's lockfile, downgrading whatever the `uv pip install` commands
+> above just added back to the locked versions; the only trace is an
+> easy-to-miss "Uninstalled N / Installed N packages" line. To use
+> `uv run` anyway, pass `--no-sync`, or declare everything as real
+> dependencies with `uv add inspect-robots-yam` plus your plugins.
 
 Safety guardrails (a bounds clamp plus a per-step delta limit derived from the
 declared action space) are wired in by default for every CLI run; turning them
