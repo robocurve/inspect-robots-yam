@@ -339,7 +339,9 @@ def test_injected_kinematics_factory_is_lazy_and_reused_across_resets() -> None:
         return left, right
 
     emb = YAMEmbodiment(
-        YamConfig(control_interface="eef_pos", cam_height=4, cam_width=4, rest_secs=0.1, unattended=True),
+        YamConfig(
+            control_interface="eef_pos", cam_height=4, cam_width=4, rest_secs=0.1, unattended=True
+        ),
         driver_factory=lambda _cfg: driver,
         kinematics_factory=factory,
         camera_reader=_cameras,

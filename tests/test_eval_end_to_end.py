@@ -55,7 +55,9 @@ def test_timer_runout_parks_at_init_pose_on_close() -> None:
     init_pose = np.full(14, 0.2)
     drv = _FakeDriver()
     drv.state = init_pose.copy()
-    policy = MolmoAct2Policy(MolmoActConfig(cam_height=4, cam_width=4, num_steps=1), post_fn=_post_away)
+    policy = MolmoAct2Policy(
+        MolmoActConfig(cam_height=4, cam_width=4, num_steps=1), post_fn=_post_away
+    )
     embodiment = YAMEmbodiment(
         YamConfig(cam_height=4, cam_width=4, rest_pose=None, unattended=True, rest_secs=0.4),
         driver_factory=lambda _c: drv,
