@@ -14,7 +14,8 @@ from typing import Any
 I2RT_INSTALL_COMMAND = (
     "echo 'scikit-build-core<0.10' > build-constraints.txt && "
     "uv pip install --build-constraints build-constraints.txt "
-    '"i2rt @ git+https://github.com/i2rt-robotics/i2rt"'
+    '"i2rt @ git+https://github.com/i2rt-robotics/'
+    'i2rt@db582eaa70b6a057a1e2981da6219dfa6c29422a"'
 )
 _CONTROL_THREAD_JOIN_TIMEOUT = 5.0
 _CONTROL_THREAD_GRACE_PERIOD = 0.05

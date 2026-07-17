@@ -55,7 +55,7 @@ uv pip install inspect-robots-yam
 # dependency (source-only releases that no longer build under scikit-build-core
 # 1.0; the pin below 0.10 matches i2rt's own in-repo workaround):
 echo 'scikit-build-core<0.10' > build-constraints.txt
-uv pip install --build-constraints build-constraints.txt "i2rt @ git+https://github.com/i2rt-robotics/i2rt"
+uv pip install --build-constraints build-constraints.txt "i2rt @ git+https://github.com/i2rt-robotics/i2rt@db582eaa70b6a057a1e2981da6219dfa6c29422a"
 ```
 
 The base package includes the `/act` transport and builtin OpenCV camera reader.
