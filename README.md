@@ -164,6 +164,18 @@ right_cam_device = /dev/v4l/by-id/YOUR-RIGHT-CAM
 EOF
 ```
 
+Make sure the plugin is installed and the MolmoAct2 server is up. The
+`molmoact2` policy is only a client: nothing moves until the server is
+listening, and it does not start itself or survive a reboot (full setup in
+[Install](#install-on-the-robotgpu-machine)):
+
+```bash
+uv pip install inspect-robots-yam   # provides the molmoact2 policy + yam_arms rig
+# On the GPU machine, from the MolmoAct2 repo. Leave it running, e.g. in tmux:
+python examples/yam/host_server_yam.py --host 0.0.0.0 --port 8202
+curl http://127.0.0.1:8202/act      # 200 means the server is ready
+```
+
 Then tell the robot what to do:
 
 ```bash
