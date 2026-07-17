@@ -43,7 +43,6 @@ from inspect_robots_yam._i2rt import (
 from inspect_robots_yam.config import (
     DEFAULT_CAMERAS,
     DEFAULT_EEF_HOME_POSE,
-    DEFAULT_JOINT_HOME_POSE,
     EEF_DIM_LABELS,
     YamConfig,
     action_box,
@@ -582,7 +581,8 @@ class YAMEmbodiment:
             if self._cfg.home_pose is not None:
                 return np.asarray(self._cfg.home_pose, dtype=np.float64)
             # If no home_pose is configured, home to the current pose of the joints
-            # to prevent jumps, but default the grippers to 1.0 (open) per dataset training distribution.
+            # to prevent jumps, but default the grippers to 1.0 (open) per training
+            # distribution.
             driver = self._require_driver()
             current = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
             home = current.copy()

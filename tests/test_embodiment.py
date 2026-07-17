@@ -14,7 +14,6 @@ from inspect_robots.scene import Scene
 from inspect_robots.types import Action
 
 from inspect_robots_yam.config import (
-    DEFAULT_JOINT_HOME_POSE,
     DEFAULT_REST_POSE,
     YamConfig,
 )
@@ -148,7 +147,8 @@ def test_step_clamps_to_limits() -> None:
 def test_step_gripper_denormalization() -> None:
     cfg = YamConfig(gripper_open=10.0, gripper_closed=20.0)
     state = np.zeros(14)
-    state[6] = 10.0; state[13] = 10.0
+    state[6] = 10.0
+    state[13] = 10.0
     emb, drv, _ = _build(cfg, driver=EchoDriver(state=state))
     emb.reset(Scene(id="s", instruction="x"))
     emb.step(Action(data=np.zeros(14)))  # normalized gripper 0 -> closed value
@@ -505,7 +505,8 @@ def test_close_rest_pose_goes_through_clamp_and_denorm() -> None:
         gripper_closed=20.0,
     )
     state = np.zeros(14)
-    state[6] = 10.0; state[13] = 10.0
+    state[6] = 10.0
+    state[13] = 10.0
     emb, drv, _ = _build(cfg, driver=EchoDriver(state=state))
     emb.reset(Scene(id="s", instruction="x"))
     emb.close()
@@ -941,12 +942,12 @@ def test_step_tracks_far_target_at_step_limits() -> None:
     emb, _, _ = _build(driver=drv)
     emb.reset(Scene(id="s", instruction="x"))
     drv.commands.clear()
-    
+
     # Try to jump to 1.0 (step limit is 0.2)
     emb.step(Action(data=np.full(14, 1.0)))
     cmd1 = drv.commands[-1]
     assert cmd1[0] == pytest.approx(0.2)
-    
+
     # Try again, it should walk another 0.2 to 0.4
     emb.step(Action(data=np.full(14, 1.0)))
     cmd2 = drv.commands[-1]
