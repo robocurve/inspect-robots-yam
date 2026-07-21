@@ -246,7 +246,7 @@ def test_i2rt_install_command_carries_ruckig_build_constraint() -> None:
     """The remedy must pre-pin scikit-build-core, or ruckig's sdist fails to build (#47)."""
     assert "scikit-build-core<0.10" in I2RT_INSTALL_COMMAND
     assert "--build-constraints" in I2RT_INSTALL_COMMAND
-    assert '"i2rt @ git+https://github.com/i2rt-robotics/i2rt"' in I2RT_INSTALL_COMMAND
+    assert '"i2rt @ git+https://github.com/i2rt-robotics/i2rt@' in I2RT_INSTALL_COMMAND
 
 
 def test_close_robot_safely_joins_control_thread_before_socket_close() -> None:
