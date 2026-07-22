@@ -91,7 +91,12 @@ def _build(
     left: FakeRawKinematics | None = None,
     right: FakeRawKinematics | None = None,
 ) -> tuple[YAMEmbodiment, EchoDriver, FakeRawKinematics, FakeRawKinematics]:
-    config = cfg or YamConfig(control_interface="eef_pos", rest_secs=0.5, unattended=True)
+    import dataclasses
+
+    config = cfg or YamConfig(
+        control_interface="eef_pos", cam_height=4, cam_width=4, rest_secs=0.5, unattended=True
+    )
+    config = dataclasses.replace(config, cam_height=4, cam_width=4)
     drv = driver or EchoDriver()
     left_raw = left or FakeRawKinematics()
     right_raw = right or FakeRawKinematics()
@@ -177,7 +182,7 @@ def _build_attended(
         return ""
 
     emb = YAMEmbodiment(
-        YamConfig(control_interface="eef_pos", rest_secs=0.1),
+        YamConfig(control_interface="eef_pos", cam_height=4, cam_width=4, rest_secs=0.1),
         driver_factory=lambda _cfg: drv,
         kinematics_factory=lambda _cfg: (left or FakeRawKinematics(), FakeRawKinematics()),
         camera_reader=_cameras,
@@ -239,6 +244,8 @@ def test_configured_joint_home_and_parking_remain_joint_space_mechanisms() -> No
     rest = tuple([0.2] * 6 + [0.0] + [0.2] * 6 + [0.0])
     cfg = YamConfig(
         control_interface="eef_pos",
+        cam_height=4,
+        cam_width=4,
         home_pose=home,
         rest_pose=rest,
         rest_secs=0.1,
@@ -267,6 +274,8 @@ def test_reset_clears_active_hold_before_next_trial_opening_step() -> None:
     left = FakeRawKinematics(solutions=alternating)
     cfg = YamConfig(
         control_interface="eef_pos",
+        cam_height=4,
+        cam_width=4,
         rest_secs=0.1,
         unattended=True,
         osc_hold_steps=3,
@@ -330,7 +339,9 @@ def test_injected_kinematics_factory_is_lazy_and_reused_across_resets() -> None:
         return left, right
 
     emb = YAMEmbodiment(
-        YamConfig(control_interface="eef_pos", rest_secs=0.1, unattended=True),
+        YamConfig(
+            control_interface="eef_pos", cam_height=4, cam_width=4, rest_secs=0.1, unattended=True
+        ),
         driver_factory=lambda _cfg: driver,
         kinematics_factory=factory,
         camera_reader=_cameras,

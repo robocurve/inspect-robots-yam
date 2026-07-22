@@ -55,7 +55,7 @@ uv pip install inspect-robots-yam
 # dependency (source-only releases that no longer build under scikit-build-core
 # 1.0; the pin below 0.10 matches i2rt's own in-repo workaround):
 echo 'scikit-build-core<0.10' > build-constraints.txt
-uv pip install --build-constraints build-constraints.txt "i2rt @ git+https://github.com/i2rt-robotics/i2rt"
+uv pip install --build-constraints build-constraints.txt "i2rt @ git+https://github.com/i2rt-robotics/i2rt@db582eaa70b6a057a1e2981da6219dfa6c29422a"
 ```
 
 The base package includes the `/act` transport and builtin OpenCV camera reader.
@@ -164,6 +164,18 @@ right_cam_device = /dev/v4l/by-id/YOUR-RIGHT-CAM
 EOF
 ```
 
+Make sure the plugin is installed and the MolmoAct2 server is up. The
+`molmoact2` policy is only a client: nothing moves until the server is
+listening, and it does not start itself or survive a reboot (full setup in
+[Install](#install-on-the-robotgpu-machine)):
+
+```bash
+uv pip install inspect-robots-yam   # provides the molmoact2 policy + yam_arms rig
+# On the GPU machine, from the MolmoAct2 repo. Leave it running, e.g. in tmux:
+python examples/yam/host_server_yam.py --host 0.0.0.0 --port 8202
+curl http://127.0.0.1:8202/act      # 200 means the server is ready
+```
+
 Then tell the robot what to do:
 
 ```bash
@@ -209,10 +221,10 @@ cameras and the labeled 14-D state, and moves joints by name
 (`left_j0`..`left_gripper`, `right_j0`..`right_gripper`) through smooth,
 approver-checked motions.
 
-Copy the env template and add your API key:
+Put a `.env` with your API key in the working directory, reusing one you already have or copying the [.env.example](.env.example) template (the CLI loads it automatically; real environment variables take precedence over its values):
 
-```bash
-cp .env.example .env
+```ini
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
 Install the add-on:
@@ -223,7 +235,7 @@ inspect-robots config set embodiment yam_arms     # once, per machine
 ```
 
 Cameras come from the builtin reader: set the three `*_cam_device` paths in
-`~/.config/inspect-robots/config.ini` (see Quickstart above) or pass them as
+`~/.config/inspect-robots/config.ini` (see Run on hardware above) or pass them as
 `-E` flags per run. Then run the LLM on the robot:
 
 ```bash
@@ -234,10 +246,11 @@ inspect-robots "place the fork on the plate" --policy agent \
 > [!NOTE]
 > Invoke the CLI as plain `inspect-robots`, not `uv run inspect-robots`.
 > Inside a uv project, `uv run` first re-syncs the environment to the
-> project's lockfile, which uninstalls add-ons that are not declared
-> dependencies (the run above then fails with `no policy named 'agent'`).
-> To use `uv run` anyway, pass `--no-sync` or make the add-on a real
-> dependency with `uv add inspect-robots-agent`.
+> project's lockfile, downgrading whatever the `uv pip install` commands
+> above just added back to the locked versions; the only trace is an
+> easy-to-miss "Uninstalled N / Installed N packages" line. To use
+> `uv run` anyway, pass `--no-sync`, or declare everything as real
+> dependencies with `uv add inspect-robots-yam` plus your plugins.
 
 Safety guardrails (a bounds clamp plus a per-step delta limit derived from the
 declared action space) are wired in by default for every CLI run; turning them

@@ -70,6 +70,10 @@ def _build(
     poll_end_seq: list[bool] | None = None,
     operator: OperatorIO | None = None,
 ):
+    import dataclasses
+
+    cfg = cfg or YamConfig()
+    cfg = dataclasses.replace(cfg, cam_height=4, cam_width=4)
     drv = driver or FakeDriver()
     polls = list(poll_end_seq or [False])
     sleeps: list[float] = []
@@ -277,7 +281,7 @@ def test_reset_twice_reuses_driver() -> None:
         return FakeDriver()
 
     emb = YAMEmbodiment(
-        YamConfig(),
+        YamConfig(cam_height=4, cam_width=4),
         driver_factory=_factory,
         camera_reader=_cameras,
         operator=_operator(),
@@ -751,11 +755,15 @@ def test_close_rest_pose_zero_hz_falls_back_to_10hz() -> None:
 
 
 def _build_with_status(cfg: YamConfig | None = None, poll_end_seq: list[bool] | None = None):
+    import dataclasses
+
+    cfg = cfg or YamConfig()
+    cfg = dataclasses.replace(cfg, cam_height=4, cam_width=4)
     drv = FakeDriver()
     polls = list(poll_end_seq or [False])
     status: list[str | None] = []
     emb = YAMEmbodiment(
-        cfg or YamConfig(),
+        cfg,
         driver_factory=lambda _c: drv,
         camera_reader=_cameras,
         operator=_operator(["y"]),
@@ -964,3 +972,14 @@ def test_reset_zero_g_first_command_equals_current_pose() -> None:
     # Grippers should be set to 1.0 (fully open)
     assert drv.commands[-1][6] == pytest.approx(1.0)
     assert drv.commands[-1][13] == pytest.approx(1.0)
+
+
+def test_observe_validates_camera_shape() -> None:
+    def _bad_cameras(_cfg):
+        img = np.zeros((2, 2, 3), dtype=np.uint8)
+        return {"top_cam": img, "left_cam": img, "right_cam": img}
+
+    emb, _, _ = _build()
+    emb._camera_reader = _bad_cameras
+    with pytest.raises(ValueError, match="camera 'top_cam' returned shape"):
+        emb.reset(Scene(id="s", instruction="x"))

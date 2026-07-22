@@ -91,6 +91,12 @@ class ActServerPolicy:
             images = {cam: observation.images[cam] for cam in cfg.camera_order}
         except KeyError as exc:
             raise ValueError(f"observation missing camera {exc} required by {cfg.name}") from exc
+
+        expected_shape = (cfg.cam_height, cfg.cam_width, 3)
+        for cam, img in images.items():
+            if img.shape != expected_shape:
+                raise ValueError(f"camera {cam!r} has shape {img.shape}, expected {expected_shape}")
+
         if cfg.state_key not in observation.state:
             raise ValueError(f"observation missing state key {cfg.state_key!r}")
         state = packing.validate_dim(observation.state[cfg.state_key]).astype(np.float32)
