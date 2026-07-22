@@ -131,8 +131,6 @@ def test_reset_without_home_pose_ramps_to_current_pose() -> None:
     assert drv.commands[-1] == pytest.approx(expected)
 
 
-
-
 def test_step_clamps_to_limits() -> None:
     emb, drv, _ = _build()
     emb.reset(Scene(id="s", instruction="x"))
