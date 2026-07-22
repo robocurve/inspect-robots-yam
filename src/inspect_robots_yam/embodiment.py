@@ -2,7 +2,7 @@
 
 Wraps the i2rt joint-position driver. Designed for real-robot reality:
 
-* **Safety backstop** — every command is clamped to the configured joint limits
+* **Safety backstop** — every command is clamped to the configured joint and step limits
   inside :meth:`step`, *independently* of any Inspect Robots ``Approver`` (so unclamped
   model outputs can never reach the motors).
 * **Operator-in-the-loop success** — there is no privileged oracle; when the
@@ -43,7 +43,6 @@ from inspect_robots_yam._i2rt import (
 from inspect_robots_yam.config import (
     DEFAULT_CAMERAS,
     DEFAULT_EEF_HOME_POSE,
-    DEFAULT_JOINT_HOME_POSE,
     EEF_DIM_LABELS,
     YamConfig,
     action_box,
@@ -466,14 +465,13 @@ class YAMEmbodiment:
             self._step_eef(cmd, driver)
         else:
             cmd = packing.validate_dim(action.data)
-        if self._cfg.control_interface == "joints" and self._cfg.joints_are_delta:
-            # Normalize the gripper slots of the current position first, so the
-            # delta is applied in policy units (a fraction of the gripper stroke)
-            # and the sum re-enters _send() in the same units as absolute mode.
             base = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
-            cmd = base + cmd
-        if self._cfg.control_interface == "joints":
-            self._send(cmd)
+            if self._cfg.joints_are_delta:
+                # Normalize the gripper slots of the current position first, so the
+                # delta is applied in policy units (a fraction of the gripper stroke)
+                # and the sum re-enters _send() in the same units as absolute mode.
+                cmd = base + cmd
+            self._send(cmd, base=base)
         self._pace()
         self._emit_status()
 
@@ -578,9 +576,19 @@ class YAMEmbodiment:
         """Select the configured joint home, defaulting per control interface."""
         if self._cfg.control_interface == "eef_pos":
             values = self._cfg.home_pose or DEFAULT_EEF_HOME_POSE
+            return np.asarray(values, dtype=np.float64)
         else:
-            values = self._cfg.home_pose or DEFAULT_JOINT_HOME_POSE
-        return np.asarray(values, dtype=np.float64)
+            if self._cfg.home_pose is not None:
+                return np.asarray(self._cfg.home_pose, dtype=np.float64)
+            # If no home_pose is configured, home to the current pose of the joints
+            # to prevent jumps, but default the grippers to 1.0 (open) per training
+            # distribution.
+            driver = self._require_driver()
+            current = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+            home = current.copy()
+            home[packing.ARM_DOF] = 1.0
+            home[packing.ARM_WIDTH + packing.ARM_DOF] = 1.0
+            return home
 
     def _construct_kinematics(self) -> None:
         """Construct per-arm wrappers and apply effective model/config limits."""
@@ -667,7 +675,7 @@ class YAMEmbodiment:
             np.concatenate((left_command, action[4:5])),
             np.concatenate((right_command, action[9:10])),
         )
-        sent = self._send(command)
+        sent = self._send(command, base=state)
         left_kinematics.update_sent(sent[: packing.ARM_DOF])
         right_kinematics.update_sent(sent[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF])
 
@@ -704,11 +712,18 @@ class YAMEmbodiment:
             raise RuntimeError("step() called before reset() (or after close())")
         return self._driver
 
-    def _send(self, cmd: Vec) -> Vec:
-        """Clamp to joint limits (safety backstop) and de-normalize grippers."""
+    def _send(self, cmd: Vec, base: Vec | None = None) -> Vec:
+        """Clamp to joint and step limits (safety backstop) and de-normalize grippers."""
+        driver = self._require_driver()
+        current = (
+            base
+            if base is not None
+            else self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+        )
         clamped = np.clip(cmd, self._cfg.low, self._cfg.high)
+        clamped = np.clip(clamped, current + self._cfg.delta_low, current + self._cfg.delta_high)
         physical = self._denorm_grippers(clamped)
-        self._require_driver().command_joint_pos(physical)
+        driver.command_joint_pos(physical)
         return clamped
 
     def _denorm_grippers(self, cmd: Vec) -> Vec:
