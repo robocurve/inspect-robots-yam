@@ -34,13 +34,34 @@ that residual as zero. Every number below is therefore staleness **above the
 floor**: the part a fix can actually remove. It needs no scene change, perturbs
 nothing, and resolves to microseconds.
 
-Median staleness above the floor, three cameras, three control rates:
+Median staleness above the floor, three cameras, three control rates, with the
+model below alongside each measured range:
 
-| `control_hz` | period | default | `buffersize=1` | grabber |
-|---|---|---|---|---|
-| 5 Hz | 200 ms | 747-792 ms | 145-191 ms | 3-27 ms |
-| 10 Hz | 100 ms | 356-381 ms | 50-71 ms | 4-28 ms |
-| 20 Hz | 50 ms | 153-177 ms | 3-26 ms | 15-17 ms |
+| `control_hz` | period | default | `4/hz - 1/fps` | `buffersize=1` | `1/hz - 1/fps` | grabber |
+|---|---|---|---|---|---|---|
+| 5 Hz | 200 ms | 747-792 ms | 767 ms | 145-191 ms | 167 ms | 3-27 ms |
+| 10 Hz | 100 ms | 356-381 ms | 367 ms | 50-71 ms | 67 ms | 4-28 ms |
+| 20 Hz | 50 ms | 153-177 ms | 167 ms | 3-26 ms | 17 ms | 15-17 ms |
+
+One closed form predicts all six queue readings, every one inside the measured
+per-camera spread:
+
+```
+staleness ~ N / control_hz - 1 / fps        (N = buffer count: 4 default, 1 capped)
+```
+
+The mechanism it encodes: a saturated ring hands back the frame captured one
+frame interval after your **previous** read, N reads ago. The grabber is not in
+the same family. Its frame is at most one frame interval old whatever the
+control rate, and the measured 3-28 ms is a half-interval mean plus the spread
+of three unsynchronized capture phases.
+
+That the model holds across a 4x span of control rates, for two different buffer
+counts, is the evidence that this is the mechanism rather than a coincidence
+fitted to one operating point. It is also what makes the decision below
+predictive rather than local: the residual after the one-line cap is
+`1/control_hz - 1/fps`, which only vanishes as the control rate approaches the
+frame rate.
 
 Supporting readings, consistent across all three rates:
 
@@ -66,11 +87,12 @@ is `capacity x 1/control_hz`, measured at ~3.7x the period against a
 opposite of the intuition the issue encoded. At 5 Hz the observation is most of
 a second old.
 
-**2. The one-line cap helps a lot and is not enough.** `BUFFERSIZE=1` removes
-the ring but not the mechanism: the single buffer is refilled right after each
-read and then holds that frame until the next one, so staleness stays
-proportional to the control period (~0.6-0.85x). At the default 10 Hz that is
-50-71 ms, most of a control period.
+**2. The one-line cap helps a lot and is not enough.** `BUFFERSIZE=1` takes `N`
+from 4 to 1 but leaves the mechanism: the single buffer is refilled one frame
+interval after each read and then holds that frame until the next one, so the
+residual is `1/control_hz - 1/fps`. At the default 10 Hz that is 50-71 ms, most
+of a control period, and at 5 Hz it is 145-191 ms. It shrinks only as the
+control rate approaches 30 Hz, and `control_hz` is a knob operators turn down.
 
 **3. A drain thread makes staleness independent of the control rate.** The
 grabber's frame is at most one frame interval old, 3-28 ms measured, flat across
@@ -161,8 +183,12 @@ if callable(close):
     close()
 ```
 
-In the `finally` that already guarantees driver release, so a fault mid-park
-cannot strand threads.
+Placed with the unconditional `kinematics.clear()` at the top of `close()`, not
+in the driver `finally`. `close()` early-returns on `if self._driver is None`
+before reaching that `try`, so a release placed there is unreachable on the
+never-reset path and on a second `close()`. Cameras are independent of the
+driver and parking needs no observation, so releasing them first is both simpler
+and provably reached on every path.
 
 **This fixes a second, unfiled bug.** Today captures are never released at all:
 `caps` lives in the closure for the process lifetime, so after `close()` the
@@ -245,30 +271,46 @@ resolving a particular way.
 ### Not in scope
 
 - **Sibling plugins.** `franka`, `so101`, `widowx`, `unitree-g1`, `agibot-a2`
-  have their own readers with the same gap. Prove it here, port after, exactly
-  as #62 is doing for settle.
+  have their own readers with the same gap. Prove it here, port after, as #62
+  did for settle.
 - **A `cam_buffersize` config knob.** The drain thread makes the property
   nearly irrelevant, so an escape hatch for it would be a knob for a number that
   no longer matters.
-- **The `--rerun-connect` visual acceptance in the issue's step 4.** It checks
-  #62 and #63 composing, which needs #62 merged. It belongs to whichever lands
-  second.
-
 ## Interaction with #62
 
-Both touch the observation path, in different functions: #62 is in `step()` and
-`_observe`, this is in the reader. No conflict expected.
+#62 merged as `9d184c0` while this was in review, so this branch rebases onto it.
+The two touch the observation path in different places: #62 restructured `step()`
+and added `_settle`, this changes the reader and adds a camera release to
+`close()`. The rebase was clean.
 
-The measurement hands #62 one number it should have: reads cost 0.45 ms for all
-three cameras in every configuration, so `_pace()`'s shrinking-settle-window
-concern is dominated by policy inference, not camera reads. Posted on #62.
+They compose into the property neither has alone. #62 makes `step()` wait for the
+arm to reach its commanded pose before observing, which fixes **when** the frame
+is asked for. This fixes **which** frame comes back. Without both, a settled arm
+is still photographed mid-motion, from up to 380 ms earlier.
 
-Worth noting for the pair: `_pace()` runs before `_observe()` and stamps
-`_t_last` at its own end, so camera cost sits outside the declared period. It
-stays a rounding error here only because reads never block in any configuration
-measured. A future reader that blocks would make the embodiment run below its
-declared `control_hz` while `EmbodimentInfo` kept claiming otherwise. Not this
-PR's to fix; worth a line in #62's timing analysis.
+The measurement also hands #62's timing analysis one number: reads cost 0.45 ms
+for all three cameras in every configuration measured, so `_pace()`'s
+shrinking-settle-window concern is dominated by policy inference, not camera
+reads. Posted on #62 before it merged.
+
+One note for a future reader of `plans/0009`: `_pace()` runs before `_observe()`
+and stamps `_t_last` at its own end, so camera cost sits outside the declared
+period. That stays a rounding error only because reads never block in any
+configuration measured here, including the one this PR ships. A reader that
+blocked would make the embodiment run below its declared `control_hz` while
+`EmbodimentInfo` kept claiming otherwise.
+
+### The visual acceptance, now inherited
+
+The issue's step 4 asks for a Rerun timeline check that #62 and #63 compose:
+scrub and confirm the frame at each step matches the joint state at that step.
+It was deferred to whichever landed second, which is this. It stays a manual,
+operator-run check rather than an acceptance gate: the rig is headless, so it
+needs `--rerun-connect` over an SSH reverse tunnel, and "the frames look right
+when scrubbed" is not a pass/fail a CI job or a script can assert. The
+`--via-reader` run in Acceptance is the automatable evidence for the same
+property; the Rerun check is documented in the PR for whoever next sits at the
+rig.
 
 ## Acceptance
 
