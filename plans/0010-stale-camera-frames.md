@@ -44,6 +44,36 @@ that never lets a queue form. Staleness is the excess over that floor.
 | `BUFFERSIZE=1` | 100.7 ms | 32.4 ms | 34.3 ms |
 | `BUFFERSIZE=1` + grabber thread | 100.7 ms | 100.6 ms | 67.3 ms |
 
+### The control-rate sweep
+
+Both of the interpretive claims below (that latency is set by the consumer
+period, and that the grabber's number is an instrument artifact) are predictions
+about how the numbers must move when `control_hz` changes. So the harness was
+re-run at 5 Hz and 20 Hz to check them, rather than leaving them as arguments.
+
+| `control_hz` | period | default | grabber | `BUFFERSIZE=1` (wrists / context) | floor (wrists / context) |
+|---|---|---|---|---|---|
+| 5 Hz | 200 ms | 601.3 ms | 200.8 ms | 31.5 / 62.5 ms | 33.5 / 66.7 ms |
+| 10 Hz | 100 ms | 301.1 ms | 100.6 ms | 32.3 / 100.7 ms | 33.3 / 66.4 ms |
+| 20 Hz | 50 ms | 151.0 ms | 50.7 ms | 32.2 / 65.2 ms | 33.3 / 66.8 ms |
+
+Both predictions hold, exactly:
+
+- **Default is `3 x period` at every rate** (601 / 301 / 151 against 600 / 300 /
+  150). The mechanism is measured across a 4x span, not inferred from one point.
+- **The grabber is `1 x period` at every rate** (200.8 / 100.6 / 50.7). A number
+  that tracks the sampling bin and nothing else is measuring the sampler. This
+  is what an instrument-limited reading looks like, and it is why the grabber's
+  apparent deficit at 10 Hz is not evidence about the grabber.
+- **`BUFFERSIZE=1` sits at the floor at 5 Hz and 20 Hz for every camera**,
+  context camera included. The one number that did not (top_cam's 100.7 ms at
+  10 Hz) is the same 100 ms bin artifact, and the 5 Hz and 20 Hz runs resolve it
+  below the bin: 62.5 ms and 65.2 ms against a 66.7 ms floor.
+
+That last row is what makes the decision safe rather than merely unrefuted. With
+`BUFFERSIZE=1` there is no measurable staleness left above the floor, so there
+is nothing for a grabber thread to remove. A fix cannot beat the floor.
+
 Three findings, in order of how much they change the plan.
 
 **1. The damage is roughly twice the issue's estimate, and it scales with
@@ -54,17 +84,17 @@ immediately, so the FIFO advances one frame per **consumer** period: latency is
 `capacity x 1/control_hz`, about 300 ms here. Lowering `control_hz` makes it
 worse, which is the opposite of the intuition the issue encoded.
 
-**2. `CAP_PROP_BUFFERSIZE=1` is honored on this stack.** The D405 wrists land on
-the tight-loop floor (excess -1 ms, i.e. at the floor within noise); the D435
-context camera sits one frame interval above it. That is the first row of the
-issue's fix table, and it is a one-line change.
+**2. `CAP_PROP_BUFFERSIZE=1` is honored on this stack.** Every camera lands on
+the tight-loop floor once the sweep above resolves the 10 Hz bin artifact. That
+is the first row of the issue's fix table, and it is a one-line change.
 
-**3. The grabber thread cannot be shown to beat the one-liner, and its two
-supporting arguments do not survive measurement.** Its 67 ms apparent deficit is
-an artifact: slot reads return instantly, so its detection loop samples only
-every 100 ms, while a blocking config's loop samples every 33 ms. The instrument
-can only report "≤ 100 ms" for the grabber. It is not evidence of a regression,
-but neither is there any evidence of an improvement. Meanwhile:
+**3. The grabber thread has nothing left to remove, and its two supporting
+arguments do not survive measurement.** Its 67 ms apparent deficit at 10 Hz is
+an artifact, confirmed by the sweep: slot reads return instantly, so the sample
+at `t0` always predates the control applying and the step is always caught on
+the next one, pinning the reading to exactly one sampling bin at every rate. So
+it is not evidence of a regression. But `BUFFERSIZE=1` already measures at the
+floor, and no fix beats the floor. Meanwhile:
 
 - **Inter-camera skew.** Reading all three cameras sequentially costs **0.3-0.4
   ms**, not the ~200 ms the issue feared. Read ordering contributes essentially
@@ -113,6 +143,13 @@ for the driver, clock, and operator. Three module-level helpers, each taking the
 | `_open_capture(cv2, device, name)` | Construct, configure, warm up; raise `RuntimeError` naming the camera if it will not open or never yields a frame. |
 | `_read_rgb(cv2, cap, name, device, cfg)` | Read past transient empty frames, then BGR→RGB, resize to `cam_width` x `cam_height`, `uint8`. Raise `RuntimeError` naming the camera when every attempt fails. |
 
+The extraction also fixes a latent bug in the current retry loop. It keeps the
+last `frame` from `ok, frame = cap.read()` and then decides on `if frame is
+None`, so a capture returning `ok=False` with a non-`None` frame ten times in a
+row passes that guard, and a failed read reaches the policy as an observation.
+`_read_rgb` tracks the success flag rather than inferring it from the frame,
+which is also what makes the failure path testable at all.
+
 The closure keeps the pragma and shrinks to the two things that genuinely need
 hardware: the lazy `import cv2` and the wiring.
 
@@ -145,6 +182,8 @@ Against a fake `cv2` module and fake captures, in `tests/test_embodiment.py`:
 4. It retries the warm-up and succeeds when an early frame is empty.
 5. It raises when the warm-up never yields a frame.
 6. `_read_rgb` retries past empty frames and returns the first good one.
+6b. It raises when every attempt reports `ok=False` while still handing back a
+   frame object, the latent bug above.
 7. It raises `RuntimeError` naming camera and device when every attempt fails.
 8. It converts colour, resizes to the configured dimensions, and returns
    `uint8`.
