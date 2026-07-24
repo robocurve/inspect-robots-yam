@@ -202,7 +202,7 @@ be a use-after-free. The thread publishes `frame.copy()`.
 `__call__` keeps `cvtColor`/`resize` running at `control_hz` rather than at
 30 fps, which is the cheaper side of the trade (a copy is a memcpy; the
 conversion is not), and keeps the resize bound to the *call-time* `cfg` exactly
-as today. The slot costs 3 x 640x480x3, under 2 MB.
+as today. The slot costs 3 x 640x480x3, about 2.8 MB.
 
 ### Failing loudly, which the naive version does not
 

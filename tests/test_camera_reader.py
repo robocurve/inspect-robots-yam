@@ -1,15 +1,18 @@
 """Builtin V4L2 camera reader: queue capping, draining, and lifecycle (issue #63).
 
-Every test drives the drain loop *synchronously* on the test thread, with a fake
-capture that sets the stop event after N reads. Real threads appear only where
-the thing under test is the threading itself (close). Nothing sleeps on the wall
-clock: ``sleep_fn`` and ``clock`` are injected.
+The drain loop is driven *synchronously* on the test thread wherever the loop
+itself is the subject, with a fake capture that sets the stop event after N
+reads, so no assertion depends on a race. Opening a reader necessarily starts
+real drain threads, so the tests that open one are closed by an autouse fixture
+rather than left running for the session. Nothing sleeps on the wall clock:
+``sleep_fn`` and ``clock`` are injected.
 """
 
 from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
@@ -20,6 +23,19 @@ from inspect_robots_yam.config import YamConfig
 from inspect_robots_yam.embodiment import YAMEmbodiment, _OpenCVCameraReader
 
 DEVICES = {"top_cam": "/dev/cam0", "left_cam": "/dev/cam1", "right_cam": "/dev/cam2"}
+
+#: Readers handed out by `build`, closed after each test. Opening starts a drain
+#: thread per camera, and a test that forgets leaves them reading for the rest of
+#: the session and executing Python at interpreter shutdown.
+_OPENED: list[_OpenCVCameraReader] = []
+
+
+@pytest.fixture(autouse=True)
+def close_readers() -> Iterator[None]:
+    """Close every reader a test built, however the test ended."""
+    yield
+    while _OPENED:
+        _OPENED.pop().close()
 
 
 def frame(fill: int = 7) -> npt.NDArray[np.uint8]:
@@ -153,6 +169,7 @@ def build(
     sleeps: list[float] = []
     clock = clock if clock is not None else Clock()
     reader = _OpenCVCameraReader(DEVICES, cv2_module=cv2, sleep_fn=sleeps.append, clock=clock)
+    _OPENED.append(reader)
     return reader, cv2, sleeps, clock
 
 
@@ -160,7 +177,7 @@ def drive(reader: _OpenCVCameraReader, name: str, cap: FakeCapture, iterations: 
     """Run the drain loop on this thread for a bounded number of reads."""
     stop = threading.Event()
     cap.stop_after(stop, iterations)
-    reader._drain(name, cap, stop)
+    reader._drain(name, cap, stop, reader._generation)
 
 
 def test_buffersize_is_capped_first_and_the_rest_of_the_negotiation_survives() -> None:
@@ -415,14 +432,118 @@ def test_embodiment_close_tolerates_a_camera_reader_without_a_close() -> None:
     embodiment(lambda cfg: {}).close()
 
 
+class FakeDriver:
+    """Just enough driver to observe that teardown reached it."""
+
+    def __init__(self) -> None:
+        self.closed = 0
+
+    def get_joint_pos(self) -> npt.NDArray[np.float64]:
+        """Never called by these tests."""
+        raise AssertionError("not used")  # pragma: no cover - contract filler
+
+    def command_joint_pos(self, target: npt.NDArray[np.float64]) -> None:
+        """Never called by these tests."""
+        raise AssertionError("not used")  # pragma: no cover - contract filler
+
+    def close(self) -> None:
+        """Record that the handles were released."""
+        self.closed += 1
+
+
 def test_a_failing_camera_release_never_stops_the_driver_teardown(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # The release runs ahead of the park ramp and the finally that guarantees the
-    # driver release, so an escaping error would strand the arms torque-on.
+    # Torque-off must happen whatever the cameras do.
     reader = ClosingReader(fail=True)
+    emb = embodiment(reader)
+    driver = FakeDriver()
+    emb._driver = driver
 
-    embodiment(reader).close()
+    emb.close()
 
+    assert driver.closed == 1
     assert reader.closed == 1
     assert "releasing cameras failed" in caplog.text
+
+
+def test_an_interrupt_while_releasing_cameras_still_leaves_the_arms_torque_off() -> None:
+    # close() now joins drain threads for up to a few seconds, and a join is
+    # interruptible. A Ctrl-C there is routine during teardown -- often a second
+    # one, since close() usually already runs inside a caller's finally -- and it
+    # must not skip torque-off. Hence the release sits in an outer finally, and
+    # BaseException is deliberately not swallowed by _release_cameras.
+    class Interrupting(ClosingReader):
+        def close(self) -> None:
+            self.closed += 1
+            raise KeyboardInterrupt
+
+    reader = Interrupting()
+    emb = embodiment(reader)
+    driver = FakeDriver()
+    emb._driver = driver
+
+    with pytest.raises(KeyboardInterrupt):
+        emb.close()
+
+    assert driver.closed == 1
+    assert emb._driver is None
+
+
+def test_the_published_frame_survives_the_driver_reusing_its_buffer() -> None:
+    # V4L2 hands back an array viewing the capture's own buffer, so the next read
+    # overwrites a frame the consumer is still converting and release() frees it
+    # outright. The fake returns the same array every read, as the driver does.
+    reader, cv2, _, _ = build()
+    buffer = frame(1)
+    drive(reader, "top_cam", FakeCapture([(True, buffer)], idle_from=None), iterations=1)
+
+    buffer[:] = 9  # the driver filling its buffer with the next capture
+
+    image = reader._latest(cv2, "top_cam", YamConfig())
+    assert np.array_equal(np.unique(image), np.array([1], dtype=np.uint8))
+
+
+def test_the_warm_up_will_not_seed_the_slot_from_a_read_the_driver_rejected() -> None:
+    # This read seeds the observation reset() takes first, which is the one the
+    # policy plans a whole chunk from.
+    caps = {device: FakeCapture([(False, frame(9))], idle_from=11) for device in DEVICES.values()}
+    reader, _, _, _ = build(caps)
+
+    with pytest.raises(RuntimeError, match=r"frame read failed for top_cam"):
+        reader(YamConfig())
+
+
+def test_a_thread_close_left_running_cannot_publish_into_the_next_cycle() -> None:
+    # close() deliberately leaves a thread alive rather than releasing a capture
+    # underneath it. That zombie must not write into a later open cycle: its
+    # frame would be stamped fresh on publish though captured before the close,
+    # so the freshness check cannot catch it. This is #63 by another route.
+    reader, cv2, _, _ = build()
+    retired = reader._generation
+    reader.close()
+
+    stop = threading.Event()
+    zombie = FakeCapture([(True, frame(9))], idle_from=None)
+    zombie.stop_after(stop, 1)
+    reader._drain("top_cam", zombie, stop, retired)
+
+    with pytest.raises(RuntimeError, match=r"frame read failed for top_cam"):
+        reader._latest(cv2, "top_cam", YamConfig())
+
+
+def test_a_thread_close_left_running_cannot_fault_a_healthy_camera() -> None:
+    # The fault latch is sticky by design, so a zombie's exception would poison a
+    # working camera until the next close().
+    reader, cv2, _, _ = build()
+    retired = reader._generation
+    reader.close()
+    drive(reader, "top_cam", FakeCapture([(True, frame(1))], idle_from=None), iterations=1)
+
+    stop = threading.Event()
+    zombie = FakeCapture(raise_at=1, idle_from=None)
+    zombie.stop_after(stop, 1)
+    reader._drain("top_cam", zombie, stop, retired)
+
+    image = reader._latest(cv2, "top_cam", YamConfig())
+    assert np.array_equal(np.unique(image), np.array([1], dtype=np.uint8))
