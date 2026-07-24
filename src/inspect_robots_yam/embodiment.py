@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol, cast, runtime_checkable
 
 import numpy as np
@@ -253,57 +255,251 @@ def _default_status(line: str | None) -> None:  # pragma: no cover - real TTY ou
         print(f"\r  {line}   ", end="", flush=True)
 
 
-def _opencv_camera_reader(cfg: YamConfig) -> CameraReader:
+def _import_cv2() -> Any:  # pragma: no cover - real OpenCV
+    """Import cv2 on first use, so the package imports without OpenCV."""
+    import cv2
+
+    return cv2
+
+
+@dataclass(frozen=True)
+class _Published:
+    """One captured frame, copied out of the driver's buffer, and when it landed."""
+
+    data: Any
+    published_s: float
+
+
+class _OpenCVCameraReader:
     """Builtin V4L2 reader for rigs configured via ``*_cam_device`` (YamConfig).
 
-    cv2 is imported lazily on the first frame read, so construction stays inert
-    and the package still imports without OpenCV installed. Negotiates YUYV at
-    640x480 explicitly (RealSense D435s return empty frames on cv2 defaults)
-    and resizes to ``cam_width`` x ``cam_height`` RGB.
+    One daemon thread per camera reads continuously and publishes the newest
+    frame; ``__call__`` converts whatever is in the slot. Without that thread a
+    consumer running at ``control_hz`` dequeues from a queue the driver has
+    already refilled, so the frame is ``N/control_hz - 1/fps`` old (#63) --
+    380 ms on this rig, and worse as the control rate falls. Draining bounds it
+    at one frame interval instead, independent of the control rate.
+
+    cv2 is imported on the first frame read and devices open then too, so
+    construction stays inert. Negotiates YUYV at 640x480 explicitly (RealSense
+    D435s return empty frames on cv2 defaults) and resizes to ``cam_width`` x
+    ``cam_height`` RGB.
+
+    ``close()`` is required: the drain threads keep the devices open and, being
+    live threads, keep this object reachable. ``YAMEmbodiment.close()`` calls it.
     """
-    devices: dict[str, str] = {
-        "top_cam": cast(str, cfg.top_cam_device),
-        "left_cam": cast(str, cfg.left_cam_device),
-        "right_cam": cast(str, cfg.right_cam_device),
-    }
-    caps: dict[str, Any] = {}
 
-    def reader(cfg: YamConfig) -> ImageMap:  # pragma: no cover - real cameras
-        import time as _time
+    #: Frames older than this mean the camera has stopped delivering. Matches the
+    #: read-retry budget the pre-#63 reader spent before raising.
+    MAX_FRAME_AGE_S: ClassVar[float] = 0.5
 
-        import cv2
+    #: Longer than CAP_PROP_READ_TIMEOUT_MSEC, so a thread parked in a timing-out
+    #: read is still given a chance to notice the stop flag and exit.
+    JOIN_TIMEOUT_S: ClassVar[float] = 2.0
 
-        if not caps:
-            for name, dev in devices.items():
-                cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
-                if not cap.isOpened():
-                    raise RuntimeError(f"cannot open {name} at {dev}")
-                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"YUYV"))
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)
-                cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000)
-                for _ in range(10):  # warm up: first frames can be empty
-                    if cap.read()[0]:
-                        break
-                    _time.sleep(0.1)
-                caps[name] = cap
-        out: dict[str, npt.NDArray[np.uint8]] = {}
+    def __init__(
+        self,
+        devices: Mapping[str, str],
+        cv2_module: Any | None = None,
+        sleep_fn: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._devices = dict(devices)
+        self._cv2 = cv2_module
+        self._sleep = sleep_fn
+        self._clock = clock
+        self._caps: dict[str, Any] = {}
+        self._threads: dict[str, threading.Thread] = {}
+        self._published: dict[str, _Published] = {}
+        self._faults: dict[str, BaseException] = {}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        # Identifies the open cycle a drain thread belongs to. close() may
+        # deliberately leave a thread running (see close), and that zombie must
+        # not write into the state of a later cycle: its frames would be stamped
+        # fresh on publish though captured before the previous close, which is
+        # #63 again by another route, and its faults would poison a healthy
+        # camera. Checked under the lock that guards those writes, so there is
+        # no window between the check and the write.
+        self._generation = 0
+
+    def __call__(self, cfg: YamConfig) -> ImageMap:
+        """Return the newest frame from every camera, opening devices on first use."""
+        cv2 = self._cv2 if self._cv2 is not None else _import_cv2()
+        self._cv2 = cv2
+        if not self._caps:
+            self._open_all(cv2)
+        return {name: self._latest(cv2, name, cfg) for name in self._devices}
+
+    def close(self) -> None:
+        """Stop every drain thread, then release the captures it owned.
+
+        Joins before releasing, and skips the release of any capture whose thread
+        is still running: a ``release()`` underneath an in-flight ``read()``
+        crashes the process, and this process is holding torque-enabled arms. A
+        leaked device is the better failure. Idempotent, and a no-op before the
+        first read since devices open lazily.
+        """
+        self._stop.set()
+        for thread in self._threads.values():
+            thread.join(timeout=self.JOIN_TIMEOUT_S)
+        for name, drain in self._threads.items():
+            cap = self._caps[name]
+            if drain.is_alive():
+                logger.warning(
+                    "camera %s (%s) is still reading; leaving the device open rather "
+                    "than releasing it underneath the read",
+                    name,
+                    self._devices[name],
+                )
+                continue
+            cap.release()
+        self._caps = {}
+        self._threads = {}
+        with self._lock:
+            # Retires any thread this close left running, so it cannot write
+            # into the next open cycle.
+            self._generation += 1
+            self._published = {}
+            self._faults = {}
+
+    def _open_all(self, cv2: Any) -> None:
+        """Open every camera, or release the ones opened and re-raise.
+
+        All-or-nothing because a half-populated cache would never be retried:
+        the ``if not self._caps`` guard would be satisfied by the cameras that
+        did open, and the rollout would run on a subset of its declared views.
+        """
+        with self._lock:
+            self._generation += 1
+            generation = self._generation
+        caps: dict[str, Any] = {}
+        try:
+            for name, device in self._devices.items():
+                caps[name] = self._open_one(cv2, name, device, generation)
+        except BaseException:
+            for cap in caps.values():
+                cap.release()
+            raise
+        # A fresh stop flag per open cycle: a reader reopened after close() must
+        # not hand its new threads an event that is already set.
+        self._stop = threading.Event()
+        self._caps = caps
         for name, cap in caps.items():
-            frame = None
-            for _ in range(10):
+            thread = threading.Thread(
+                target=self._drain,
+                args=(name, cap, self._stop, generation),
+                name=f"yam-camera-{name}",
+                daemon=True,
+            )
+            self._threads[name] = thread
+            thread.start()
+
+    def _open_one(self, cv2: Any, name: str, device: str, generation: int) -> Any:
+        """Open and configure one camera, seeding its slot from the warm-up read.
+
+        ``BUFFERSIZE`` is set first: OpenCV's V4L2 backend refuses it once
+        streaming has begun, and it bounds the queue if a drain thread is ever
+        descheduled. Seeding the slot matters because ``reset()`` observes
+        immediately after opening, and a first call that found nothing published
+        would fail after the arms had already homed.
+
+        A warm-up that never yields a frame is not fatal here, as before #63:
+        the drain thread gets its own chance and ``_latest`` waits for it.
+        """
+        cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+        if not cap.isOpened():
+            raise RuntimeError(f"cannot open {name} at {device}")
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"YUYV"))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)
+        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000)
+        for _ in range(10):  # warm up: first frames can be empty
+            ok, frame = cap.read()
+            # `ok` matters as much here as in the drain loop: this read seeds the
+            # slot that serves reset()'s first observation.
+            if ok and frame is not None:
+                self._publish(name, frame, generation)
+                break
+            self._sleep(0.1)
+        return cap
+
+    def _drain(self, name: str, cap: Any, stop: threading.Event, generation: int) -> None:
+        """Publish frames until stopped, latching whatever ends the loop.
+
+        Owns the capture exclusively. Nothing else may touch it, including
+        property reads: ``VideoCapture`` has no internal locking, so a concurrent
+        call races the read in flight.
+
+        An exception here would otherwise be invisible, and an invisible dead
+        thread would freeze the slot and serve one frame forever, which is #63
+        again in a form nothing reports. ``_latest`` re-raises what is latched.
+        """
+        while not stop.is_set():
+            try:
                 ok, frame = cap.read()
-                if ok and frame is not None:
-                    break
-                _time.sleep(0.05)
-            if frame is None:
-                raise RuntimeError(f"frame read failed for {name} ({devices[name]})")
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frame = cv2.resize(frame, (cfg.cam_width, cfg.cam_height))
-            out[name] = frame.astype(np.uint8)
+            except BaseException as exc:  # latched, then re-raised by _latest
+                with self._lock:
+                    if generation == self._generation:
+                        self._faults[name] = exc
+                return
+            # `ok` is authoritative: a failed read can still hand back a frame
+            # object, and publishing it would put a frame the driver rejected in
+            # front of the policy.
+            if ok and frame is not None:
+                self._publish(name, frame, generation)
+
+    def _publish(self, name: str, frame: Any, generation: int) -> None:
+        """Copy a frame out of the driver's buffer into the slot.
+
+        The copy is not optional: ``read()`` can hand back an array viewing the
+        capture's own buffer, which the next read overwrites underneath a
+        consumer still converting it, and which ``release()`` frees outright.
+        """
+        # Copied outside the lock: it is a megabyte-scale memcpy and nothing
+        # else may touch this frame, so widening the critical section buys
+        # nothing.
+        copy = frame.copy()
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._published[name] = _Published(copy, self._clock())
+
+    def _latest(self, cv2: Any, name: str, cfg: YamConfig) -> npt.NDArray[np.uint8]:
+        """Convert the newest published frame, waiting briefly for a fresh one."""
+        device = self._devices[name]
+        for _ in range(10):
+            with self._lock:
+                fault = self._faults.get(name)
+                published = self._published.get(name)
+            if fault is not None:
+                raise RuntimeError(f"camera {name} ({device}) stopped reading") from fault
+            if published is not None and self._clock() - published.published_s <= (
+                self.MAX_FRAME_AGE_S
+            ):
+                return self._convert(cv2, published.data, cfg)
+            self._sleep(0.05)
+        raise RuntimeError(f"frame read failed for {name} ({device})")
+
+    def _convert(self, cv2: Any, frame: Any, cfg: YamConfig) -> npt.NDArray[np.uint8]:
+        """Turn one captured frame into the RGB uint8 array the contract declares."""
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        resized = cv2.resize(rgb, (cfg.cam_width, cfg.cam_height))
+        out: npt.NDArray[np.uint8] = np.asarray(resized).astype(np.uint8)
         return out
 
-    return reader
+
+def _opencv_camera_reader(cfg: YamConfig) -> CameraReader:
+    """Build the builtin V4L2 reader for the three configured camera devices."""
+    return _OpenCVCameraReader(
+        {
+            "top_cam": cast(str, cfg.top_cam_device),
+            "left_cam": cast(str, cfg.left_cam_device),
+            "right_cam": cast(str, cfg.right_cam_device),
+        }
+    )
 
 
 def _default_camera_reader(cfg: YamConfig) -> ImageMap:
@@ -548,6 +744,15 @@ class YAMEmbodiment:
         The release lives in a ``finally`` so a driver fault or interrupt
         mid-ramp can never leave the handles held — but the arms may then fall
         from a mid-ramp pose. No-op if never connected.
+
+        Cameras are released in an outer ``finally``, so it runs on the
+        never-reset path too and, more importantly, can never pre-empt the
+        driver teardown. It joins drain threads for up to a few seconds, and a
+        ``Thread.join()`` is interruptible: a Ctrl-C there (routine during
+        teardown, and often a *second* one, since this method usually already
+        runs inside a caller's ``finally``) would otherwise skip torque-off
+        entirely. Releasing after the park ramp costs nothing, because nothing
+        observes while parking.
         """
         # Unconditionally first: a bound-but-never-reset instance (eval() can
         # abort between bind_task and the first reset) must not carry a stale
@@ -556,34 +761,53 @@ class YAMEmbodiment:
         for kinematics in (self._left_kinematics, self._right_kinematics):
             if kinematics is not None:
                 kinematics.clear()
-        if self._driver is None:
+        try:
+            if self._driver is None:
+                return
+            try:
+                if self._init_pose is not None:
+                    target = (
+                        np.asarray(self._cfg.rest_pose, dtype=np.float64)
+                        if self._cfg.rest_pose is not None
+                        else self._init_pose
+                    )
+                    if not self._cfg.unattended:
+                        self._status("parking: ramping arms back before torque-off")
+                    try:
+                        self._ramp_to(target)
+                    finally:
+                        # Close the status line even when the ramp faults, so a
+                        # traceback never prints appended to it.
+                        if not self._cfg.unattended:
+                            self._status(None)
+            finally:
+                try:
+                    self._driver.close()
+                finally:
+                    # Clear connection state even if the driver's own close()
+                    # raises, so a later reset() reconnects, re-captures, and
+                    # re-confirms the stand-clear gate.
+                    self._driver = None
+                    self._init_pose = None
+                    self._home_gate_confirmed = False
+        finally:
+            self._release_cameras()
+
+    def _release_cameras(self) -> None:
+        """Release the camera reader's devices, if it holds any.
+
+        Duck-typed because ``CameraReader`` is a plain callable alias: every
+        custom reader in tests and user code is a bare function with no
+        ``close``. Errors are logged and swallowed: a camera that will not let
+        go is not a reason to fail a teardown that has already parked the arms.
+        """
+        release = getattr(self._camera_reader, "close", None)
+        if not callable(release):
             return
         try:
-            if self._init_pose is not None:
-                target = (
-                    np.asarray(self._cfg.rest_pose, dtype=np.float64)
-                    if self._cfg.rest_pose is not None
-                    else self._init_pose
-                )
-                if not self._cfg.unattended:
-                    self._status("parking: ramping arms back before torque-off")
-                try:
-                    self._ramp_to(target)
-                finally:
-                    # Close the status line even when the ramp faults, so a
-                    # traceback never prints appended to it.
-                    if not self._cfg.unattended:
-                        self._status(None)
-        finally:
-            try:
-                self._driver.close()
-            finally:
-                # Clear connection state even if the driver's own close()
-                # raises, so a later reset() reconnects, re-captures, and
-                # re-confirms the stand-clear gate.
-                self._driver = None
-                self._init_pose = None
-                self._home_gate_confirmed = False
+            release()
+        except Exception:
+            logger.exception("releasing cameras failed; continuing with teardown")
 
     def _ramp_to(self, target: Vec) -> Vec:
         """Linearly ramp from the current pose to ``target`` over ``rest_secs``.
