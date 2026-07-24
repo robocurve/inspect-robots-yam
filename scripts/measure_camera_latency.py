@@ -1,27 +1,29 @@
 """Measure V4L2 frame staleness on the rig's cameras (robocurve/inspect-robots-yam#63).
 
-Reads from ``/dev/video*`` and toggles a UVC brightness control. No CAN traffic,
-no torque, no robot motion, so this is safe to run with the arms powered down.
+Reads only from ``/dev/video*``. No CAN traffic, no torque, no robot motion, so
+this is safe to run with the arms powered down.
 
 The question it answers: when the rollout consumes frames at ``control_hz``
 while the cameras free-run at their native rate, how old is the frame
 ``cap.read()`` hands back, and which fix collapses that age?
 
-Two independent signals, because they measure different things and the obvious
-one is misleading on its own:
+``cv2.VideoCapture`` does not take a picture when you call ``read()``. The
+driver free-runs into a queue of buffers and ``read()`` dequeues one, so the
+frame you get was captured at some earlier moment you do not control.
 
-**Age (primary).** A UVC brightness step is a scene change with a known
-timestamp. Set it at ``t0``, keep consuming at the control rate, and the wall
-time of the first frame that shows the step is the end-to-end latency. This
-includes a fixed sensor/ISP delay for applying the control, identical across
-configurations, so compare the differences rather than the absolute numbers.
-Resolution is one consumer period, which is enough to separate the candidates.
+**How age is measured.** ``CAP_PROP_POS_MSEC`` carries the kernel's capture
+timestamp for the buffer just dequeued, on a clock whose epoch is unrelated to
+``perf_counter``. The offset between the two is recovered once per camera by
+draining the queue in a tight loop, where the frame is as fresh as the pipeline
+allows, and taking the residual as zero. Every age below is therefore an excess
+over that floor: what a fix could actually remove. The signal needs no scene
+change, perturbs nothing, and resolves to microseconds.
 
-**Backlog (secondary).** A queued frame returns in microseconds; an empty queue
-blocks for a full frame interval. Counting instant returns before the first
-blocking read gives the queue depth. Depth is *not* age: a saturated ring
-drained one-in-one-out advances one frame per **consumer** period, so a 4-deep
-queue at 10 Hz holds a 400 ms old frame, not a 133 ms old one.
+Backlog is reported alongside as a corroborating signal: a queued frame returns
+in microseconds while an empty queue blocks for a frame interval, so the count
+of instant reads before the first blocking one is the queue depth. Depth is not
+age. A saturated ring drained one-in-one-out advances one frame per **consumer**
+period, so a 4-deep queue at 10 Hz holds a 400 ms old frame, not a 133 ms one.
 
 Three configurations are compared:
 
@@ -69,102 +71,103 @@ _WARMUP_READS = 10
 # came off the queue.
 _INSTANT_FRACTION = 0.5
 
-# Tight reads used to time the producer once a queue is drained.
+# Tight reads used to drain a queue and to time the producer once drained.
+_DRAIN_READS = 60
 _INTERVAL_SAMPLES = 15
-
-# Brightness endpoints for the step, and the mean-intensity swing that counts as
-# having seen it. The probe measured a ~95 level swing, so this is well clear of
-# auto-exposure drift without being so tight that a dim scene misses the step.
-_BRIGHTNESS_LOW = 0.0
-_BRIGHTNESS_HIGH = 64.0
-_STEP_THRESHOLD = 30.0
-
-# Give up on one age trial rather than hang if the control never lands.
-_AGE_TIMEOUT_S = 3.0
-
-# Trials alternate the step up and down, so between them the pipeline has to be
-# flushed of the previous level. Without this the baseline can be read from a
-# queued frame the step has already overtaken, and the next read then differs
-# from it immediately: a false detection that reports a latency below the
-# camera's own control-apply delay.
-_SETTLE_S = 0.5
 
 
 class _Source:
     """One camera, read the way the configuration under test reads it."""
 
-    def __init__(self, cap: Any, device: str, brightness_prop: int) -> None:
+    def __init__(self, cv2: Any, cap: Any, device: str) -> None:
+        self._cv2 = cv2
         self._cap = cap
         self._device = device
-        self._brightness_prop = brightness_prop
+        self._offset = 0.0
 
-    def set_brightness(self, level: float) -> None:
-        """Step the brightness control, the scene change the age trial times."""
-        self._cap.set(self._brightness_prop, level)
+    def read(self) -> tuple[float, float]:
+        """Return how long the read took and the staleness of what it returned.
 
-    def read(self) -> tuple[float, Any]:
-        """Return how long the read took and the frame it produced."""
+        Staleness is measured against the tight-loop floor calibrated by
+        `calibrate`, so it is zero for a frame as fresh as the pipeline allows.
+        """
         start = time.perf_counter()
         ok, frame = self._cap.read()
-        elapsed = time.perf_counter() - start
+        done = time.perf_counter()
         if not ok or frame is None:
             raise SystemExit(f"frame read failed for {self._device}")
-        return elapsed, frame
+        captured = self._cap.get(self._cv2.CAP_PROP_POS_MSEC) / 1000.0
+        return done - start, (done - self._offset) - captured
+
+    def calibrate(self) -> None:
+        """Pin the capture clock to `perf_counter` with the queue drained.
+
+        A tight read loop keeps the queue empty, so the frame it returns is the
+        freshest the pipeline can produce. Treating that residual as zero makes
+        every later reading an excess over the floor rather than an absolute
+        latency that would carry the sensor's own pipeline delay.
+        """
+        for _ in range(_DRAIN_READS):
+            self._cap.read()
+        now = time.perf_counter()
+        self._offset = now - self._cap.get(self._cv2.CAP_PROP_POS_MSEC) / 1000.0
+
+    def buffersize(self) -> float:
+        """Read the queue depth back, since `set` is a request, not a guarantee."""
+        return float(self._cap.get(self._cv2.CAP_PROP_BUFFERSIZE))
 
     def close(self) -> None:
-        """Restore the brightness this measurement stepped, then release."""
-        self._cap.set(self._brightness_prop, _BRIGHTNESS_LOW)
+        """Release the capture."""
         self._cap.release()
 
 
 class _GrabberSource(_Source):
     """A camera drained by a daemon thread, exposing only its newest frame.
 
-    The thread owns the capture exclusively and publishes each frame into a slot
-    under a lock. Splitting `grab()` and `retrieve()` across threads would race
-    on the capture's internal state, so the consumer never touches it.
+    The thread owns the capture exclusively and publishes each frame's staleness
+    into a slot under a lock. Splitting `grab()` and `retrieve()` across threads
+    would race on the capture's internal state, so the consumer never touches it.
     """
 
-    def __init__(self, cap: Any, device: str, brightness_prop: int) -> None:
-        super().__init__(cap, device, brightness_prop)
+    def __init__(self, cv2: Any, cap: Any, device: str) -> None:
+        super().__init__(cv2, cap, device)
         self._lock = threading.Lock()
-        self._frame: Any = None
+        self._captured: float | None = None
         self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def calibrate(self) -> None:
+        """Calibrate against the bare capture, then hand it to the drain thread."""
+        super().calibrate()
         self._thread = threading.Thread(target=self._drain, daemon=True)
         self._thread.start()
-        while self._frame is None and not self._stop.is_set():
+        while self._captured is None and not self._stop.is_set():
             time.sleep(0.005)
 
     def _drain(self) -> None:
         while not self._stop.is_set():
             ok, frame = self._cap.read()
             if ok and frame is not None:
+                captured = self._cap.get(self._cv2.CAP_PROP_POS_MSEC) / 1000.0
                 with self._lock:
-                    self._frame = frame
+                    self._captured = captured
 
-    def read(self) -> tuple[float, Any]:
-        """Return the newest published frame without ever blocking on capture."""
+    def read(self) -> tuple[float, float]:
+        """Return the newest published frame's staleness, never blocking."""
         start = time.perf_counter()
         with self._lock:
-            frame = self._frame
-        if frame is None:  # pragma: no cover - only before the first publish
+            captured = self._captured
+        done = time.perf_counter()
+        if captured is None:  # pragma: no cover - only before the first publish
             raise SystemExit(f"no frame published for {self._device}")
-        return time.perf_counter() - start, frame
+        return done - start, (done - self._offset) - captured
 
     def close(self) -> None:
-        """Stop the drain thread before touching the capture it owns."""
+        """Stop the drain thread before releasing the capture it owns."""
         self._stop.set()
-        self._thread.join(timeout=2.0)
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
         super().close()
-
-    def set_brightness(self, level: float) -> None:
-        """Step brightness while the drain thread runs.
-
-        Unsynchronized on purpose: taking the drain lock would stall the step by
-        up to a frame interval, which is the same order as the latency being
-        measured. The two are different ioctls on one fd, serialized in-kernel.
-        """
-        self._cap.set(self._brightness_prop, level)
 
 
 @dataclass(frozen=True)
@@ -172,19 +175,26 @@ class CameraResult:
     """One camera measured under one configuration."""
 
     name: str
-    interval_s: float
+    buffersize: float
+    staleness_s: tuple[float, ...]
+    read_s: tuple[float, ...]
     backlog: int | None
-    ages_s: tuple[float, ...]
+    interval_s: float
+
+    @property
+    def median_staleness_s(self) -> float:
+        """Median excess over the tight-loop floor: what a fix can remove."""
+        return statistics.median(self.staleness_s)
+
+    @property
+    def median_read_s(self) -> float:
+        """Median cost of one read on the control thread."""
+        return statistics.median(self.read_s)
 
     @property
     def fps(self) -> float:
         """Producer rate implied by the drained tight-loop interval."""
         return 1.0 / self.interval_s if self.interval_s > 0 else float("nan")
-
-    @property
-    def median_age_s(self) -> float:
-        """Median end-to-end age of the frame the consumer receives."""
-        return statistics.median(self.ages_s) if self.ages_s else float("nan")
 
 
 @dataclass(frozen=True)
@@ -196,9 +206,9 @@ class Run:
     sweep_s: float
 
     @property
-    def worst_age_s(self) -> float:
+    def worst_staleness_s(self) -> float:
         """Oldest median frame across cameras: what sets end-to-end staleness."""
-        return max((r.median_age_s for r in self.results), default=float("nan"))
+        return max(r.median_staleness_s for r in self.results)
 
 
 def _open(cv2: Any, device: str, buffersize: int | None) -> Any:
@@ -207,15 +217,14 @@ def _open(cv2: Any, device: str, buffersize: int | None) -> Any:
     if not cap.isOpened():
         raise SystemExit(f"cannot open {device}")
     if buffersize is not None:
-        # Set before format negotiation, where a driver that honors the property
-        # wants it. Requested, not guaranteed: that is part of the measurement.
+        # Before the format negotiation and before any grab: OpenCV's V4L2
+        # backend rejects the property once streaming has started.
         cap.set(cv2.CAP_PROP_BUFFERSIZE, buffersize)
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*_FOURCC))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, _CAPTURE_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, _CAPTURE_HEIGHT)
     cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, _OPEN_TIMEOUT_MSEC)
     cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, _READ_TIMEOUT_MSEC)
-    cap.set(cv2.CAP_PROP_BRIGHTNESS, _BRIGHTNESS_LOW)
     for _ in range(_WARMUP_READS):
         if cap.read()[0]:
             break
@@ -223,97 +232,29 @@ def _open(cv2: Any, device: str, buffersize: int | None) -> Any:
     return cap
 
 
-def _sweep(sources: dict[str, _Source], hz: float, duration_s: float) -> float:
-    """Drive every camera at the control rate until the queues reach steady state.
+def _paced(
+    sources: dict[str, _Source], hz: float, duration_s: float
+) -> tuple[dict[str, list[float]], dict[str, list[float]], float]:
+    """Drive every camera at the control rate, recording staleness and read cost.
 
-    Returns the median wall time one full sweep costs. That is the `o` term in
-    #62's `o + s <= 1/hz` control budget: capture done inside the control period
-    is time the arm does not get to converge before it is photographed.
+    The sweep cost returned is the `o` term in #62's `o + s <= 1/hz` control
+    budget: time spent capturing inside the control period is time the arm does
+    not get to converge before it is photographed.
     """
     period = 1.0 / hz
     deadline = time.perf_counter() + duration_s
+    staleness: dict[str, list[float]] = {name: [] for name in sources}
+    reads: dict[str, list[float]] = {name: [] for name in sources}
     sweeps: list[float] = []
     while time.perf_counter() < deadline:
         cycle_start = time.perf_counter()
-        for source in sources.values():
-            source.read()
+        for name, source in sources.items():
+            read_s, stale_s = source.read()
+            reads[name].append(read_s)
+            staleness[name].append(stale_s)
         sweeps.append(time.perf_counter() - cycle_start)
         time.sleep(max(0.0, period - (time.perf_counter() - cycle_start)))
-    return statistics.median(sweeps)
-
-
-def _measure_age(
-    sources: dict[str, _Source],
-    target: str,
-    hz: float,
-    trials: int,
-) -> tuple[float, ...]:
-    """Step the target's brightness and time the first frame that shows it.
-
-    Every camera keeps being read at `hz` throughout, so the target's queue stays
-    in the same regime the rollout puts it in. Trials alternate the step up and
-    down, which avoids waiting for auto-exposure to settle back between them.
-    """
-    period = 1.0 / hz
-    ages: list[float] = []
-    level = _BRIGHTNESS_HIGH
-    for _ in range(trials):
-        _sweep(sources, hz, _SETTLE_S)
-        baseline = float(sources[target].read()[1].mean())
-        t0 = time.perf_counter()
-        sources[target].set_brightness(level)
-        deadline = t0 + _AGE_TIMEOUT_S
-        while time.perf_counter() < deadline:
-            cycle_start = time.perf_counter()
-            seen: float | None = None
-            for name, source in sources.items():
-                _, frame = source.read()
-                if name == target and abs(float(frame.mean()) - baseline) > _STEP_THRESHOLD:
-                    seen = time.perf_counter() - t0
-            if seen is not None:
-                ages.append(seen)
-                break
-            time.sleep(max(0.0, period - (time.perf_counter() - cycle_start)))
-        else:  # pragma: no cover - only if the control never lands
-            raise SystemExit(f"brightness step never appeared on {target}")
-        level = _BRIGHTNESS_LOW if level == _BRIGHTNESS_HIGH else _BRIGHTNESS_HIGH
-    return tuple(ages)
-
-
-def _measure_floor(cv2: Any, devices: dict[str, str], trials: int) -> dict[str, float]:
-    """Age measured by a consumer that never falls behind: the instrument floor.
-
-    A tight read loop keeps the queue drained, so whatever latency remains is not
-    staleness. It is the sensor and ISP delay in applying the brightness control,
-    plus one frame interval, and it differs per camera model (the context D435
-    and the wrist D405s do not respond alike). Every age below sits on top of
-    this, so a configuration that measures at the floor has no backlog left to
-    remove: the instrument cannot see one.
-    """
-    floors: dict[str, float] = {}
-    for name, device in devices.items():
-        source = _Source(_open(cv2, device, 1), device, cv2.CAP_PROP_BRIGHTNESS)
-        try:
-            ages: list[float] = []
-            level = _BRIGHTNESS_HIGH
-            for _ in range(trials):
-                settle_until = time.perf_counter() + _SETTLE_S
-                while time.perf_counter() < settle_until:
-                    source.read()
-                baseline = float(source.read()[1].mean())
-                t0 = time.perf_counter()
-                source.set_brightness(level)
-                while time.perf_counter() - t0 < _AGE_TIMEOUT_S:
-                    if abs(float(source.read()[1].mean()) - baseline) > _STEP_THRESHOLD:
-                        ages.append(time.perf_counter() - t0)
-                        break
-                else:  # pragma: no cover - only if the control never lands
-                    raise SystemExit(f"brightness step never appeared on {name}")
-                level = _BRIGHTNESS_LOW if level == _BRIGHTNESS_HIGH else _BRIGHTNESS_HIGH
-            floors[name] = statistics.median(ages)
-        finally:
-            source.close()
-    return floors
+    return staleness, reads, statistics.median(sweeps)
 
 
 def _measure_backlog(source: _Source, burst: int) -> tuple[int, float]:
@@ -338,48 +279,50 @@ def _run(
     hz: float,
     duration_s: float,
     burst: int,
-    trials: int,
 ) -> Run:
-    """Open every camera together, saturate, then measure age and backlog."""
+    """Open every camera together, calibrate, then measure the paced regime."""
     factory = _GrabberSource if grabber else _Source
     sources: dict[str, _Source] = {
-        name: factory(_open(cv2, device, buffersize), device, cv2.CAP_PROP_BRIGHTNESS)
+        name: factory(cv2, _open(cv2, device, buffersize), device)
         for name, device in devices.items()
     }
     try:
-        sweep_s = _sweep(sources, hz, duration_s)
+        for source in sources.values():
+            source.calibrate()
+        staleness, reads, sweep_s = _paced(sources, hz, duration_s)
         results = []
         for name, source in sources.items():
-            ages = _measure_age(sources, name, hz, trials)
             # A grabber's queue is drained by its thread, so a burst measured
             # through the latest-frame slot would report the slot, not the queue.
             backlog, interval = (None, 1.0 / 30.0) if grabber else _measure_backlog(source, burst)
-            results.append(CameraResult(name, interval, backlog, ages))
+            results.append(
+                CameraResult(
+                    name,
+                    source.buffersize(),
+                    tuple(staleness[name]),
+                    tuple(reads[name]),
+                    backlog,
+                    interval,
+                )
+            )
         return Run(label, tuple(results), sweep_s)
     finally:
         for source in sources.values():
             source.close()
 
 
-def _excess(run: Run, floors: dict[str, float]) -> float:
-    """Worst staleness above the instrument floor: the part a fix can remove."""
-    return max((r.median_age_s - floors[r.name] for r in run.results), default=float("nan"))
-
-
-def _print_run(run: Run, floors: dict[str, float], hz: float) -> None:
+def _print_run(run: Run, hz: float) -> None:
     """Print one configuration's per-camera rows and its sweep cost."""
     print(f"\n=== {run.label} ===")
     for r in run.results:
-        ages = " ".join(f"{a * 1000:.0f}" for a in r.ages_s)
         backlog = "drained by thread" if r.backlog is None else str(r.backlog)
         print(
-            f"  {r.name:<11} {r.fps:5.1f} fps  age={r.median_age_s * 1000:6.1f} ms"
-            f"  (+{(r.median_age_s - floors[r.name]) * 1000:6.1f} over floor)"
-            f"  backlog={backlog}"
+            f"  {r.name:<11} stale={r.median_staleness_s * 1000:7.1f} ms"
+            f"  read={r.median_read_s * 1000:6.2f} ms"
+            f"  buffersize={r.buffersize:.0f}  backlog={backlog}  {r.fps:.1f} fps"
         )
-        print(f"    per-trial ages (ms): {ages}")
     print(
-        f"  sweep of {len(run.results)} cameras: {run.sweep_s * 1000:.1f} ms"
+        f"  sweep of {len(run.results)} cameras: {run.sweep_s * 1000:.2f} ms"
         f" of a {1000.0 / hz:.1f} ms control period"
     )
 
@@ -397,9 +340,8 @@ def main() -> None:
     parser.add_argument(
         "--hz", type=float, default=10.0, help="consumer rate (default: control_hz)"
     )
-    parser.add_argument("--duration", type=float, default=5.0, help="seconds of steady-state load")
-    parser.add_argument("--burst", type=int, default=8, help="timed reads after the load phase")
-    parser.add_argument("--trials", type=int, default=5, help="brightness steps per camera")
+    parser.add_argument("--duration", type=float, default=6.0, help="seconds of paced measurement")
+    parser.add_argument("--burst", type=int, default=8, help="timed reads for the backlog probe")
     args = parser.parse_args()
 
     devices: dict[str, str] = {}
@@ -411,35 +353,17 @@ def main() -> None:
 
     import cv2
 
-    print(
-        f"cv2 {cv2.__version__}  consumer {args.hz} Hz  load {args.duration}s"
-        f"  burst {args.burst}  trials {args.trials}"
-    )
-    floors = _measure_floor(cv2, devices, args.trials)
-    print("\ninstrument floor (tight-loop consumer, no backlog possible):")
-    for name, floor in floors.items():
-        print(f"  {name:<11} {floor * 1000:6.1f} ms")
-
+    print(f"cv2 {cv2.__version__}  consumer {args.hz} Hz  paced {args.duration}s")
     configs = (("default", None, False), ("buffersize=1", 1, False), ("grabber", 1, True))
     runs = []
     for label, buffersize, grabber in configs:
-        run = _run(
-            cv2,
-            devices,
-            label,
-            buffersize,
-            grabber,
-            args.hz,
-            args.duration,
-            args.burst,
-            args.trials,
-        )
-        _print_run(run, floors, args.hz)
+        run = _run(cv2, devices, label, buffersize, grabber, args.hz, args.duration, args.burst)
+        _print_run(run, args.hz)
         runs.append(run)
 
-    print("\nworst staleness above the floor (the part a fix can remove):")
+    print("\nworst staleness above the tight-loop floor:")
     for run in runs:
-        print(f"  {run.label:<14} {_excess(run, floors) * 1000:6.1f} ms")
+        print(f"  {run.label:<14} {run.worst_staleness_s * 1000:7.1f} ms")
 
 
 if __name__ == "__main__":
