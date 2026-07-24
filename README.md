@@ -528,9 +528,11 @@ that judges the final state should check for it. Those per-step values reach
 scorers and custom sinks; they are not written to the JSON eval log.
 
 > [!NOTE]
-> Settling does not make the *camera image* postdate the motion. OpenCV can
-> return a frame the V4L2 driver captured and queued earlier, so a settled arm
-> can still be photographed mid-motion. See issue #63.
+> Settling fixes *when* the frame is asked for; the builtin reader's drain
+> threads fix *which* frame comes back (#63). Both are needed, and both are in
+> place from v0.14.0. A custom `camera_reader` that reads a V4L2 device on
+> demand still hands back whatever the driver queued earlier, so a settled arm
+> can be photographed mid-motion however tight the tolerance.
 
 With settling on, the operator status line and its `Max ...s` horizon count steps
 rather than wall-clock seconds, so both understate real elapsed time (#64).
