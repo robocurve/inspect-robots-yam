@@ -240,9 +240,12 @@ ANTHROPIC_API_KEY=sk-ant-...
 Install the add-on:
 
 ```bash
-uv pip install inspect-robots-agent inspect-robots-yam
+uv pip install -U inspect-robots-agent inspect-robots-yam
 inspect-robots config set embodiment yam_arms     # once, per machine
 ```
+
+The `-U` matters if you installed the agent plugin before: the run below needs
+its native Anthropic wire, added in `inspect-robots-agent` 0.13.0.
 
 Cameras come from the builtin reader: set the three `*_cam_device` paths in
 `~/.config/inspect-robots/config.ini` (see Run on hardware above) or pass them as
@@ -250,8 +253,22 @@ Cameras come from the builtin reader: set the three `*_cam_device` paths in
 
 ```bash
 inspect-robots "place the fork on the plate" --policy agent \
-    -P model=anthropic/claude-fable-5
+    -P model=anthropic/claude-opus-5 \
+    -P wire=anthropic -P speed=fast -P effort=high \
+    -P max_output_tokens=32000
 ```
+
+`-P wire=anthropic` drives Claude through its native Messages API, which is what
+`-P speed=fast` needs: the same model served at up to 2.5x higher output tokens
+per second, for roughly double the standard price. That trade is worth more here
+than in sim, because the arms hold their pose while the model thinks, so serving
+latency is time the fork spends waiting. Fast mode covers Claude Opus 5 and Opus
+4.8 on the Claude API. `-P effort=high` buys deeper reasoning for a contact-rich
+task, and since thinking bills against the same budget as the reply, the output
+cap goes up with it.
+
+Drop those four flags to run any OpenAI-compatible model instead, such as
+`-P model=openai/gpt-5.6` or `-P model=anthropic/claude-fable-5`.
 
 > [!NOTE]
 > Invoke the CLI as plain `inspect-robots`, not `uv run inspect-robots`.
