@@ -28,7 +28,15 @@ The package is `mypy --strict` clean, ships `py.typed`, and is 100%-covered.
   the registry (`factories[name]()`) and preflight construct components freely.
 - **Coverage discipline:** the only uncoverable code is hardware/TTY I/O, isolated
   in `# pragma: no cover` seams (`_default_post`, `_default_driver_factory`,
-  `default_poll_end`, the `_require_driver` pre-reset guard, `__main__`). Keep new
-  hardware access inside such seams so the 100% gate stays meaningful.
+  `default_poll_end`, `_import_cv2`, the `_require_driver` pre-reset guard,
+  `__main__`). Keep new hardware access inside such seams so the 100% gate stays
+  meaningful. `_OpenCVCameraReader` is the worked example: the cv2 module,
+  `sleep_fn`, and `clock` are constructor arguments, so queue configuration,
+  draining, conversion, and teardown are all tested against fakes and only the
+  `import cv2` itself is pragma'd.
+- **Cameras must be released:** `_OpenCVCameraReader` runs a daemon drain thread
+  per camera (#63), which holds the devices open and keeps the reader reachable.
+  `YAMEmbodiment.close()` calls `close()` on any reader that has one, ahead of
+  the driver teardown and guarded so a camera error cannot strand the arms.
 - **Safety lives in `step()`**, not in an optional Approver — see the root
   `CLAUDE.md`.

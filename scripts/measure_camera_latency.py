@@ -107,14 +107,31 @@ class _Source:
         every later reading an excess over the floor rather than an absolute
         latency that would carry the sensor's own pipeline delay.
         """
+        offsets: list[float] = []
         for _ in range(_DRAIN_READS):
-            self._cap.read()
-        now = time.perf_counter()
-        self._offset = now - self._cap.get(self._cv2.CAP_PROP_POS_MSEC) / 1000.0
+            ok, frame = self._cap.read()
+            if not ok or frame is None:
+                raise SystemExit(f"calibration read failed for {self._device}")
+            offsets.append(
+                time.perf_counter() - self._cap.get(self._cv2.CAP_PROP_POS_MSEC) / 1000.0
+            )
+        # Median, not a single sample: one outlier would shift every reading for
+        # this camera by a constant, and a few ms is a large fraction of the
+        # drained configurations' numbers.
+        self._offset = statistics.median(offsets[len(offsets) // 2 :])
 
     def buffersize(self) -> float:
-        """Read the queue depth back, since `set` is a request, not a guarantee."""
+        """Read the queue depth back, since `set` is a request, not a guarantee.
+
+        Safe only while this thread is the capture's only user: `VideoCapture`
+        has no internal locking, so calling it alongside a drain thread would
+        race the read in flight. Callers must read it before draining starts.
+        """
         return float(self._cap.get(self._cv2.CAP_PROP_BUFFERSIZE))
+
+    def publish_interval_s(self) -> float:
+        """Producer period actually achieved, or NaN when nothing tracked it."""
+        return float("nan")
 
     def close(self) -> None:
         """Release the capture."""
@@ -133,6 +150,9 @@ class _GrabberSource(_Source):
         super().__init__(cv2, cap, device)
         self._lock = threading.Lock()
         self._captured: float | None = None
+        self._publishes = 0
+        self._first_publish_s = 0.0
+        self._last_publish_s = 0.0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -149,8 +169,13 @@ class _GrabberSource(_Source):
             ok, frame = self._cap.read()
             if ok and frame is not None:
                 captured = self._cap.get(self._cv2.CAP_PROP_POS_MSEC) / 1000.0
+                now = time.perf_counter()
                 with self._lock:
                     self._captured = captured
+                    if not self._publishes:
+                        self._first_publish_s = now
+                    self._publishes += 1
+                    self._last_publish_s = now
 
     def read(self) -> tuple[float, float]:
         """Return the newest published frame's staleness, never blocking."""
@@ -161,6 +186,18 @@ class _GrabberSource(_Source):
         if captured is None:  # pragma: no cover - only before the first publish
             raise SystemExit(f"no frame published for {self._device}")
         return done - start, (done - self._offset) - captured
+
+    def publish_interval_s(self) -> float:
+        """Measured spacing between publishes: the rate the drain thread sustains.
+
+        Reported rather than assumed, because three drain threads sharing one USB
+        bus is the single new risk this configuration introduces, and a rate
+        below the sensor's is how it would show up.
+        """
+        with self._lock:
+            if self._publishes < 2:
+                return float("nan")
+            return (self._last_publish_s - self._first_publish_s) / (self._publishes - 1)
 
     def close(self) -> None:
         """Stop the drain thread before releasing the capture it owns."""
@@ -185,6 +222,18 @@ class CameraResult:
     def median_staleness_s(self) -> float:
         """Median excess over the tight-loop floor: what a fix can remove."""
         return statistics.median(self.staleness_s)
+
+    @property
+    def drift_s(self) -> float:
+        """Change in staleness from the first samples to the last.
+
+        The classic `POS_MSEC` failure is a frame counter scaled by a nominal
+        interval, which shows up as staleness ramping instead of holding. A
+        median hides that; this does not.
+        """
+        head = self.staleness_s[: max(1, len(self.staleness_s) // 4)]
+        tail = self.staleness_s[-max(1, len(self.staleness_s) // 4) :]
+        return statistics.median(tail) - statistics.median(head)
 
     @property
     def median_read_s(self) -> float:
@@ -287,6 +336,9 @@ def _run(
         for name, device in devices.items()
     }
     try:
+        # Before calibrate(), which hands a grabber's capture to its drain
+        # thread; afterwards this would be a second thread on one VideoCapture.
+        buffersizes = {name: source.buffersize() for name, source in sources.items()}
         for source in sources.values():
             source.calibrate()
         staleness, reads, sweep_s = _paced(sources, hz, duration_s)
@@ -298,7 +350,7 @@ def _run(
             results.append(
                 CameraResult(
                     name,
-                    source.buffersize(),
+                    buffersizes[name],
                     tuple(staleness[name]),
                     tuple(reads[name]),
                     backlog,
@@ -320,10 +372,55 @@ def _print_run(run: Run, hz: float) -> None:
             f"  {r.name:<11} stale={r.median_staleness_s * 1000:7.1f} ms"
             f"  read={r.median_read_s * 1000:6.2f} ms"
             f"  buffersize={r.buffersize:.0f}  backlog={backlog}  {r.fps:.1f} fps"
+            f"  drift={r.drift_s * 1000:+.1f} ms"
         )
     print(
         f"  sweep of {len(run.results)} cameras: {run.sweep_s * 1000:.2f} ms"
         f" of a {1000.0 / hz:.1f} ms control period"
+    )
+
+
+def _measure_via_reader(cv2: Any, devices: dict[str, str], hz: float, duration_s: float) -> None:
+    """Measure staleness through the package's own reader: the code that ships.
+
+    The three configurations above are ones this script constructed, so they
+    would all stay green if the fix were reverted. This is the only reading that
+    fails when the shipped reader stops draining.
+
+    Staleness comes from the reader's own published timestamps rather than from
+    the captures, because nothing outside the drain thread may touch a capture.
+    """
+    from inspect_robots_yam.config import YamConfig
+    from inspect_robots_yam.embodiment import _OpenCVCameraReader
+
+    reader = _OpenCVCameraReader(devices, cv2_module=cv2)
+    cfg = YamConfig(
+        top_cam_device=devices.get("top_cam"),
+        left_cam_device=devices.get("left_cam"),
+        right_cam_device=devices.get("right_cam"),
+    )
+    ages: dict[str, list[float]] = {name: [] for name in devices}
+    try:
+        reader(cfg)  # opens the devices and starts the drain threads
+        period = 1.0 / hz
+        deadline = time.perf_counter() + duration_s
+        while time.perf_counter() < deadline:
+            cycle_start = time.perf_counter()
+            reader(cfg)
+            now = time.monotonic()
+            with reader._lock:
+                for name, published in reader._published.items():
+                    ages[name].append(now - published.published_s)
+            time.sleep(max(0.0, period - (time.perf_counter() - cycle_start)))
+    finally:
+        reader.close()
+
+    print("\n=== via the shipped reader ===")
+    for name, samples in ages.items():
+        print(f"  {name:<11} slot age median {statistics.median(samples) * 1000:6.1f} ms")
+    print(
+        "  (age of the newest published frame when the consumer took it; the"
+        " capture-to-publish leg is the drain thread's own read, timed above)"
     )
 
 
@@ -342,6 +439,11 @@ def main() -> None:
     )
     parser.add_argument("--duration", type=float, default=6.0, help="seconds of paced measurement")
     parser.add_argument("--burst", type=int, default=8, help="timed reads for the backlog probe")
+    parser.add_argument(
+        "--via-reader",
+        action="store_true",
+        help="also measure through the package's own reader, the code that ships",
+    )
     args = parser.parse_args()
 
     devices: dict[str, str] = {}
@@ -364,6 +466,9 @@ def main() -> None:
     print("\nworst staleness above the tight-loop floor:")
     for run in runs:
         print(f"  {run.label:<14} {run.worst_staleness_s * 1000:7.1f} ms")
+
+    if args.via_reader:
+        _measure_via_reader(cv2, devices, args.hz, args.duration)
 
 
 if __name__ == "__main__":

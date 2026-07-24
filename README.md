@@ -45,6 +45,15 @@ inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2 --embodimen
 > available for exotic camera stacks. With neither configured, `yam_arms` fails
 > fast with a `ConfigError` at `reset()`, before any driver connect or motion.
 
+The builtin reader drains each camera continuously on its own thread, so an
+observation carries a frame at most one camera frame interval old (about 33 ms
+at 30 fps). Without that, a V4L2 queue read at `control_hz` hands back a frame
+`N/control_hz` old, measured at 380 ms on a 10 Hz rig and worse as the control
+rate falls. Freshness is bounded by the camera's own frame rate, which no
+setting here changes: a 5 fps camera means 200 ms whatever the control rate.
+A custom `camera_reader` that owns devices should expose a `close()`, which the
+embodiment calls during teardown.
+
 ## Install (on the robot/GPU machine)
 
 ```bash
