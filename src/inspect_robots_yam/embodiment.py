@@ -20,6 +20,8 @@ are pragma'd defaults that only execute on hardware.
 
 from __future__ import annotations
 
+import logging
+import math
 import time
 from collections.abc import Callable, Mapping
 from typing import Any, ClassVar, Protocol, cast, runtime_checkable
@@ -141,6 +143,27 @@ class BimanualDriver(Protocol):
         """Release both arm handles, allowing their motor torque to drop."""
         ...
 
+
+logger = logging.getLogger(__name__)
+
+#: Spacing between settle polls. A floor, not a guarantee: each get_joint_pos()
+#: is two CAN round trips, so on hardware the loop is read-bound.
+_SETTLE_POLL_S = 0.01
+
+#: Slots settling checks: both arms' revolute joints, never the grippers. A
+#: gripper closing on an object never reaches its commanded position, so
+#: including slots 6 and 13 would time out on every grasp. The exclusion is also
+#: what makes the comparison sound at all, since get_joint_pos() reports
+#: driver-native gripper units while the commanded vector is normalized; the two
+#: are only commensurable on these slots.
+_ARM_SLOTS = np.array(
+    [
+        index
+        for index in range(packing.TOTAL_DIM)
+        if index not in (packing.ARM_DOF, packing.ARM_WIDTH + packing.ARM_DOF)
+    ],
+    dtype=np.intp,
+)
 
 DriverFactory = Callable[[YamConfig], BimanualDriver]
 KinematicsFactory = Callable[[YamConfig], tuple[RawKinematics, RawKinematics]]
@@ -353,6 +376,10 @@ class YAMEmbodiment:
         self._instruction: str | None = None
         self._t_last = 0.0
         self.num_steps = 0
+        self.settle_timeouts = 0
+        # Set when the per-trial timeout budget is exhausted; suppresses further
+        # settling for the rest of the trial. Cleared at reset() entry.
+        self._settle_disabled = False
         self._bound_max_steps: int | None = None
 
         docs = _DOCS_EEF_POS if self._cfg.control_interface == "eef_pos" else _DOCS_JOINTS
@@ -395,6 +422,17 @@ class YAMEmbodiment:
 
     def reset(self, scene: Scene, *, seed: int | None = None) -> Observation:
         """Connect (if needed), drive to home, and block on operator readiness."""
+        # Cleared HERE, at entry, not alongside num_steps further down: the home
+        # ramp settles below, and that settle reads _settle_disabled. Clearing
+        # after the ramp would let a trial that exhausted its budget suppress
+        # the next trial's reset settle, so the yaw reference would again be
+        # captured from a possibly mid-motion pose, for every trial thereafter.
+        self.settle_timeouts = 0
+        self._settle_disabled = False
+        # Ahead of the homing settle below, which names the scene if it has to
+        # report a budget exhaustion; set later it would report the previous
+        # trial's instruction, or None on the first.
+        self._instruction = scene.instruction
         # Fail fast on an unusable camera_reader BEFORE connecting the driver or
         # commanding any motion: this is a pure configuration error. `not callable`
         # also catches a CLI-injected scalar (`-E camera_reader=...` binds a str).
@@ -433,6 +471,14 @@ class YAMEmbodiment:
             self._status("homing: ramping arms to start pose")
         try:
             final_home_command = self._ramp_to(home_pose)
+            # Inside the try, so the operator sees a status line instead of up
+            # to settle_timeout_s of silence while standing at the e-stop, and
+            # so a fault here still closes that line. Ahead of the yaw-reference
+            # capture below, which would otherwise pin the whole trial's yaw
+            # zero to a mid-motion pose.
+            if self._cfg.settle_tolerance is not None and not self._cfg.unattended:
+                self._status("settling: waiting for arms to reach the start pose")
+            self._settle(final_home_command)
         finally:
             if not self._cfg.unattended:
                 self._status(None)
@@ -452,7 +498,6 @@ class YAMEmbodiment:
             horizon = self._horizon_secs()
             limit = f" Max {horizon:.0f}s." if horizon is not None else ""
             self._status(f"Running: press any key to end the episode, then y/N to score.{limit}")
-        self._instruction = scene.instruction
         self.num_steps = 0
         self._t_last = self._clock()
         return self._observe(scene.instruction)
@@ -463,17 +508,20 @@ class YAMEmbodiment:
         self.num_steps += 1
         if self._cfg.control_interface == "eef_pos":
             cmd = packing.validate_dim(action.data, len(EEF_DIM_LABELS))
-            self._step_eef(cmd, driver)
+            target = self._step_eef(cmd, driver)
         else:
             cmd = packing.validate_dim(action.data)
-        if self._cfg.control_interface == "joints" and self._cfg.joints_are_delta:
-            # Normalize the gripper slots of the current position first, so the
-            # delta is applied in policy units (a fraction of the gripper stroke)
-            # and the sum re-enters _send() in the same units as absolute mode.
-            base = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
-            cmd = base + cmd
-        if self._cfg.control_interface == "joints":
-            self._send(cmd)
+            if self._cfg.joints_are_delta:
+                # Normalize the gripper slots of the current position first, so
+                # the delta is applied in policy units (a fraction of the
+                # gripper stroke) and the sum re-enters _send() in the same
+                # units as absolute mode.
+                base = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+                cmd = base + cmd
+            target = self._send(cmd)
+        # Before _pace(), so a settle that finishes inside the control period
+        # costs nothing: the pace simply sleeps out whatever is left.
+        settle_info = self._settle_info(self._settle(target))
         self._pace()
         self._emit_status()
 
@@ -487,9 +535,9 @@ class YAMEmbodiment:
                 observation=obs,
                 terminated=True,
                 termination_reason="success" if success else "failure",
-                info={"operator_confirmed": success},
+                info={"operator_confirmed": success, **settle_info},
             )
-        return StepResult(observation=obs, terminated=False)
+        return StepResult(observation=obs, terminated=False, info=settle_info)
 
     def close(self) -> None:
         """Park the arms, then release the driver handles.
@@ -651,8 +699,14 @@ class YAMEmbodiment:
                     "configured action workspace bounds"
                 )
 
-    def _step_eef(self, action: Vec, driver: BimanualDriver) -> None:
-        """Convert one 10-D EEF action into the normative two-arm joint command."""
+    def _step_eef(self, action: Vec, driver: BimanualDriver) -> Vec:
+        """Convert one 10-D EEF action into the normative two-arm joint command.
+
+        Returns the clamped vector actually sent, which is what settling waits
+        for. In this mode that routinely differs from what the policy asked for:
+        an oscillation hold, a non-finite IK solve, or the per-step rate clamp
+        all re-send a previous pose.
+        """
         state = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
         left_kinematics, right_kinematics = self._require_kinematics()
         left_command = left_kinematics.solve(
@@ -670,12 +724,17 @@ class YAMEmbodiment:
         sent = self._send(command)
         left_kinematics.update_sent(sent[: packing.ARM_DOF])
         right_kinematics.update_sent(sent[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF])
+        return sent
 
     def _horizon_secs(self) -> float | None:
         """The episode horizon in seconds: the bound envelope, else the hint.
 
         Dividing by our own ``control_hz`` is honest because this embodiment
         is ``SELF_PACED`` — that rate is the one ``_pace()`` sleeps to.
+
+        With ``settle_tolerance`` set, ``control_hz`` becomes a floor on step
+        duration rather than the rate, so this is then a lower bound rather
+        than an estimate. Issue #64 tracks driving it from the wall clock.
         """
         steps = (
             self._bound_max_steps if self._bound_max_steps is not None else self._cfg.max_steps_hint
@@ -686,7 +745,11 @@ class YAMEmbodiment:
         return steps / hz
 
     def _emit_status(self) -> None:
-        """Once per second (of control time), tell the operator where they are."""
+        """Once per second (of control time), tell the operator where they are.
+
+        Elapsed time is counted in steps, so with ``settle_tolerance`` set both
+        this counter and the horizon it prints understate real time. Issue #64.
+        """
         if self._cfg.unattended:
             return
         hz = self._cfg.control_hz if self._cfg.control_hz > 0 else 10.0
@@ -730,6 +793,76 @@ class YAMEmbodiment:
         for idx in (packing.ARM_DOF, packing.ARM_WIDTH + packing.ARM_DOF):  # 6, 13
             out[idx] = (physical[idx] - self._cfg.gripper_closed) / span
         return out
+
+    def _settle(self, target: Vec) -> tuple[bool, float] | None:
+        """Wait for the arm joints to reach ``target``; report (settled, residual).
+
+        Returns ``None`` when settling is not running, either because no
+        tolerance is configured or because this trial exhausted its timeout
+        budget. That single guard lives here so neither call site repeats it.
+
+        Reads before sleeping, so an already-converged step costs no sleep at
+        all: that is the common case both in tests and during an oscillation
+        hold, where the commanded pose is the one the arm already holds.
+        """
+        tolerance = self._cfg.settle_tolerance
+        if tolerance is None or self._settle_disabled:
+            return None
+        driver = self._require_driver()
+        wanted = target[_ARM_SLOTS]
+        started = self._clock()
+        # Bounded by poll count as well as elapsed time: the clock is injected
+        # and every test fixture but one freezes it, and on hardware a stalled
+        # or non-monotonic clock must not be able to wedge a step.
+        # settle_timeout_s > 0 is validated, so this is always at least 1.
+        max_polls = math.ceil(self._cfg.settle_timeout_s / _SETTLE_POLL_S)
+        polls = 0
+        while True:
+            error = np.abs(packing.validate_dim(driver.get_joint_pos())[_ARM_SLOTS] - wanted)
+            residual = float(np.max(error))
+            if residual <= tolerance:
+                return True, residual
+            polls += 1
+            if polls >= max_polls:
+                break
+            if self._clock() - started >= self._cfg.settle_timeout_s:
+                break
+            self._sleep(_SETTLE_POLL_S)
+        self.settle_timeouts += 1
+        if self.settle_timeouts >= self._cfg.settle_timeout_budget:
+            self._settle_disabled = True
+            joint = int(_ARM_SLOTS[int(np.argmax(error))])
+            # logging, not warnings.warn: the operator's y/N verdict is this
+            # embodiment's success signal and no human reads StepResult.info, so
+            # this is the practical notice that a trial's observations degraded.
+            # The warnings registry keys on the message text, and a joint parked
+            # against a hard stop repeats its residual, so successive trials
+            # would be deduped into silence exactly when the rig is worst.
+            logger.warning(
+                "settle timeout budget exhausted; observations for the rest of "
+                "this trial may precede the commanded pose (scene=%r, "
+                "worst joint index=%d, residual=%.4f rad)",
+                self._instruction,
+                joint,
+                residual,
+            )
+        return False, residual
+
+    def _settle_info(self, settled: tuple[bool, float] | None) -> dict[str, Any]:
+        """Per-step settle reporting, empty when no tolerance is configured.
+
+        Keyed off the config rather than off ``settled``, so a trial that gave
+        up keeps reporting. Absent keys therefore mean "never enabled" and can
+        never be confused with "gave up".
+        """
+        if self._cfg.settle_tolerance is None:
+            return {}
+        info: dict[str, Any] = {"settle_timeouts": self.settle_timeouts}
+        if settled is not None:
+            info["settled"], info["settle_residual"] = settled
+        if self._settle_disabled:
+            info["settle_disabled"] = True
+        return info
 
     def _pace(self) -> None:
         hz = self._cfg.control_hz

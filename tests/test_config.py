@@ -137,6 +137,34 @@ def test_eef_config_knob_validation(kwargs: dict[str, object], message: str) -> 
         YamConfig(control_interface="eef_pos", **kwargs)
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"settle_tolerance": 0.0}, "settle_tolerance must be finite and > 0"),
+        ({"settle_tolerance": -0.01}, "settle_tolerance must be finite and > 0"),
+        ({"settle_tolerance": np.inf}, "settle_tolerance must be finite and > 0"),
+        ({"settle_timeout_s": 0.0}, "settle_timeout_s must be finite and > 0"),
+        ({"settle_timeout_s": np.nan}, "settle_timeout_s must be finite and > 0"),
+        ({"settle_timeout_budget": 0}, "settle_timeout_budget must be a positive integer"),
+        ({"settle_timeout_budget": 1.5}, "settle_timeout_budget must be a positive integer"),
+        ({"settle_timeout_budget": True}, "settle_timeout_budget must be a positive integer"),
+    ],
+)
+def test_settle_config_validation(kwargs: dict[str, object], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        YamConfig(**kwargs)
+
+
+def test_settle_defaults_are_off() -> None:
+    cfg = YamConfig()
+    assert cfg.settle_tolerance is None  # opt-in, so VLA cadence is untouched
+    assert cfg.settle_timeout_s == pytest.approx(1.0)
+    assert cfg.settle_timeout_budget == 20
+    # Scalars arrive already typed (the CLI parses them); from_kwargs only
+    # coerces the comma-separated tuple fields.
+    assert YamConfig.from_kwargs(settle_tolerance=0.05).settle_tolerance == pytest.approx(0.05)
+
+
 def test_eef_config_defaults_and_cli_tuple_overrides() -> None:
     cfg = YamConfig.from_kwargs(
         control_interface="eef_pos",

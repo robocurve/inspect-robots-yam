@@ -453,6 +453,9 @@ at the first reset before torque is released),
 `rest_secs` (ramp duration, default 3.0), `gripper_open/closed`,
 `joints_are_delta`, `zero_gravity_mode` (default `True`; see *Safety*),
 `unattended` (default `False`; skip operator prompts),
+`settle_tolerance` (radians; `none` by default, which disables settling; see
+*Settling before observing*), `settle_timeout_s` (default `1.0`),
+`settle_timeout_budget` (default `20`),
 `top/left/right_cam_device` (V4L2 paths for the builtin camera reader; all
 three or none), `max_steps_hint` (deprecated: on inspect-robots newer than
 0.8.1, framework runs feed the status line the real horizon automatically;
@@ -469,6 +472,58 @@ YAM tag; metadata only), `timeout_s`, `camera_order`, `state_key`,
 
 Scalar knobs are settable from the CLI:
 `inspect-robots run -P server_url=http://gpu:8202 -E left_channel=can0 ...`.
+
+### Settling before observing
+
+By default `step()` commands a pose, paces out the control period, and observes,
+without checking that the arm arrived. A VLA running closed loop at `control_hz`
+is fine with that, since its next observation is 100 ms away either way.
+
+Chunked policies are not. The `agent` policy interpolates one tool call into up
+to 100 actions and only looks at the observation from the last of them, so it
+plans its next motion from a pose the arm may not have reached.
+
+Setting `settle_tolerance` makes `step()` and `reset()` wait for every arm joint
+to come within that many radians of the commanded pose first:
+
+```bash
+inspect-robots "place the fork on the plate" --policy agent \
+  -P model=anthropic/claude-opus-5 \
+  -E settle_tolerance=0.05 -E zero_gravity_mode=false
+```
+
+Three things to know before turning it on.
+
+**Pick the tolerance from your rig, not from this example.** Run
+`inspect-robots-yam-holdcheck` and use a value comfortably above the settle
+figure it reports. A tolerance at or below your rig's steady-state control offset
+can never be met, so the first `settle_timeout_budget` steps each burn
+`settle_timeout_s` before settling disables itself for that trial.
+
+**Take that figure in the mode you will run, and expect
+`zero_gravity_mode=false`.** Settling presumes a servo that holds position. The
+default gravity-compensated mode is compliant and may drift instead of holding.
+
+**It guarantees the arm reached what was commanded, not what the policy asked
+for.** In `eef_pos` mode an oscillation hold, a failed IK solve, or the per-step
+rate clamp all re-send the previous pose, and settling against that succeeds
+immediately. Commands are also clamped to `joint_low/high`, which can sit outside
+the reachable range.
+
+Timeouts are not failures: the step observes anyway and records
+`settled`/`settle_residual`/`settle_timeouts` in `StepResult.info`. After
+`settle_timeout_budget` timeouts in a trial, settling switches off for the rest
+of that trial, warns, and marks every later step with `settle_disabled`. A scorer
+that judges the final state should check for it. Those per-step values reach
+scorers and custom sinks; they are not written to the JSON eval log.
+
+> [!NOTE]
+> Settling does not make the *camera image* postdate the motion. OpenCV can
+> return a frame the V4L2 driver captured and queued earlier, so a settled arm
+> can still be photographed mid-motion. See issue #63.
+
+With settling on, the operator status line and its `Max ...s` horizon count steps
+rather than wall-clock seconds, so both understate real elapsed time (#64).
 
 ## Development
 

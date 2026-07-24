@@ -162,6 +162,17 @@ class YamConfig(_FromKwargs):
     step_limits: tuple[float, ...] = _DEFAULT_STEP_LIMITS
     zero_gravity_mode: bool = True
     unattended: bool = False
+    # Wait for the arm to reach each commanded pose before observing, so a
+    # chunked policy plans from a converged view. None disables the wait; a
+    # tolerance must exceed the rig's steady-state offset (run
+    # inspect-robots-yam-holdcheck in the mode the trial will use) or every
+    # step burns settle_timeout_s. Presumes a position-holding servo, so pair
+    # with zero_gravity_mode=False.
+    settle_tolerance: float | None = None
+    settle_timeout_s: float = 1.0
+    # Timeouts per trial before settling gives up for the rest of that trial.
+    # Bounds worst-case wasted wall clock at budget * settle_timeout_s.
+    settle_timeout_budget: int = 20
     # DEPRECATED fallback: framework-driven runs now supply the real horizon
     # via the embodiment's bind_task hook, so the countdown needs no config.
     # Only consulted when the hook never fires (direct rollout(), or a core
@@ -246,6 +257,18 @@ class YamConfig(_FromKwargs):
             or self.osc_hold_steps <= 0
         ):
             raise ValueError("osc_hold_steps must be a positive integer")
+        if self.settle_tolerance is not None and (
+            not np.isfinite(self.settle_tolerance) or self.settle_tolerance <= 0
+        ):
+            raise ValueError("settle_tolerance must be finite and > 0")
+        if not np.isfinite(self.settle_timeout_s) or self.settle_timeout_s <= 0:
+            raise ValueError("settle_timeout_s must be finite and > 0")
+        if (
+            not isinstance(self.settle_timeout_budget, int)
+            or isinstance(self.settle_timeout_budget, bool)
+            or self.settle_timeout_budget < 1
+        ):
+            raise ValueError("settle_timeout_budget must be a positive integer")
         if self.home_pose is not None and len(self.home_pose) != TOTAL_DIM:
             raise ValueError(f"home_pose must have {TOTAL_DIM} entries")
         if self.rest_pose is not None and len(self.rest_pose) != TOTAL_DIM:
@@ -268,6 +291,22 @@ class YamConfig(_FromKwargs):
             raise ValueError(
                 "gripper_open and gripper_closed must differ (the gripper stroke "
                 "would be zero and observations could not be normalized)"
+            )
+        # Settling waits for the arm to hold a commanded pose, which the
+        # gravity-compensated default mode does not promise: a compliant rig may
+        # drift instead. Left as a warning rather than an error because whether a
+        # given rig holds well enough is an empirical question holdcheck answers,
+        # not one the config can decide.
+        if self.settle_tolerance is not None and self.zero_gravity_mode:
+            warnings.warn(
+                "settle_tolerance is set while zero_gravity_mode is True. Settling "
+                "presumes a position-holding servo, and the gravity-compensated "
+                "mode may drift instead of holding, which would exhaust "
+                "settle_timeout_budget on every trial. Run "
+                "inspect-robots-yam-holdcheck in this mode to check, or pair with "
+                "-E zero_gravity_mode=false.",
+                UserWarning,
+                stacklevel=2,
             )
         # Last, after every validation: an invalid config raises without ever
         # warning. FutureWarning (not DeprecationWarning) so operators running
