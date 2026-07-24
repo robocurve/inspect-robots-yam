@@ -63,7 +63,7 @@ gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
   Inspect Robots, so compat cannot verify abs-vs-delta — that's a hardware check.
 - Success reaches the scorer **only** via `StepResult.termination_reason="success"`
   (stock `rollout` never sets `operator_judgement`).
-- `control_hz` is the step rate **only while `settle_tolerance` is `None`**, which
+- `control_hz` is the step rate only while `settle_tolerance` is `None`, which
   is the default. Setting it makes `step()` and `reset()` wait for the arm to
   reach the commanded pose, so `control_hz` becomes a floor on step duration and
   the step-count-derived operator displays understate real time (#64). Keep the

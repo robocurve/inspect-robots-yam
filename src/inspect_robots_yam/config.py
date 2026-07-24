@@ -292,6 +292,22 @@ class YamConfig(_FromKwargs):
                 "gripper_open and gripper_closed must differ (the gripper stroke "
                 "would be zero and observations could not be normalized)"
             )
+        # Settling waits for the arm to hold a commanded pose, which the
+        # gravity-compensated default mode does not promise: a compliant rig may
+        # drift instead. Left as a warning rather than an error because whether a
+        # given rig holds well enough is an empirical question holdcheck answers,
+        # not one the config can decide.
+        if self.settle_tolerance is not None and self.zero_gravity_mode:
+            warnings.warn(
+                "settle_tolerance is set while zero_gravity_mode is True. Settling "
+                "presumes a position-holding servo, and the gravity-compensated "
+                "mode may drift instead of holding, which would exhaust "
+                "settle_timeout_budget on every trial. Run "
+                "inspect-robots-yam-holdcheck in this mode to check, or pair with "
+                "-E zero_gravity_mode=false.",
+                UserWarning,
+                stacklevel=2,
+            )
         # Last, after every validation: an invalid config raises without ever
         # warning. FutureWarning (not DeprecationWarning) so operators running
         # the console script actually see it under Python's default filters.

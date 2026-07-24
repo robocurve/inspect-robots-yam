@@ -1,15 +1,14 @@
 """Shared fixtures for settle tests (issue #62).
 
-Three clock behaviors, because the settle loop has two independent bounds and
+Two clock behaviors, because the settle loop has two independent bounds and
 each must be observable as the *only* reason the loop stopped:
 
-===============  ==========================================  =================
-Fixture          Clock behavior                              Sole exit
-===============  ==========================================  =================
-frozen           constant 0.0 (what every older helper uses)  poll-count bound
-sleep-advancing  ``sleep_fn`` adds its argument               neither alone
-read-advancing   ``get_joint_pos()`` adds ``read_advance``    elapsed bound
-===============  ==========================================  =================
+==============  ==========================================  ================
+Fixture         Clock behavior                              Sole exit
+==============  ==========================================  ================
+frozen          constant 0.0 (what every older helper uses)  poll-count bound
+read-advancing  ``get_joint_pos()`` adds ``read_advance``    elapsed bound
+==============  ==========================================  ================
 
 ``read_advance`` must exceed ``_SETTLE_POLL_S`` or both bounds fire on the same
 iteration and one of them becomes an unreachable branch, which the 100% gate
@@ -71,9 +70,8 @@ class SettleDriver:
         offset: np.ndarray | None = None,
         clock: Clock | None = None,
         read_advance: float = 0.0,
-        state: np.ndarray | None = None,
     ) -> None:
-        self.state = np.zeros(14) if state is None else np.asarray(state, dtype=float)
+        self.state = np.zeros(14)
         self.commands: list[np.ndarray] = []
         self.reads = 0
         self.closed = False
@@ -130,7 +128,6 @@ def build_settle():  # type: ignore[no-untyped-def]
         driver: SettleDriver,
         *,
         clock: Clock | None = None,
-        sleep_advances: bool = False,
         operator: OperatorIO | None = None,
         kinematics_factory: Any = None,
     ):  # type: ignore[no-untyped-def]
@@ -140,8 +137,6 @@ def build_settle():  # type: ignore[no-untyped-def]
 
         def _sleep(seconds: float) -> None:
             sleeps.append(seconds)
-            if sleep_advances and clock is not None:
-                clock.advance(seconds)
 
         extra = {} if kinematics_factory is None else {"kinematics_factory": kinematics_factory}
         emb = YAMEmbodiment(

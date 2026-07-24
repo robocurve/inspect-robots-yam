@@ -339,7 +339,6 @@ rather than being duplicated:
 | Fixture | Clock behavior | Makes this the sole exit |
 |---|---|---|
 | frozen | constant `0.0` (today's) | bound A, the iteration cap |
-| sleep-advancing | `sleep_fn` adds its argument | neither alone; used for `_pace` arithmetic |
 | read-advancing | `get_joint_pos()` advances the clock by `r` | bound B, elapsed time |
 
 The read-advancing fixture is physically justified, not contrived: each

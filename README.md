@@ -488,6 +488,7 @@ to come within that many radians of the commanded pose first:
 
 ```bash
 inspect-robots "place the fork on the plate" --policy agent \
+  -P model=anthropic/claude-opus-5 \
   -E settle_tolerance=0.05 -E zero_gravity_mode=false
 ```
 
@@ -496,7 +497,8 @@ Three things to know before turning it on.
 **Pick the tolerance from your rig, not from this example.** Run
 `inspect-robots-yam-holdcheck` and use a value comfortably above the settle
 figure it reports. A tolerance at or below your rig's steady-state control offset
-can never be met, so every step would burn `settle_timeout_s`.
+can never be met, so the first `settle_timeout_budget` steps each burn
+`settle_timeout_s` before settling disables itself for that trial.
 
 **Take that figure in the mode you will run, and expect
 `zero_gravity_mode=false`.** Settling presumes a servo that holds position. The
