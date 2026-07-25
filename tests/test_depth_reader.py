@@ -483,4 +483,3 @@ def test_close_depth_reader_release_error_swallowed() -> None:
 
     emb = _emb(dr=_FailingDepthReader())
     emb.close()  # must not raise
-

@@ -659,9 +659,7 @@ class _RealsenseDepthReader:
             self._threads[name] = thread
             thread.start()
 
-    def _open_one(
-        self, rs: Any, name: str, serial: str, generation: int
-    ) -> _PipelineBundle:
+    def _open_one(self, rs: Any, name: str, serial: str, generation: int) -> _PipelineBundle:
         """Open one pipeline, configure colour+depth streams, and seed from a warm-up frame."""
         rs_cfg = rs.config()
         rs_cfg.enable_device(serial)
@@ -669,9 +667,7 @@ class _RealsenseDepthReader:
         rs_cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
         pipeline = rs.pipeline()
         profile = pipeline.start(rs_cfg)
-        depth_scale: float = float(
-            profile.get_device().first_depth_sensor().get_depth_scale()
-        )
+        depth_scale: float = float(profile.get_device().first_depth_sensor().get_depth_scale())
         align = rs.align(rs.stream.color)
         for _ in range(10):  # warm-up: first frames may arrive after a brief delay
             try:
@@ -707,9 +703,7 @@ class _RealsenseDepthReader:
                         self._faults[name] = exc
                 return
 
-    def _publish(
-        self, name: str, aligned: Any, depth_scale: float, generation: int
-    ) -> None:
+    def _publish(self, name: str, aligned: Any, depth_scale: float, generation: int) -> None:
         """Convert one aligned frame-set into a depth array and store it."""
         depth_frame = aligned.get_depth_frame()
         color_frame = aligned.get_color_frame()
@@ -737,9 +731,7 @@ class _RealsenseDepthReader:
                 depth=copy, intrinsics=intrinsics, published_s=self._clock()
             )
 
-    def _latest(
-        self, name: str
-    ) -> tuple[npt.NDArray[np.float32], dict[str, Any]]:
+    def _latest(self, name: str) -> tuple[npt.NDArray[np.float32], dict[str, Any]]:
         """Return the newest depth + intrinsics, waiting briefly for a fresh one."""
         serial = self._serials[name]
         for _ in range(10):
@@ -747,9 +739,7 @@ class _RealsenseDepthReader:
                 fault = self._faults.get(name)
                 pub = self._published.get(name)
             if fault is not None:
-                raise RuntimeError(
-                    f"RealSense depth {name} ({serial}) stopped reading"
-                ) from fault
+                raise RuntimeError(f"RealSense depth {name} ({serial}) stopped reading") from fault
             if pub is not None and self._clock() - pub.published_s <= self.MAX_FRAME_AGE_S:
                 return pub.depth.copy(), dict(pub.intrinsics)
             self._sleep(0.05)
