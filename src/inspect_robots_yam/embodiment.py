@@ -267,7 +267,7 @@ def _import_cv2() -> Any:  # pragma: no cover - real OpenCV
 def _import_rs() -> Any:  # pragma: no cover - real pyrealsense2
     """Import pyrealsense2 on first use with an actionable error when absent."""
     try:
-        import pyrealsense2 as rs  # type: ignore[import-untyped]
+        import pyrealsense2 as rs  # type: ignore[import-not-found]
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             "pyrealsense2 is required for RealSense depth streams. "
@@ -799,11 +799,14 @@ class YAMEmbodiment:
         self._clock: Callable[[], float] = clock or time.perf_counter
         self._status: Callable[[str | None], None] = status_fn or _default_status
         if depth_reader is None and self._cfg.top_depth_serial is not None:
+            left = self._cfg.left_depth_serial
+            right = self._cfg.right_depth_serial
+            assert left is not None and right is not None  # validated by YamConfig
             depth_reader = _RealsenseDepthReader(
                 {
-                    "top_cam": cast(str, self._cfg.top_depth_serial),
-                    "left_cam": cast(str, self._cfg.left_depth_serial),
-                    "right_cam": cast(str, self._cfg.right_depth_serial),
+                    "top_cam": self._cfg.top_depth_serial,
+                    "left_cam": left,
+                    "right_cam": right,
                 },
                 sleep_fn=self._sleep,
                 clock=self._clock,
