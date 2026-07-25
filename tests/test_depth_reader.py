@@ -30,8 +30,13 @@ _DEPTH_SCALE = 0.001  # 1 count = 1 mm
 
 def _make_intr(width: int = 640, height: int = 480) -> Any:
     return types.SimpleNamespace(
-        fx=600.0, fy=600.0, ppx=320.0, ppy=240.0,
-        width=width, height=height, model="Brown Conrady",
+        fx=600.0,
+        fy=600.0,
+        ppx=320.0,
+        ppy=240.0,
+        width=width,
+        height=height,
+        model="Brown Conrady",
         coeffs=[0.0, 0.0, 0.0, 0.0, 0.0],
     )
 
@@ -96,12 +101,15 @@ def _make_rs(pipelines: dict[str, _FakePipeline] | None = None) -> Any:
     cc = [0]
 
     def _pf() -> Any:
-        i = cc[0]; cc[0] += 1
+        i = cc[0]
+        cc[0] += 1
         return pl[i] if i < len(pl) else _FakePipeline()
 
     rs_cfg = types.SimpleNamespace(enable_device=lambda s: None, enable_stream=lambda *a: None)
     return types.SimpleNamespace(
-        pipeline=_pf, config=lambda: rs_cfg, align=lambda _: _FakeAlign(),
+        pipeline=_pf,
+        config=lambda: rs_cfg,
+        align=lambda _: _FakeAlign(),
         stream=types.SimpleNamespace(color="c", depth="d"),
         format=types.SimpleNamespace(bgr8="bgr8", z16="z16"),
     )
@@ -146,19 +154,27 @@ def test_depth_and_intrinsics_returned() -> None:
 
 
 def test_intrinsics_keys() -> None:
-    r = _rdr(); ex = r(_cfg()); r.close()
+    r = _rdr()
+    ex = r(_cfg())
+    r.close()
     for k in ("fx", "fy", "cx", "cy", "width", "height", "model", "coeffs"):
         assert k in ex["top_cam_intrinsics"]
 
 
 def test_depth_copy() -> None:
-    r = _rdr(); e1 = r(_cfg()); e2 = r(_cfg()); r.close()
+    r = _rdr()
+    e1 = r(_cfg())
+    e2 = r(_cfg())
+    r.close()
     assert e1["top_cam_depth"] is not e2["top_cam_depth"]
 
 
 def test_second_call_cached() -> None:
     ps = {k: _FakePipeline() for k in _SER}
-    r = _rdr(rs=_make_rs(ps)); r(_cfg()); r(_cfg()); r.close()
+    r = _rdr(rs=_make_rs(ps))
+    r(_cfg())
+    r(_cfg())
+    r.close()
     for p in ps.values():
         assert p.started
 
@@ -170,7 +186,9 @@ def test_second_call_cached() -> None:
 
 def test_close_stops_pipelines() -> None:
     ps = {k: _FakePipeline() for k in _SER}
-    r = _rdr(rs=_make_rs(ps)); r(_cfg()); r.close()
+    r = _rdr(rs=_make_rs(ps))
+    r(_cfg())
+    r.close()
     for p in ps.values():
         assert p.stopped
 
@@ -181,7 +199,10 @@ def test_close_before_open() -> None:
 
 def test_close_idempotent() -> None:
     ps = {k: _FakePipeline() for k in _SER}
-    r = _rdr(rs=_make_rs(ps)); r(_cfg()); r.close(); r.close()
+    r = _rdr(rs=_make_rs(ps))
+    r(_cfg())
+    r.close()
+    r.close()
 
 
 def test_stop_error_swallowed() -> None:
@@ -189,7 +210,9 @@ def test_stop_error_swallowed() -> None:
         def stop(self) -> None:
             raise RuntimeError("x")
 
-    r = _rdr(rs=_make_rs({k: _FS() for k in _SER})); r(_cfg()); r.close()
+    r = _rdr(rs=_make_rs({k: _FS() for k in _SER}))
+    r(_cfg())
+    r.close()
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +227,19 @@ def test_stale_raises() -> None:
     now[0] = _RealsenseDepthReader.MAX_FRAME_AGE_S + 1.0
     r._stop.set()  # stop drain threads so they cannot refresh
     with pytest.raises(RuntimeError, match="depth frame read failed"):
+        r(_cfg())
+    r.close()
+
+
+def test_drain_fault_latched_and_reraised() -> None:
+    class _FaultingPipeline(_FakePipeline):
+        def wait_for_frames(self, timeout_ms: int = 1000) -> Any:
+            raise RuntimeError("sensor hardware failure")
+
+    pipelines = {k: _FaultingPipeline() for k in _SER}
+    r = _rdr(rs=_make_rs(pipelines), sleep_fn=lambda _: None)
+    # The drain thread starts immediately on open and hits wait_for_frames
+    with pytest.raises(RuntimeError, match="stopped reading"):
         r(_cfg())
     r.close()
 
@@ -238,7 +274,9 @@ def test_falsy_color_raises() -> None:
 
 
 def test_zombie_rejected() -> None:
-    r = _rdr(); r(_cfg()); r.close()
+    r = _rdr()
+    r(_cfg())
+    r.close()
     fake = np.zeros((480, 640), dtype=np.float32)
     pub = _PublishedDepth(depth=fake, intrinsics={}, published_s=9999.0)
     with r._lock:  # type: ignore[attr-defined]
@@ -271,12 +309,18 @@ def test_open_failure_rollback() -> None:
     cc = [0]
 
     def _pf() -> Any:
-        i = cc[0]; cc[0] += 1; return order[i]
+        i = cc[0]
+        cc[0] += 1
+        return order[i]
 
     rc = types.SimpleNamespace(enable_device=lambda s: None, enable_stream=lambda *a: None)
-    rs = types.SimpleNamespace(pipeline=_pf, config=lambda: rc, align=lambda _: _FakeAlign(),
-                               stream=types.SimpleNamespace(color="c", depth="d"),
-                               format=types.SimpleNamespace(bgr8="b", z16="z"))
+    rs = types.SimpleNamespace(
+        pipeline=_pf,
+        config=lambda: rc,
+        align=lambda _: _FakeAlign(),
+        stream=types.SimpleNamespace(color="c", depth="d"),
+        format=types.SimpleNamespace(bgr8="b", z16="z"),
+    )
     with pytest.raises(RuntimeError, match="device busy"):
         _rdr(rs=rs)(_cfg())
     for p in opened:
@@ -404,3 +448,39 @@ def test_close_no_reset_releases_depth_reader() -> None:
 
     _emb(dr=_DR()).close()
     assert closed == [True]
+
+
+def test_emb_auto_constructs_depth_reader_from_config() -> None:
+    cfg = YamConfig(
+        cam_height=4,
+        cam_width=4,
+        top_depth_serial="S1",
+        left_depth_serial="S2",
+        right_depth_serial="S3",
+    )
+    emb = YAMEmbodiment(
+        cfg,
+        driver_factory=_driver_factory,
+        camera_reader=_cameras,
+        operator=_silent(),
+        poll_end=lambda: False,
+        sleep_fn=lambda _: None,
+        clock=lambda: 0.0,
+        status_fn=lambda _: None,
+    )
+    assert emb._depth_reader is not None  # type: ignore[attr-defined]
+    assert "Depth: when depth serial numbers are configured" in emb.info.docs
+    emb.close()
+
+
+def test_close_depth_reader_release_error_swallowed() -> None:
+    class _FailingDepthReader:
+        def __call__(self, _c: YamConfig) -> dict[str, Any]:
+            return {}
+
+        def close(self) -> None:
+            raise RuntimeError("release failed")
+
+    emb = _emb(dr=_FailingDepthReader())
+    emb.close()  # must not raise
+

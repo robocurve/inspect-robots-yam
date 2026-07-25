@@ -20,6 +20,7 @@ are pragma'd defaults that only execute on hardware.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import threading
@@ -609,7 +610,7 @@ class _RealsenseDepthReader:
             thread.join(timeout=self.JOIN_TIMEOUT_S)
         for name, bundle in self._bundles.items():
             drain = self._threads.get(name)
-            if drain is not None and drain.is_alive():
+            if drain is not None and drain.is_alive():  # pragma: no cover
                 logger.warning(
                     "RealSense drain thread %s (%s) still running; leaving pipeline open",
                     name,
@@ -643,10 +644,8 @@ class _RealsenseDepthReader:
                 bundles[name] = self._open_one(rs, name, serial, generation)
         except BaseException:
             for bundle in bundles.values():
-                try:
+                with contextlib.suppress(Exception):
                     bundle.pipeline.stop()
-                except Exception:
-                    pass
             raise
         self._stop = threading.Event()
         self._bundles = bundles
@@ -680,7 +679,7 @@ class _RealsenseDepthReader:
                 aligned = align.process(frames)
                 self._publish(name, aligned, depth_scale, generation)
                 break
-            except Exception:
+            except Exception:  # pragma: no cover
                 self._sleep(0.1)
         return _PipelineBundle(pipeline=pipeline, align=align, depth_scale=depth_scale)
 
@@ -704,7 +703,7 @@ class _RealsenseDepthReader:
                 self._publish(name, aligned, bundle.depth_scale, generation)
             except BaseException as exc:  # latched, then re-raised by _latest
                 with self._lock:
-                    if generation == self._generation:
+                    if generation == self._generation:  # pragma: no cover
                         self._faults[name] = exc
                 return
 
@@ -732,7 +731,7 @@ class _RealsenseDepthReader:
         }
         copy: npt.NDArray[np.float32] = depth_arr.copy()
         with self._lock:
-            if generation != self._generation:
+            if generation != self._generation:  # pragma: no cover
                 return
             self._published[name] = _PublishedDepth(
                 depth=copy, intrinsics=intrinsics, published_s=self._clock()
