@@ -187,6 +187,14 @@ class YamConfig(_FromKwargs):
     top_cam_device: str | None = None
     left_cam_device: str | None = None
     right_cam_device: str | None = None
+    # Optional RealSense depth serial numbers. Set all three to enable the
+    # librealsense depth reader, which publishes aligned depth arrays and
+    # intrinsics into Observation.extra alongside the V4L2 colour frames.
+    # Default off; the OpenCV colour reader and rigs without RealSense hardware
+    # are unaffected. See the ``depth`` optional extra for the install command.
+    top_depth_serial: str | None = None
+    left_depth_serial: str | None = None
+    right_depth_serial: str | None = None
 
     def __post_init__(self) -> None:
         """Reject values that violate the 14-D packing and hardware invariants.
@@ -282,6 +290,14 @@ class YamConfig(_FromKwargs):
             raise ValueError(
                 "camera devices must be set all three or none "
                 "(top_cam_device, left_cam_device, right_cam_device)"
+            )
+        depth_serials = (self.top_depth_serial, self.left_depth_serial, self.right_depth_serial)
+        if any(s is not None for s in depth_serials) and not all(
+            s is not None for s in depth_serials
+        ):
+            raise ValueError(
+                "depth serial numbers must be set all three or none "
+                "(top_depth_serial, left_depth_serial, right_depth_serial)"
             )
         if len(self.step_limits) != TOTAL_DIM or any(
             not (s > 0) or not np.isfinite(s) for s in self.step_limits

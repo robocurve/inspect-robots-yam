@@ -170,6 +170,7 @@ _ARM_SLOTS = np.array(
 DriverFactory = Callable[[YamConfig], BimanualDriver]
 KinematicsFactory = Callable[[YamConfig], tuple[RawKinematics, RawKinematics]]
 CameraReader = Callable[[YamConfig], ImageMap]
+DepthReader = Callable[[YamConfig], dict[str, Any]]
 
 
 def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cover - real hardware
@@ -262,11 +263,42 @@ def _import_cv2() -> Any:  # pragma: no cover - real OpenCV
     return cv2
 
 
+def _import_rs() -> Any:  # pragma: no cover - real pyrealsense2
+    """Import pyrealsense2 on first use with an actionable error when absent."""
+    try:
+        import pyrealsense2 as rs  # type: ignore[import-untyped]
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pyrealsense2 is required for RealSense depth streams. "
+            "Install it with: uv pip install 'inspect-robots-yam[depth]'",
+            name="pyrealsense2",
+        ) from exc
+    return rs
+
+
 @dataclass(frozen=True)
 class _Published:
     """One captured frame, copied out of the driver's buffer, and when it landed."""
 
     data: Any
+    published_s: float
+
+
+@dataclass(frozen=True)
+class _PipelineBundle:
+    """Pipeline, align filter, and depth scale for one RealSense camera."""
+
+    pipeline: Any
+    align: Any
+    depth_scale: float
+
+
+@dataclass(frozen=True)
+class _PublishedDepth:
+    """One captured depth frame plus intrinsics and its publication timestamp."""
+
+    depth: npt.NDArray[np.float32]
+    intrinsics: dict[str, Any]
     published_s: float
 
 
@@ -508,6 +540,223 @@ def _default_camera_reader(cfg: YamConfig) -> ImageMap:
     )
 
 
+class _RealsenseDepthReader:
+    """Librealsense D405 depth publisher for RealSense cameras alongside the OpenCV reader.
+
+    One daemon thread per camera opens a RealSense pipeline by serial number,
+    streams aligned colour+depth, and publishes the newest pair. ``__call__``
+    returns a dict ready to merge into ``Observation.extra``::
+
+        {cam_name}_depth       — (H, W) float32 array, metres, aligned to colour
+        {cam_name}_intrinsics  — dict(fx, fy, cx, cy, width, height, model, coeffs)
+
+    Colour frames remain the responsibility of the OpenCV V4L2 ``camera_reader``;
+    this reader is the depth-only supplement.
+
+    ``close()`` is required: drain threads keep pipelines open and, being live
+    threads, keep this object reachable. ``YAMEmbodiment.close()`` calls it.
+    """
+
+    #: Depth frames older than this mean the camera has stopped delivering.
+    MAX_FRAME_AGE_S: ClassVar[float] = 0.5
+
+    #: Grace period before releasing a pipeline whose drain thread is still alive.
+    JOIN_TIMEOUT_S: ClassVar[float] = 2.0
+
+    def __init__(
+        self,
+        serials: Mapping[str, str],
+        rs_module: Any | None = None,
+        sleep_fn: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._serials = dict(serials)
+        self._rs = rs_module
+        self._sleep = sleep_fn
+        self._clock = clock
+        self._bundles: dict[str, _PipelineBundle] = {}
+        self._threads: dict[str, threading.Thread] = {}
+        self._published: dict[str, _PublishedDepth] = {}
+        self._faults: dict[str, BaseException] = {}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._generation = 0
+
+    def __call__(self, cfg: YamConfig) -> dict[str, Any]:
+        """Return latest aligned depth and intrinsics for every configured camera."""
+        rs = self._rs if self._rs is not None else _import_rs()
+        self._rs = rs
+        if not self._bundles:
+            self._open_all(rs)
+        extra: dict[str, Any] = {}
+        for name in self._serials:
+            depth, intr = self._latest(name)
+            extra[f"{name}_depth"] = depth
+            extra[f"{name}_intrinsics"] = intr
+        return extra
+
+    def close(self) -> None:
+        """Stop every drain thread and stop all RealSense pipelines.
+
+        Joins before stopping, and skips the stop of any pipeline whose thread
+        is still running: stopping a pipeline underneath an in-flight
+        ``wait_for_frames`` can crash, and this process is holding torque-enabled
+        arms. A leaked pipeline is the better failure. Idempotent, and a no-op
+        before the first call since pipelines open lazily.
+        """
+        self._stop.set()
+        for thread in self._threads.values():
+            thread.join(timeout=self.JOIN_TIMEOUT_S)
+        for name, bundle in self._bundles.items():
+            drain = self._threads.get(name)
+            if drain is not None and drain.is_alive():
+                logger.warning(
+                    "RealSense drain thread %s (%s) still running; leaving pipeline open",
+                    name,
+                    self._serials[name],
+                )
+                continue
+            try:
+                bundle.pipeline.stop()
+            except Exception:
+                logger.exception("stopping RealSense pipeline for %s failed", name)
+        self._bundles = {}
+        self._threads = {}
+        with self._lock:
+            self._generation += 1
+            self._published = {}
+            self._faults = {}
+
+    def _open_all(self, rs: Any) -> None:
+        """Open all pipelines, or stop the ones opened and re-raise.
+
+        All-or-nothing: a half-populated state would never be retried (the
+        ``if not self._bundles`` guard would be satisfied by opened cameras),
+        and the rollout would run with a subset of depth streams.
+        """
+        with self._lock:
+            self._generation += 1
+            generation = self._generation
+        bundles: dict[str, _PipelineBundle] = {}
+        try:
+            for name, serial in self._serials.items():
+                bundles[name] = self._open_one(rs, name, serial, generation)
+        except BaseException:
+            for bundle in bundles.values():
+                try:
+                    bundle.pipeline.stop()
+                except Exception:
+                    pass
+            raise
+        self._stop = threading.Event()
+        self._bundles = bundles
+        for name, bundle in bundles.items():
+            thread = threading.Thread(
+                target=self._drain,
+                args=(name, bundle, self._stop, generation),
+                name=f"yam-depth-{name}",
+                daemon=True,
+            )
+            self._threads[name] = thread
+            thread.start()
+
+    def _open_one(
+        self, rs: Any, name: str, serial: str, generation: int
+    ) -> _PipelineBundle:
+        """Open one pipeline, configure colour+depth streams, and seed from a warm-up frame."""
+        rs_cfg = rs.config()
+        rs_cfg.enable_device(serial)
+        rs_cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+        rs_cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+        pipeline = rs.pipeline()
+        profile = pipeline.start(rs_cfg)
+        depth_scale: float = float(
+            profile.get_device().first_depth_sensor().get_depth_scale()
+        )
+        align = rs.align(rs.stream.color)
+        for _ in range(10):  # warm-up: first frames may arrive after a brief delay
+            try:
+                frames = pipeline.wait_for_frames(timeout_ms=300)
+                aligned = align.process(frames)
+                self._publish(name, aligned, depth_scale, generation)
+                break
+            except Exception:
+                self._sleep(0.1)
+        return _PipelineBundle(pipeline=pipeline, align=align, depth_scale=depth_scale)
+
+    def _drain(
+        self,
+        name: str,
+        bundle: _PipelineBundle,
+        stop: threading.Event,
+        generation: int,
+    ) -> None:
+        """Publish frames until stopped, latching whatever faults the loop.
+
+        An invisible dead thread would freeze the slot and serve one stale
+        depth frame forever — the depth analogue of the colour #63 bug.
+        ``_latest`` re-raises what is latched.
+        """
+        while not stop.is_set():
+            try:
+                frames = bundle.pipeline.wait_for_frames(timeout_ms=1000)
+                aligned = bundle.align.process(frames)
+                self._publish(name, aligned, bundle.depth_scale, generation)
+            except BaseException as exc:  # latched, then re-raised by _latest
+                with self._lock:
+                    if generation == self._generation:
+                        self._faults[name] = exc
+                return
+
+    def _publish(
+        self, name: str, aligned: Any, depth_scale: float, generation: int
+    ) -> None:
+        """Convert one aligned frame-set into a depth array and store it."""
+        depth_frame = aligned.get_depth_frame()
+        color_frame = aligned.get_color_frame()
+        if not depth_frame or not color_frame:
+            return
+        depth_arr: npt.NDArray[np.float32] = (
+            np.asarray(depth_frame.get_data(), dtype=np.float32) * depth_scale
+        )
+        intr = color_frame.profile.as_video_stream_profile().intrinsics
+        intrinsics: dict[str, Any] = {
+            "fx": float(intr.fx),
+            "fy": float(intr.fy),
+            "cx": float(intr.ppx),
+            "cy": float(intr.ppy),
+            "width": int(intr.width),
+            "height": int(intr.height),
+            "model": str(intr.model),
+            "coeffs": [float(c) for c in intr.coeffs],
+        }
+        copy: npt.NDArray[np.float32] = depth_arr.copy()
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._published[name] = _PublishedDepth(
+                depth=copy, intrinsics=intrinsics, published_s=self._clock()
+            )
+
+    def _latest(
+        self, name: str
+    ) -> tuple[npt.NDArray[np.float32], dict[str, Any]]:
+        """Return the newest depth + intrinsics, waiting briefly for a fresh one."""
+        serial = self._serials[name]
+        for _ in range(10):
+            with self._lock:
+                fault = self._faults.get(name)
+                pub = self._published.get(name)
+            if fault is not None:
+                raise RuntimeError(
+                    f"RealSense depth {name} ({serial}) stopped reading"
+                ) from fault
+            if pub is not None and self._clock() - pub.published_s <= self.MAX_FRAME_AGE_S:
+                return pub.depth.copy(), dict(pub.intrinsics)
+            self._sleep(0.05)
+        raise RuntimeError(f"depth frame read failed for {name} ({serial})")
+
+
 class YAMEmbodiment:
     """Inspect Robots embodiment for bimanual YAM joint or Cartesian control."""
 
@@ -537,6 +786,7 @@ class YAMEmbodiment:
         driver_factory: DriverFactory | None = None,
         kinematics_factory: KinematicsFactory | None = None,
         camera_reader: CameraReader | None = None,
+        depth_reader: DepthReader | None = None,
         operator: OperatorIO | None = None,
         poll_end: Callable[[], bool] | None = None,
         sleep_fn: Callable[[float], None] | None = None,
@@ -559,6 +809,17 @@ class YAMEmbodiment:
         self._sleep: Callable[[float], None] = sleep_fn or time.sleep
         self._clock: Callable[[], float] = clock or time.perf_counter
         self._status: Callable[[str | None], None] = status_fn or _default_status
+        if depth_reader is None and self._cfg.top_depth_serial is not None:
+            depth_reader = _RealsenseDepthReader(
+                {
+                    "top_cam": cast(str, self._cfg.top_depth_serial),
+                    "left_cam": cast(str, self._cfg.left_depth_serial),
+                    "right_cam": cast(str, self._cfg.right_depth_serial),
+                },
+                sleep_fn=self._sleep,
+                clock=self._clock,
+            )
+        self._depth_reader: DepthReader | None = depth_reader
 
         self._driver: BimanualDriver | None = None
         self._left_kinematics: _ArmKinematics | None = None
@@ -582,6 +843,14 @@ class YAMEmbodiment:
         docs_extra = self._cfg.docs_extra.strip()
         if docs_extra:
             docs += "\n\n" + docs_extra
+        if self._depth_reader is not None:
+            docs += (
+                "\n\nDepth: when depth serial numbers are configured, "
+                "observation.extra contains ``{cam}_depth`` (H\u00d7W float32, metres, "
+                "aligned to the colour frame) and ``{cam}_intrinsics`` (dict with "
+                "fx, fy, cx, cy, width, height, model, coeffs) for each camera "
+                "(top_cam, left_cam, right_cam)."
+            )
         self.info = EmbodimentInfo(
             name="yam_arms",
             # Delta mode declares the per-step displacement box (symmetric,
@@ -794,20 +1063,26 @@ class YAMEmbodiment:
             self._release_cameras()
 
     def _release_cameras(self) -> None:
-        """Release the camera reader's devices, if it holds any.
+        """Release the camera reader's devices and the depth reader's pipelines.
 
-        Duck-typed because ``CameraReader`` is a plain callable alias: every
-        custom reader in tests and user code is a bare function with no
-        ``close``. Errors are logged and swallowed: a camera that will not let
-        go is not a reason to fail a teardown that has already parked the arms.
+        Duck-typed because ``CameraReader`` and ``DepthReader`` are plain
+        callable aliases: every custom reader in tests and user code is a bare
+        function with no ``close``. Errors are logged and swallowed: a reader
+        that will not let go is not a reason to fail a teardown that has already
+        parked the arms.
         """
         release = getattr(self._camera_reader, "close", None)
-        if not callable(release):
-            return
-        try:
-            release()
-        except Exception:
-            logger.exception("releasing cameras failed; continuing with teardown")
+        if callable(release):
+            try:
+                release()
+            except Exception:
+                logger.exception("releasing cameras failed; continuing with teardown")
+        depth_release = getattr(self._depth_reader, "close", None)
+        if callable(depth_release):
+            try:
+                depth_release()
+            except Exception:
+                logger.exception("releasing depth reader failed; continuing with teardown")
 
     def _ramp_to(self, target: Vec) -> Vec:
         """Linearly ramp from the current pose to ``target`` over ``rest_secs``.
@@ -1119,8 +1394,11 @@ class YAMEmbodiment:
                 gripper=float(state[13]),
             )
             values["eef_state"] = np.concatenate((left, right))
+        if self._depth_reader is None:
+            return Observation(images=images, state=values, instruction=instruction)
         return Observation(
             images=images,
             state=values,
             instruction=instruction,
+            extra=self._depth_reader(self._cfg),
         )
