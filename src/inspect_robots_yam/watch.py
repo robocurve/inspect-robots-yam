@@ -106,7 +106,21 @@ class _WatchRequestHandler(BaseHTTPRequestHandler):
         """Suppress the standard per-request stderr access log."""
 
     def do_GET(self) -> None:
-        """Route the index and known camera streams, rejecting every other path."""
+        """Serve a route, swallowing client disconnects on every response path.
+
+        The guard lives here rather than only around the stream loop so that a
+        client dropping mid-write on the index or 404 paths cannot escape into
+        ``BaseServer.handle_error``'s stderr traceback banner.
+        """
+        try:
+            self._route()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            self.close_connection = True
+
+    def _route(self) -> None:
+        """Dispatch the index and known camera streams, rejecting every other path."""
         if self.path == "/":
             self._serve_index()
             return
@@ -141,16 +155,11 @@ class _WatchRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _serve_stream(self, supervisor: _CameraSupervisor) -> None:
-        """Write MJPEG parts until this client disconnects, then close its connection."""
-        try:
-            self.send_response(200)
-            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
-            self.end_headers()
-            self._write_stream(supervisor)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        finally:
-            self.close_connection = True
+        """Write MJPEG parts until this client disconnects (guarded in ``do_GET``)."""
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.end_headers()
+        self._write_stream(supervisor)
 
     def _write_stream(self, supervisor: _CameraSupervisor) -> None:
         """Encode RGB frames or error placeholders at the configured stream rate."""

@@ -134,6 +134,14 @@ def test_index_lists_canonical_labeled_streams() -> None:
     assert handler.close_connection
 
 
+def test_index_client_disconnect_is_swallowed_and_closes_connection() -> None:
+    """A client dropping mid-index-write neither raises nor reaches handle_error."""
+    handler, sock = request("/", HandlerServer({}, FakeCv2()), fail_on_send=1)
+
+    assert handler.close_connection
+    assert sock.sent == bytearray()
+
+
 def test_stream_emits_multipart_jpeg_and_flips_rgb_to_bgr() -> None:
     """A known stream writes JPEG parts after reversing the frame channels."""
     rgb = image((1, 2, 3))
