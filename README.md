@@ -39,11 +39,12 @@ verifiable before any motion.
 inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2 --embodiment yam_arms
 ```
 
-> **Note:** cameras are configured with three plain device paths
-> (`top/left/right_cam_device`), so the whole rig is drivable from config.ini
-> or `-E key=value` flags with no custom code. A Python `camera_reader` remains
-> available for exotic camera stacks. With neither configured, `yam_arms` fails
-> fast with a `ConfigError` at `reset()`, before any driver connect or motion.
+> **Note:** cameras are configured with one plain source per slot
+> (`*_cam_device` or `*_depth_serial`), so the whole rig is drivable from
+> config.ini or `-E key=value` flags with no custom code. A Python
+> `camera_reader` remains available for exotic camera stacks. With no sources
+> configured, `yam_arms` fails fast with a `ConfigError` at `reset()`, before
+> any driver connect or motion.
 
 The builtin reader drains each camera continuously on its own thread, so an
 observation carries a frame about one camera frame interval old: 33 ms at
@@ -195,9 +196,10 @@ probes, including unplug-to-identify:
 inspect-robots setup
 ```
 
-Or write the file yourself, replacing the three camera paths with your rig's
-V4L2 color nodes (use stable `/dev/v4l/by-id/...` or udev-symlink paths;
-bare `/dev/videoN` numbers reshuffle on every replug):
+Or write the file yourself. This example uses the primary mixed RealSense rig:
+the D435 top camera stays on V4L2 while librealsense owns both D405 wrists.
+Use stable `/dev/v4l/by-id/...` or udev-symlink paths for V4L2 sources; bare
+`/dev/videoN` numbers reshuffle on every replug.
 
 ```bash
 mkdir -p ~/.config/inspect-robots && cat > ~/.config/inspect-robots/config.ini <<'EOF'
@@ -211,10 +213,31 @@ store_frames = true        # keep the policy's camera frames per run
 
 [embodiment.args]
 top_cam_device = /dev/v4l/by-id/YOUR-TOP-CAM
-left_cam_device = /dev/v4l/by-id/YOUR-LEFT-CAM
-right_cam_device = /dev/v4l/by-id/YOUR-RIGHT-CAM
+# A depth serial replaces, rather than augments, that slot's *_cam_device.
+# Do not also set left_cam_device or right_cam_device in this mixed rig.
+left_depth_serial = YOUR-LEFT-D405-SERIAL
+right_depth_serial = YOUR-RIGHT-D405-SERIAL
 EOF
 ```
+
+### RealSense depth
+
+Install the optional librealsense dependency on the robot machine:
+
+```bash
+uv pip install 'inspect-robots-yam[depth]'
+```
+
+A slot configured with `*_depth_serial` is owned by librealsense, which serves
+both its colour image and aligned depth plus intrinsics. Find the device serial
+with `rs-enumerate-devices`, or reuse the ASIC serial embedded in the
+`/dev/v4l/by-id/...` name used for `*_cam_device`; either namespace is accepted.
+
+Cameras open lazily, so the first `reset()` has a one-time warm-up cost while
+the pipelines start and deliver their first frames. A RealSense opened through
+librealsense cannot also be opened through V4L2—there can be only one streamer
+per device node—so `*_cam_device` and `*_depth_serial` are mutually exclusive
+for each slot.
 
 Make sure the plugin is installed and the MolmoAct2 server is up. The
 `molmoact2` policy is only a client: nothing moves until the server is
@@ -289,9 +312,10 @@ inspect-robots config set embodiment yam_arms     # once, per machine
 The `-U` matters if you installed the agent plugin before: the run below needs
 its native Anthropic wire, added in `inspect-robots-agent` 0.13.0.
 
-Cameras come from the builtin reader: set the three `*_cam_device` paths in
-`~/.config/inspect-robots/config.ini` (see Run on hardware above) or pass them as
-`-E` flags per run. Then run the LLM on the robot:
+Cameras come from the builtin reader: configure one `*_cam_device` or
+`*_depth_serial` source per slot in `~/.config/inspect-robots/config.ini` (see
+Run on hardware above), or pass them as `-E` flags per run. Then run the LLM on
+the robot:
 
 ```bash
 inspect-robots "place the fork on the plate" --policy agent \
@@ -525,11 +549,14 @@ at the first reset before torque is released),
 `settle_tolerance` (radians; `none` by default, which disables settling; see
 *Settling before observing*), `settle_timeout_s` (default `1.0`),
 `settle_timeout_budget` (default `20`),
-`top/left/right_cam_device` (V4L2 paths for the builtin camera reader; all
-three or none), `max_steps_hint` (deprecated: on inspect-robots newer than
-0.8.1, framework runs feed the status line the real horizon automatically;
-the hint is only a fallback for direct `rollout()` calls or older cores;
-bounds nothing).
+`top/left/right_cam_device` (V4L2 camera sources; each slot needs either its
+device path or its depth serial), `top/left/right_depth_serial` (RealSense
+sources owned by librealsense, serving both colour and depth; mutually exclusive
+with that slot's `*_cam_device`; either device or ASIC serial namespace is
+accepted; all slots must be sourced or none), `max_steps_hint`
+(deprecated: on inspect-robots newer than 0.8.1, framework runs feed the status
+line the real horizon automatically; the hint is only a fallback for direct
+`rollout()` calls or older cores; bounds nothing).
 The current factory value is available for inspection as
 `inspect_robots_yam.config.DEFAULT_REST_POSE`; this is an informational constant,
 not a stable import.

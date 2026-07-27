@@ -179,21 +179,32 @@ class YamConfig(_FromKwargs):
     # that predates it). Display-only; bounds nothing. Removal in a later
     # release.
     max_steps_hint: int | None = None
-    # Builtin OpenCV camera reader: set ALL THREE to your rig's V4L2 color
-    # nodes (stable udev paths recommended; /dev/videoN reshuffles on replug)
-    # and yam_arms works from the CLI/config with no custom camera factory.
+    # Builtin OpenCV camera sources: set a slot to its V4L2 color node (stable
+    # udev paths recommended; /dev/videoN reshuffles on replug).
     # Plain strings, so `-E top_cam_device=...` and config.ini can carry them.
     # Uses the base opencv-python-headless dependency.
     top_cam_device: str | None = None
     left_cam_device: str | None = None
     right_cam_device: str | None = None
+    # Optional RealSense sources: setting `{slot}_depth_serial` hands that camera
+    # slot to librealsense, replacing V4L2/OpenCV for the slot and serving both
+    # its colour image and aligned depth plus intrinsics. Each slot takes exactly
+    # one source, `{slot}_cam_device` XOR `{slot}_depth_serial`; setting both is a
+    # config error (one streamer per device node). Either every slot must have a
+    # source or none may. Both the device serial from rs-enumerate-devices and
+    # the ASIC serial (`asic_serial_number`) in a /dev/v4l/by-id name are accepted.
+    # These are plain strings usable through `-E` or config.ini. See the ``depth``
+    # optional extra for the install command.
+    top_depth_serial: str | None = None
+    left_depth_serial: str | None = None
+    right_depth_serial: str | None = None
 
     def __post_init__(self) -> None:
         """Reject values that violate the 14-D packing and hardware invariants.
 
         Pose and step vectors must span both arms, every step limit must be
-        finite and positive, the gripper stroke must be nonzero, and builtin
-        camera device paths must be configured all together or not at all.
+        finite and positive, the gripper stroke must be nonzero, and every
+        builtin camera slot must have exactly one source or all must be unset.
         """
         if self.gripper_type not in SUPPORTED_GRIPPER_TYPES:
             raise ValueError(
@@ -277,11 +288,58 @@ class YamConfig(_FromKwargs):
             raise ValueError("rest_secs must be > 0")
         if self.max_steps_hint is not None and self.max_steps_hint < 1:
             raise ValueError("max_steps_hint must be >= 1")
-        devices = (self.top_cam_device, self.left_cam_device, self.right_cam_device)
-        if any(d is not None for d in devices) and not all(d is not None for d in devices):
+        camera_source_fields = tuple(
+            f"{slot}_{suffix}"
+            for slot in ("top", "left", "right")
+            for suffix in ("cam_device", "depth_serial")
+        )
+        for field in camera_source_fields:
+            value = getattr(self, field)
+            if value is not None and not value.strip():
+                raise ValueError(f"{field} must be a non-empty string")
+        cam_device_fields: dict[str, str] = {}
+        for slot in ("top", "left", "right"):
+            field = f"{slot}_cam_device"
+            device = getattr(self, field)
+            if device is None:
+                continue
+            previous = cam_device_fields.get(device)
+            if previous is not None:
+                raise ValueError(
+                    f"{previous} and {field} must be different; duplicate camera device {device!r}"
+                )
+            cam_device_fields[device] = field
+        depth_serial_fields: dict[str, str] = {}
+        for slot in ("top", "left", "right"):
+            field = f"{slot}_depth_serial"
+            serial = getattr(self, field)
+            if serial is None:
+                continue
+            previous = depth_serial_fields.get(serial)
+            if previous is not None:
+                raise ValueError(
+                    f"{previous} and {field} must be different; duplicate depth serial {serial!r}"
+                )
+            depth_serial_fields[serial] = field
+        for slot in ("top", "left", "right"):
+            if getattr(self, f"{slot}_cam_device") is not None and (
+                getattr(self, f"{slot}_depth_serial") is not None
+            ):
+                raise ValueError(
+                    f"{slot}_cam_device and {slot}_depth_serial are mutually "
+                    f"exclusive: a RealSense camera opened through librealsense "
+                    f"cannot also be opened through V4L2 (one streamer per node)"
+                )
+        sourced = {
+            slot
+            for slot in ("top", "left", "right")
+            if getattr(self, f"{slot}_cam_device") is not None
+            or getattr(self, f"{slot}_depth_serial") is not None
+        }
+        if sourced and len(sourced) != 3:
+            unsourced = ", ".join(slot for slot in ("top", "left", "right") if slot not in sourced)
             raise ValueError(
-                "camera devices must be set all three or none "
-                "(top_cam_device, left_cam_device, right_cam_device)"
+                f"camera sources must be set for all slots or none; unsourced slots: {unsourced}"
             )
         if len(self.step_limits) != TOTAL_DIM or any(
             not (s > 0) or not np.isfinite(s) for s in self.step_limits

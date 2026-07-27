@@ -382,7 +382,10 @@ def test_reset_non_callable_camera_reader_fails_fast() -> None:
         sleep_fn=lambda _d: None,
         clock=lambda: 0.0,
     )
-    with pytest.raises(ConfigError, match="cam_device"):
+    with pytest.raises(
+        ConfigError,
+        match=r"\*_cam_device.*\*_depth_serial.*camera_reader",
+    ):
         emb.reset(Scene(id="s", instruction="x"))
 
 
@@ -903,12 +906,29 @@ def test_camera_devices_select_the_builtin_opencv_reader() -> None:
     assert emb._camera_reader is not _default_camera_reader
 
 
+def test_injected_camera_reader_suppresses_configured_opencv_builtin() -> None:
+    emb = YAMEmbodiment(
+        YamConfig(
+            top_cam_device="/dev/video0",
+            left_cam_device="/dev/video2",
+            right_cam_device="/dev/video4",
+        ),
+        camera_reader=_cameras,
+    )
+
+    assert emb._camera_reader is _cameras
+    assert emb._builtin_realsense_reader is None
+
+
 def test_no_cameras_configured_keeps_fail_fast_reader_with_device_hint() -> None:
     emb, drv, _ = _build()
     emb._camera_reader = __import__(
         "inspect_robots_yam.embodiment", fromlist=["_default_camera_reader"]
     )._default_camera_reader
-    with pytest.raises(ConfigError, match="cam_device"):
+    with pytest.raises(
+        ConfigError,
+        match=r"\*_cam_device.*\*_depth_serial.*camera_reader",
+    ):
         emb.reset(Scene(id="s", instruction="x"))
     assert drv.commands == []  # fail-fast happened before any driver connect
 

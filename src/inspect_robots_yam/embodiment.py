@@ -20,13 +20,14 @@ are pragma'd defaults that only execute on hardware.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, ClassVar, Protocol, cast, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
@@ -170,6 +171,7 @@ _ARM_SLOTS = np.array(
 DriverFactory = Callable[[YamConfig], BimanualDriver]
 KinematicsFactory = Callable[[YamConfig], tuple[RawKinematics, RawKinematics]]
 CameraReader = Callable[[YamConfig], ImageMap]
+DepthReader = Callable[[YamConfig], dict[str, Any]]
 
 
 def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cover - real hardware
@@ -262,11 +264,44 @@ def _import_cv2() -> Any:  # pragma: no cover - real OpenCV
     return cv2
 
 
+def _import_rs() -> Any:  # pragma: no cover - real pyrealsense2
+    """Import pyrealsense2 on first use with an actionable error when absent."""
+    try:
+        import pyrealsense2 as rs  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pyrealsense2 is required for RealSense depth streams. "
+            "Install it with: uv pip install 'inspect-robots-yam[depth]'",
+            name="pyrealsense2",
+        ) from exc
+    return rs
+
+
 @dataclass(frozen=True)
 class _Published:
     """One captured frame, copied out of the driver's buffer, and when it landed."""
 
     data: Any
+    published_s: float
+
+
+@dataclass(frozen=True)
+class _PipelineBundle:
+    """Pipeline, align filter, and depth scale for one RealSense camera."""
+
+    pipeline: Any
+    align: Any
+    depth_scale: float
+
+
+@dataclass(frozen=True)
+class _PublishedPair:
+    """One raw aligned colour/depth pair, its camera matrix K, and when it landed."""
+
+    colour: npt.NDArray[np.uint8]
+    depth: npt.NDArray[np.uint16]
+    intrinsics: npt.NDArray[np.float32]
+    depth_scale: float
     published_s: float
 
 
@@ -492,20 +527,346 @@ class _OpenCVCameraReader:
 
 
 def _opencv_camera_reader(cfg: YamConfig) -> CameraReader:
-    """Build the builtin V4L2 reader for the three configured camera devices."""
-    return _OpenCVCameraReader(
-        {
-            "top_cam": cast(str, cfg.top_cam_device),
-            "left_cam": cast(str, cfg.left_cam_device),
-            "right_cam": cast(str, cfg.right_cam_device),
-        }
-    )
+    """Build the builtin V4L2 reader for device-sourced camera slots."""
+    devices = {
+        name: device
+        for name, device in (
+            ("top_cam", cfg.top_cam_device),
+            ("left_cam", cfg.left_cam_device),
+            ("right_cam", cfg.right_cam_device),
+        )
+        if device is not None
+    }
+    return _OpenCVCameraReader(devices)
 
 
 def _default_camera_reader(cfg: YamConfig) -> ImageMap:
     raise NotImplementedError(
         "provide a camera_reader returning {'top_cam','left_cam','right_cam': HxWx3 uint8}"
     )
+
+
+class _RealsenseCameraReader:
+    """Own RealSense cameras through librealsense; serve colour, depth, and K.
+
+    One pipeline owns each configured camera. Device selection accepts either the
+    device serial reported by ``rs-enumerate-devices`` and
+    ``rs.camera_info.serial_number``, or the ASIC/USB serial that librealsense calls
+    ``asic_serial_number`` and embeds in ``/dev/v4l/by-id`` path names. Colour serves
+    ``Observation.images``; aligned depth and intrinsics serve ``Observation.extra``.
+    The composite has no cross-reader all-or-nothing guarantee: cv2 slots stay open
+    if the RealSense open fails, and ``close()`` recovers them.
+    """
+
+    #: Frames older than this mean the camera has stopped delivering.
+    MAX_FRAME_AGE_S: ClassVar[float] = 0.5
+
+    #: Grace period before stopping a pipeline whose drain thread is still alive.
+    JOIN_TIMEOUT_S: ClassVar[float] = 2.0
+
+    def __init__(
+        self,
+        serials: Mapping[str, str],
+        rs_module: Any | None = None,
+        cv2_module: Any | None = None,
+        sleep_fn: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._serials = dict(serials)
+        self._rs = rs_module
+        self._cv2 = cv2_module
+        self._sleep = sleep_fn
+        self._clock = clock
+        self._bundles: dict[str, _PipelineBundle] = {}
+        self._threads: dict[str, threading.Thread] = {}
+        self._published: dict[str, _PublishedPair] = {}
+        self._faults: dict[str, BaseException] = {}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._generation = 0
+
+    def __call__(self, cfg: YamConfig) -> ImageMap:
+        """Return the newest RGB frame from every camera, opening them on first use."""
+        self._ensure_open()
+        cv2 = self._cv2 if self._cv2 is not None else _import_cv2()
+        self._cv2 = cv2
+        images: dict[str, npt.NDArray[np.uint8]] = {}
+        for name in self._serials:
+            pair, _ = self._latest(name)
+            resized = cv2.resize(pair.colour, (cfg.cam_width, cfg.cam_height))
+            images[name] = np.asarray(resized).astype(np.uint8)
+        return images
+
+    def extra(self, cfg: YamConfig) -> dict[str, Any]:
+        """Return scaled camera matrices and generation-bound lazy depth arrays."""
+        self._ensure_open()
+        extra: dict[str, Any] = {}
+        for name in self._serials:
+            pair, generation = self._latest(name)
+            intrinsics = pair.intrinsics.copy()
+            intrinsics[0, 0] = float(pair.intrinsics[0, 0]) * cfg.cam_width / 640
+            intrinsics[0, 2] = float(pair.intrinsics[0, 2]) * cfg.cam_width / 640
+            intrinsics[1, 1] = float(pair.intrinsics[1, 1]) * cfg.cam_height / 480
+            intrinsics[1, 2] = float(pair.intrinsics[1, 2]) * cfg.cam_height / 480
+            extra[f"{name}_intrinsics"] = intrinsics
+            extra[f"{name}_depth"] = self._depth_thunk(
+                name, cfg.cam_width, cfg.cam_height, generation
+            )
+        return extra
+
+    def _ensure_open(self) -> None:
+        """Resolve librealsense and open all configured cameras on first use."""
+        rs = self._rs if self._rs is not None else _import_rs()
+        self._rs = rs
+        if not self._bundles:
+            self._open_all(rs)
+
+    def close(self) -> None:
+        """Stop every drain thread and stop all RealSense pipelines.
+
+        Joins before stopping, and skips the stop of any pipeline whose thread
+        is still running: stopping underneath an in-flight hardware read can
+        crash the process, and this process is holding torque-enabled arms. A
+        leaked pipeline is the better failure. Idempotent, and a no-op before
+        the first read since cameras open lazily.
+        """
+        self._stop.set()
+        for thread in self._threads.values():
+            thread.join(timeout=self.JOIN_TIMEOUT_S)
+        for name, bundle in self._bundles.items():
+            drain = self._threads[name]
+            if drain.is_alive():
+                logger.warning(
+                    "camera %s (%s) is still reading; leaving the RealSense "
+                    "pipeline open rather than stopping it underneath the read",
+                    name,
+                    self._serials[name],
+                )
+                continue
+            try:
+                bundle.pipeline.stop()
+            except Exception:
+                logger.exception("stopping RealSense pipeline for %s failed", name)
+        self._bundles = {}
+        self._threads = {}
+        with self._lock:
+            self._generation += 1
+            self._published = {}
+            self._faults = {}
+
+    def _open_all(self, rs: Any) -> None:
+        """Resolve and open every camera, or stop the ones opened and re-raise.
+
+        All-or-nothing: a half-populated state would never be retried (the
+        ``if not self._bundles`` guard would be satisfied by opened cameras),
+        and the rollout would run with a subset of its declared views.
+        """
+        with self._lock:
+            self._generation += 1
+            generation = self._generation
+        devices = list(rs.context().query_devices())
+        visible: list[tuple[Any, str, str, str | None]] = []
+        for device in devices:
+            serial = str(device.get_info(rs.camera_info.serial_number))
+            asic_info = rs.camera_info.asic_serial_number
+            asic_serial = str(device.get_info(asic_info)) if device.supports(asic_info) else None
+            device_name = str(device.get_info(rs.camera_info.name))
+            visible.append((device, device_name, serial, asic_serial))
+
+        resolved: dict[str, str] = {}
+        for name, configured_serial in self._serials.items():
+            match = next(
+                (
+                    serial
+                    for _, _, serial, asic_serial in visible
+                    if configured_serial in (serial, asic_serial)
+                ),
+                None,
+            )
+            if match is None:
+                listing = ", ".join(
+                    f"{device_name} / {serial} / {asic_serial or '<unavailable>'}"
+                    for _, device_name, serial, asic_serial in visible
+                )
+                raise RuntimeError(
+                    f"cannot find RealSense camera {name} ({configured_serial}); "
+                    f"visible devices: {listing or 'none'}"
+                )
+            resolved[name] = match
+
+        resolved_slots: dict[str, tuple[str, str]] = {}
+        for name, resolved_serial in resolved.items():
+            configured_serial = self._serials[name]
+            previous = resolved_slots.get(resolved_serial)
+            if previous is not None:
+                previous_name, previous_configured_serial = previous
+                raise RuntimeError(
+                    f"cannot use RealSense cameras {previous_name} "
+                    f"({previous_configured_serial}) and {name} ({configured_serial}): "
+                    f"both resolve to device serial {resolved_serial}; configure each "
+                    f"slot with a different visible device"
+                )
+            resolved_slots[resolved_serial] = (name, configured_serial)
+
+        bundles: dict[str, _PipelineBundle] = {}
+        try:
+            for name, serial in resolved.items():
+                bundles[name] = self._open_one(rs, name, serial, generation)
+        except BaseException:
+            for bundle in bundles.values():
+                with contextlib.suppress(Exception):
+                    bundle.pipeline.stop()
+            with self._lock:
+                self._published = {}
+                self._faults = {}
+            raise
+        self._stop = threading.Event()
+        self._bundles = bundles
+        for name, bundle in bundles.items():
+            thread = threading.Thread(
+                target=self._drain,
+                args=(name, bundle, self._stop, generation),
+                name=f"yam-camera-{name}",
+                daemon=True,
+            )
+            self._threads[name] = thread
+            thread.start()
+
+    def _open_one(self, rs: Any, name: str, serial: str, generation: int) -> _PipelineBundle:
+        """Open one pipeline, configure colour+depth streams, and seed from warm-up.
+
+        A warm-up that never yields a frame is not fatal here: the drain thread
+        gets its own chance and ``_latest`` waits for it.
+        """
+        rs_cfg = rs.config()
+        rs_cfg.enable_device(serial)
+        rs_cfg.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, 30)
+        rs_cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+        pipeline = rs.pipeline()
+        profile = pipeline.start(rs_cfg)
+        try:
+            depth_scale: float = float(profile.get_device().first_depth_sensor().get_depth_scale())
+            align = rs.align(rs.stream.color)
+            for _ in range(10):  # warm-up: first frames may arrive after a brief delay
+                ok, frames = pipeline.try_wait_for_frames(timeout_ms=1000)
+                if not ok:
+                    self._sleep(0.1)
+                    continue
+                aligned = align.process(frames)
+                self._publish(name, aligned, depth_scale, generation)
+                break
+            return _PipelineBundle(pipeline=pipeline, align=align, depth_scale=depth_scale)
+        except BaseException:
+            with contextlib.suppress(BaseException):
+                pipeline.stop()
+            raise
+
+    def _drain(
+        self,
+        name: str,
+        bundle: _PipelineBundle,
+        stop: threading.Event,
+        generation: int,
+    ) -> None:
+        """Publish frames until stopped, latching whatever ends the loop."""
+        while not stop.is_set():
+            try:
+                ok, frames = bundle.pipeline.try_wait_for_frames(timeout_ms=1000)
+                if not ok:
+                    continue
+                aligned = bundle.align.process(frames)
+                self._publish(name, aligned, bundle.depth_scale, generation)
+            except BaseException as exc:
+                with self._lock:
+                    if generation == self._generation:
+                        self._faults[name] = exc
+                return
+
+    def _publish(self, name: str, aligned: Any, depth_scale: float, generation: int) -> None:
+        """Copy one aligned raw frame pair out of librealsense into the slot."""
+        depth_frame = aligned.get_depth_frame()
+        colour_frame = aligned.get_color_frame()
+        if not depth_frame or not colour_frame:
+            return
+        colour: npt.NDArray[np.uint8] = np.asarray(colour_frame.get_data(), dtype=np.uint8).copy()
+        depth: npt.NDArray[np.uint16] = np.asarray(depth_frame.get_data(), dtype=np.uint16).copy()
+        intr = colour_frame.profile.as_video_stream_profile().intrinsics
+        k_matrix: npt.NDArray[np.float32] = np.array(
+            [
+                [float(intr.fx), 0.0, float(intr.ppx)],
+                [0.0, float(intr.fy), float(intr.ppy)],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        with self._lock:
+            if generation != self._generation:
+                return
+            self._published[name] = _PublishedPair(
+                colour=colour,
+                depth=depth,
+                intrinsics=k_matrix,
+                depth_scale=depth_scale,
+                published_s=self._clock(),
+            )
+
+    def _latest(
+        self, name: str, expected_generation: int | None = None
+    ) -> tuple[_PublishedPair, int]:
+        """Return the newest raw pair, waiting briefly for a fresh one."""
+        serial = self._serials[name]
+        for _ in range(10):
+            with self._lock:
+                generation = self._generation
+                if expected_generation is not None and expected_generation != generation:
+                    raise RuntimeError(f"depth for {name} resolved after camera close or reopen")
+                fault = self._faults.get(name)
+                published = self._published.get(name)
+            if fault is not None:
+                raise RuntimeError(f"camera {name} ({serial}) stopped reading") from fault
+            if published is not None and self._clock() - published.published_s <= (
+                self.MAX_FRAME_AGE_S
+            ):
+                return published, generation
+            self._sleep(0.05)
+        raise RuntimeError(f"frame read failed for {name} ({serial})")
+
+    def _depth_thunk(
+        self, name: str, width: int, height: int, generation: int
+    ) -> Callable[[], npt.NDArray[np.float32]]:
+        """Build a lazy nearest-neighbour depth conversion for one open cycle."""
+
+        def resolve() -> npt.NDArray[np.float32]:
+            pair, _ = self._latest(name, generation)
+            depth_m = pair.depth.astype(np.float32) * np.float32(pair.depth_scale)
+            rows = np.arange(height) * depth_m.shape[0] // height
+            columns = np.arange(width) * depth_m.shape[1] // width
+            resized: npt.NDArray[np.float32] = depth_m[rows[:, None], columns]
+            return resized.copy()
+
+        return resolve
+
+
+class _CompositeCameraReader:
+    """Merge disjoint builtin image readers and release all of their devices."""
+
+    def __init__(self, *readers: CameraReader) -> None:
+        self._readers = readers
+
+    def __call__(self, cfg: YamConfig) -> ImageMap:
+        """Return the union of every wrapped reader's camera images."""
+        images: dict[str, npt.NDArray[np.uint8]] = {}
+        for reader in self._readers:
+            images.update(reader(cfg))
+        return images
+
+    def close(self) -> None:
+        """Close every wrapped reader that exposes a duck-typed close method."""
+        with contextlib.ExitStack() as stack:
+            for reader in self._readers:
+                release = getattr(reader, "close", None)
+                if callable(release):
+                    stack.callback(release)
 
 
 class YAMEmbodiment:
@@ -520,8 +881,9 @@ class YAMEmbodiment:
     # The setup wizard interviews these with real-device probes (issue
     # inspect-robots#61). CAN channels are grouped: a config naming only one
     # arm's channel silently drives the other on the plugin default, the
-    # exact failure the interview exists to prevent. Cameras mirror
-    # YamConfig's all-three-or-none validation.
+    # exact failure the interview exists to prevent. Camera configs source
+    # exactly one reader per slot; the wizard fills all three V4L2 device slots,
+    # while RealSense depth serials are outside its scope.
     DEVICE_SLOTS: ClassVar[tuple[DeviceSlot, ...]] = (
         DeviceSlot(arg="left_channel", kind="can", label="left arm CAN channel", group="arms"),
         DeviceSlot(arg="right_channel", kind="can", label="right arm CAN channel", group="arms"),
@@ -537,6 +899,7 @@ class YAMEmbodiment:
         driver_factory: DriverFactory | None = None,
         kinematics_factory: KinematicsFactory | None = None,
         camera_reader: CameraReader | None = None,
+        depth_reader: DepthReader | None = None,
         operator: OperatorIO | None = None,
         poll_end: Callable[[], bool] | None = None,
         sleep_fn: Callable[[float], None] | None = None,
@@ -544,21 +907,60 @@ class YAMEmbodiment:
         status_fn: Callable[[str | None], None] | None = None,
         **flat: Any,
     ) -> None:
+        """Construct the embodiment and its configured camera readers.
+
+        An injected ``depth_reader`` is merged after builtin RealSense metadata,
+        so injected keys override builtin values when both publish the same key.
+        """
         self._cfg = config if config is not None else YamConfig.from_kwargs(**flat)
         self._driver_factory: DriverFactory = driver_factory or _default_driver_factory
         self._kinematics_factory: KinematicsFactory = (
             kinematics_factory or _default_kinematics_factory
         )
-        if camera_reader is None and self._cfg.top_cam_device is not None:
-            # All three device paths are set (YamConfig validates all-or-none):
-            # use the builtin OpenCV reader, so config/CLI-only setups work.
-            camera_reader = _opencv_camera_reader(self._cfg)
-        self._camera_reader: CameraReader = camera_reader or _default_camera_reader
+        depth_serials = {
+            name: serial
+            for name, serial in (
+                ("top_cam", self._cfg.top_depth_serial),
+                ("left_cam", self._cfg.left_depth_serial),
+                ("right_cam", self._cfg.right_depth_serial),
+            )
+            if serial is not None
+        }
+        self._builtin_realsense_reader: _RealsenseCameraReader | None = None
+        if camera_reader is not None:
+            if depth_serials:
+                raise ValueError(
+                    "custom camera_reader conflicts with configured *_depth_serial "
+                    "values: configured depth serials drive the builtin capture path; "
+                    "with a custom camera_reader, supply depth via depth_reader instead"
+                )
+        else:
+            builtin_readers: list[CameraReader] = []
+            if any(
+                device is not None
+                for device in (
+                    self._cfg.top_cam_device,
+                    self._cfg.left_cam_device,
+                    self._cfg.right_cam_device,
+                )
+            ):
+                builtin_readers.append(_opencv_camera_reader(self._cfg))
+            if depth_serials:
+                self._builtin_realsense_reader = _RealsenseCameraReader(depth_serials)
+                builtin_readers.append(self._builtin_realsense_reader)
+            if len(builtin_readers) == 1:
+                camera_reader = builtin_readers[0]
+            elif builtin_readers:
+                camera_reader = _CompositeCameraReader(*builtin_readers)
+        self._camera_reader: CameraReader = (
+            camera_reader if camera_reader is not None else _default_camera_reader
+        )
         self._operator = operator if operator is not None else OperatorIO()
         self._poll_end: Callable[[], bool] = poll_end or default_poll_end
         self._sleep: Callable[[float], None] = sleep_fn or time.sleep
         self._clock: Callable[[], float] = clock or time.perf_counter
         self._status: Callable[[str | None], None] = status_fn or _default_status
+        self._depth_reader: DepthReader | None = depth_reader
 
         self._driver: BimanualDriver | None = None
         self._left_kinematics: _ArmKinematics | None = None
@@ -582,6 +984,32 @@ class YAMEmbodiment:
         docs_extra = self._cfg.docs_extra.strip()
         if docs_extra:
             docs += "\n\n" + docs_extra
+        if self._builtin_realsense_reader is not None:
+            depth_cameras = ", ".join(sorted(depth_serials))
+            docs += (
+                f"\n\nDepth: for each serial-configured camera ({depth_cameras}), "
+                '``observation.extra["{cam}_depth"]`` arrives either as an H\u00d7W '
+                "float32 array of depth in metres, or as a zero-arg callable returning "
+                "that array. If it is callable, resolve it immediately on receipt. The "
+                "array has the same resolution as, and is aligned to, that camera's "
+                "image in ``observation.images``. Resolving the callable returns a "
+                "fresh conversion of the newest captured frames, so delayed resolution "
+                "returns depth captured later than the image it accompanies. "
+                '``observation.extra["{cam}_intrinsics"]`` is a plain 3\u00d73 float32 '
+                "camera matrix K valid at that published resolution. Distortion "
+                "coefficients are omitted; the cameras are near-rectilinear at this "
+                "resolution."
+            )
+            if self._depth_reader is not None:
+                docs += (
+                    " An injected ``depth_reader`` may add or override keys in "
+                    "``observation.extra``."
+                )
+        elif self._depth_reader is not None:
+            docs += (
+                "\n\nDepth: ``observation.extra`` may contain additional depth data "
+                "from the configured depth reader; consult its documentation."
+            )
         self.info = EmbodimentInfo(
             name="yam_arms",
             # Delta mode declares the per-step displacement box (symmetric,
@@ -634,10 +1062,10 @@ class YAMEmbodiment:
         # also catches a CLI-injected scalar (`-E camera_reader=...` binds a str).
         if self._camera_reader is _default_camera_reader or not callable(self._camera_reader):
             raise ConfigError(
-                "yam_arms has no cameras configured. Set the three V4L2 device "
-                "paths - top/left/right_cam_device - in YamConfig, config.ini "
-                "([embodiment.args]) or the CLI (-E top_cam_device=/dev/video0 "
-                "...) to use the builtin OpenCV reader, or provide a custom "
+                "yam_arms has no cameras configured. Set exactly one source per "
+                "camera slot: *_cam_device for V4L2 colour or *_depth_serial for "
+                "RealSense colour+depth, in YamConfig, config.ini "
+                "([embodiment.args]), or the CLI; or provide a custom "
                 "camera_reader= via the Python API."
             )
         if self._driver is None:
@@ -794,20 +1222,26 @@ class YAMEmbodiment:
             self._release_cameras()
 
     def _release_cameras(self) -> None:
-        """Release the camera reader's devices, if it holds any.
+        """Release the camera reader's devices and the depth reader's pipelines.
 
-        Duck-typed because ``CameraReader`` is a plain callable alias: every
-        custom reader in tests and user code is a bare function with no
-        ``close``. Errors are logged and swallowed: a camera that will not let
-        go is not a reason to fail a teardown that has already parked the arms.
+        Duck-typed because ``CameraReader`` and ``DepthReader`` are plain
+        callable aliases: every custom reader in tests and user code is a bare
+        function with no ``close``. Errors are logged and swallowed: a reader
+        that will not let go is not a reason to fail a teardown that has already
+        parked the arms.
         """
         release = getattr(self._camera_reader, "close", None)
-        if not callable(release):
-            return
-        try:
-            release()
-        except Exception:
-            logger.exception("releasing cameras failed; continuing with teardown")
+        if callable(release):
+            try:
+                release()
+            except Exception:
+                logger.exception("releasing cameras failed; continuing with teardown")
+        depth_release = getattr(self._depth_reader, "close", None)
+        if callable(depth_release):
+            try:
+                depth_release()
+            except Exception:
+                logger.exception("releasing depth reader failed; continuing with teardown")
 
     def _ramp_to(self, target: Vec) -> Vec:
         """Linearly ramp from the current pose to ``target`` over ``rest_secs``.
@@ -1119,8 +1553,16 @@ class YAMEmbodiment:
                 gripper=float(state[13]),
             )
             values["eef_state"] = np.concatenate((left, right))
+        if self._builtin_realsense_reader is None and self._depth_reader is None:
+            return Observation(images=images, state=values, instruction=instruction)
+        extra: dict[str, Any] = {}
+        if self._builtin_realsense_reader is not None:
+            extra.update(self._builtin_realsense_reader.extra(self._cfg))
+        if self._depth_reader is not None:
+            extra.update(self._depth_reader(self._cfg))
         return Observation(
             images=images,
             state=values,
             instruction=instruction,
+            extra=extra,
         )

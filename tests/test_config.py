@@ -307,8 +307,8 @@ def test_yam_camera_devices_default_none() -> None:
     assert cfg.right_cam_device is None
 
 
-def test_yam_camera_devices_all_or_none() -> None:
-    with pytest.raises(ValueError, match="all three or none"):
+def test_yam_camera_sources_all_slots_or_none() -> None:
+    with pytest.raises(ValueError, match="unsourced slots: left, right"):
         YamConfig(top_cam_device="/dev/video0")
     cfg = YamConfig(
         top_cam_device="/dev/video0",
@@ -316,6 +316,36 @@ def test_yam_camera_devices_all_or_none() -> None:
         right_cam_device="/dev/video4",
     )
     assert cfg.left_cam_device == "/dev/video2"
+
+
+def test_yam_duplicate_camera_devices_are_rejected() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "top_cam_device and left_cam_device must be different; "
+            "duplicate camera device '/dev/video0'"
+        ),
+    ):
+        YamConfig(
+            top_cam_device="/dev/video0",
+            left_cam_device="/dev/video0",
+            right_cam_device="/dev/video4",
+        )
+
+
+def test_yam_duplicate_depth_serials_are_rejected() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "top_depth_serial and left_depth_serial must be different; "
+            "duplicate depth serial 'SAME'"
+        ),
+    ):
+        YamConfig(
+            top_depth_serial="SAME",
+            left_depth_serial="SAME",
+            right_depth_serial="S3",
+        )
 
 
 def test_action_semantics_is_config_dependent_with_labels() -> None:
