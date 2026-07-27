@@ -124,15 +124,15 @@ class _WatchRequestHandler(BaseHTTPRequestHandler):
         if self.path == "/":
             self._serve_index()
             return
+        supervisor = None
         if self.path.startswith("/stream/"):
-            name = self.path.removeprefix("/stream/")
-            supervisor = self.server.supervisors.get(name)
-            if supervisor is None:
-                self.send_error(404)
-                return
-            self._serve_stream(supervisor)
+            supervisor = self.server.supervisors.get(self.path.removeprefix("/stream/"))
+        if supervisor is None:
+            self.send_error(404)
             return
-        self.send_error(404)
+        # Last statement on purpose: the stream loop exits only via a client
+        # disconnect exception, so a trailing return would be dead code.
+        self._serve_stream(supervisor)
 
     def _serve_index(self) -> None:
         """Write a static, script-free page containing cameras in canonical order."""
