@@ -547,11 +547,13 @@ def _default_camera_reader(cfg: YamConfig) -> ImageMap:
 
 
 class _RealsenseCameraReader:
-    """Librealsense owner serving colour images plus aligned depth and camera K.
+    """Own RealSense cameras through librealsense; serve colour, depth, and K.
 
-    One pipeline owns each configured camera. Device selection accepts either
-    its device serial or ASIC/USB serial, colour serves ``Observation.images``,
-    and depth plus intrinsics serve ``Observation.extra``.
+    One pipeline owns each configured camera. Device selection accepts either the
+    device serial reported by ``rs-enumerate-devices`` and
+    ``rs.camera_info.serial_number``, or the ASIC/USB serial that librealsense calls
+    ``asic_serial_number`` and embeds in ``/dev/v4l/by-id`` path names. Colour serves
+    ``Observation.images``; aligned depth and intrinsics serve ``Observation.extra``.
     """
 
     #: Frames older than this mean the camera has stopped delivering.
@@ -956,11 +958,18 @@ class YAMEmbodiment:
             docs += "\n\n" + docs_extra
         if self._builtin_realsense_reader is not None or self._depth_reader is not None:
             docs += (
-                "\n\nDepth: when depth serial numbers are configured, "
-                "observation.extra contains ``{cam}_depth`` (H\u00d7W float32, metres, "
-                "aligned to the colour frame) and ``{cam}_intrinsics`` (dict with "
-                "fx, fy, cx, cy, width, height, model, coeffs) for each camera "
-                "(top_cam, left_cam, right_cam)."
+                "\n\nDepth: for each camera (top_cam, left_cam, right_cam), "
+                '``observation.extra["{cam}_depth"]`` is a ZERO-ARG CALLABLE. '
+                "Resolve it when the observation is received. Calling it returns an "
+                "H\u00d7W float32 array of depth in metres at the same resolution as, and "
+                "pixel-aligned to, that camera's image in ``observation.images``. Each "
+                "call returns a fresh conversion of the newest captured frames, so "
+                "delayed resolution returns depth captured later than the image it "
+                "accompanies. "
+                '``observation.extra["{cam}_intrinsics"]`` is a plain 3\u00d73 float32 '
+                "camera matrix K valid at that published resolution. Distortion "
+                "coefficients are omitted; the cameras are near-rectilinear at this "
+                "resolution."
             )
         self.info = EmbodimentInfo(
             name="yam_arms",

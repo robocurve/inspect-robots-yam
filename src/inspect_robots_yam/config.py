@@ -179,19 +179,22 @@ class YamConfig(_FromKwargs):
     # that predates it). Display-only; bounds nothing. Removal in a later
     # release.
     max_steps_hint: int | None = None
-    # Builtin OpenCV camera reader: set ALL THREE to your rig's V4L2 color
-    # nodes (stable udev paths recommended; /dev/videoN reshuffles on replug)
-    # and yam_arms works from the CLI/config with no custom camera factory.
+    # Builtin OpenCV camera sources: set a slot to its V4L2 color node (stable
+    # udev paths recommended; /dev/videoN reshuffles on replug).
     # Plain strings, so `-E top_cam_device=...` and config.ini can carry them.
     # Uses the base opencv-python-headless dependency.
     top_cam_device: str | None = None
     left_cam_device: str | None = None
     right_cam_device: str | None = None
-    # Optional RealSense depth serial numbers. Set all three to enable the
-    # librealsense depth reader, which publishes aligned depth arrays and
-    # intrinsics into Observation.extra alongside the V4L2 colour frames.
-    # Default off; the OpenCV colour reader and rigs without RealSense hardware
-    # are unaffected. See the ``depth`` optional extra for the install command.
+    # Optional RealSense sources: setting `{slot}_depth_serial` hands that camera
+    # slot to librealsense, replacing V4L2/OpenCV for the slot and serving both
+    # its colour image and aligned depth plus intrinsics. Each slot takes exactly
+    # one source, `{slot}_cam_device` XOR `{slot}_depth_serial`; setting both is a
+    # config error (one streamer per device node). Either every slot must have a
+    # source or none may. Both the device serial from rs-enumerate-devices and
+    # the ASIC serial (`asic_serial_number`) in a /dev/v4l/by-id name are accepted.
+    # These are plain strings usable through `-E` or config.ini. See the ``depth``
+    # optional extra for the install command.
     top_depth_serial: str | None = None
     left_depth_serial: str | None = None
     right_depth_serial: str | None = None
