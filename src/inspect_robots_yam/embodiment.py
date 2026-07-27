@@ -296,10 +296,10 @@ class _PipelineBundle:
 
 @dataclass(frozen=True)
 class _PublishedDepth:
-    """One captured depth frame plus intrinsics and its publication timestamp."""
+    """One captured depth frame plus 3x3 camera matrix K and its publication timestamp."""
 
     depth: npt.NDArray[np.float32]
-    intrinsics: dict[str, Any]
+    intrinsics: npt.NDArray[np.float32]
     published_s: float
 
 
@@ -549,7 +549,7 @@ class _RealsenseDepthReader:
     returns a dict ready to merge into ``Observation.extra``::
 
         {cam_name}_depth       — (H, W) float32 array, metres, aligned to colour
-        {cam_name}_intrinsics  — dict(fx, fy, cx, cy, width, height, model, coeffs)
+        {cam_name}_intrinsics  — (3, 3) float32 array (Camera Matrix K)
 
     Colour frames remain the responsibility of the OpenCV V4L2 ``camera_reader``;
     this reader is the depth-only supplement.
@@ -599,9 +599,9 @@ class _RealsenseDepthReader:
     def close(self) -> None:
         """Stop every drain thread and stop all RealSense pipelines.
 
-        Joins before stopping, and skips the stop of any pipeline whose thread
-        is still running: stopping a pipeline underneath an in-flight
-        ``wait_for_frames`` can crash, and this process is holding torque-enabled
+        Joins each thread up to ``JOIN_TIMEOUT_S`` before stopping its
+        pipeline. Safe while arms are holding torque: if a thread hangs, the
+        pipeline is left running to avoid crashing hardware reads in live
         arms. A leaked pipeline is the better failure. Idempotent, and a no-op
         before the first call since pipelines open lazily.
         """
@@ -675,7 +675,7 @@ class _RealsenseDepthReader:
                 aligned = align.process(frames)
                 self._publish(name, aligned, depth_scale, generation)
                 break
-            except Exception:  # pragma: no cover
+            except Exception:
                 self._sleep(0.1)
         return _PipelineBundle(pipeline=pipeline, align=align, depth_scale=depth_scale)
 
@@ -686,22 +686,33 @@ class _RealsenseDepthReader:
         stop: threading.Event,
         generation: int,
     ) -> None:
-        """Publish frames until stopped, latching whatever faults the loop.
+        """Publish frames until stopped, latching whatever non-timeout faults the loop.
 
-        An invisible dead thread would freeze the slot and serve one stale
-        depth frame forever — the depth analogue of the colour #63 bug.
-        ``_latest`` re-raises what is latched.
+        Timeouts (e.g. under USB load) are retryable: we log/continue and rely
+        on staleness detection in ``_latest`` for real stalls. Fatal exceptions
+        are latched and re-raised by ``_latest``.
         """
         while not stop.is_set():
             try:
                 frames = bundle.pipeline.wait_for_frames(timeout_ms=1000)
-                aligned = bundle.align.process(frames)
-                self._publish(name, aligned, bundle.depth_scale, generation)
-            except BaseException as exc:  # latched, then re-raised by _latest
+            except Exception as exc:
+                # Transient timeouts (RuntimeError from librealsense under USB load) are retryable.
+                # Only latch non-timeout errors or stop signals.
+                err_msg = str(exc).lower()
+                if "frame didn't arrive within" in err_msg or "timeout" in err_msg:
+                    continue  # pragma: no cover
                 with self._lock:
                     if generation == self._generation:  # pragma: no cover
                         self._faults[name] = exc
                 return
+            except BaseException as exc:  # pragma: no cover
+                with self._lock:
+                    if generation == self._generation:
+                        self._faults[name] = exc
+                return
+
+            aligned = bundle.align.process(frames)
+            self._publish(name, aligned, bundle.depth_scale, generation)
 
     def _publish(self, name: str, aligned: Any, depth_scale: float, generation: int) -> None:
         """Convert one aligned frame-set into a depth array and store it."""
@@ -713,26 +724,24 @@ class _RealsenseDepthReader:
             np.asarray(depth_frame.get_data(), dtype=np.float32) * depth_scale
         )
         intr = color_frame.profile.as_video_stream_profile().intrinsics
-        intrinsics: dict[str, Any] = {
-            "fx": float(intr.fx),
-            "fy": float(intr.fy),
-            "cx": float(intr.ppx),
-            "cy": float(intr.ppy),
-            "width": int(intr.width),
-            "height": int(intr.height),
-            "model": str(intr.model),
-            "coeffs": [float(c) for c in intr.coeffs],
-        }
+        k_matrix: npt.NDArray[np.float32] = np.array(
+            [
+                [float(intr.fx), 0.0, float(intr.ppx)],
+                [0.0, float(intr.fy), float(intr.ppy)],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
         copy: npt.NDArray[np.float32] = depth_arr.copy()
         with self._lock:
             if generation != self._generation:  # pragma: no cover
                 return
             self._published[name] = _PublishedDepth(
-                depth=copy, intrinsics=intrinsics, published_s=self._clock()
+                depth=copy, intrinsics=k_matrix, published_s=self._clock()
             )
 
-    def _latest(self, name: str) -> tuple[npt.NDArray[np.float32], dict[str, Any]]:
-        """Return the newest depth + intrinsics, waiting briefly for a fresh one."""
+    def _latest(self, name: str) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
+        """Return the newest depth + intrinsics matrix K, waiting briefly for a fresh one."""
         serial = self._serials[name]
         for _ in range(10):
             with self._lock:
@@ -741,7 +750,7 @@ class _RealsenseDepthReader:
             if fault is not None:
                 raise RuntimeError(f"RealSense depth {name} ({serial}) stopped reading") from fault
             if pub is not None and self._clock() - pub.published_s <= self.MAX_FRAME_AGE_S:
-                return pub.depth.copy(), dict(pub.intrinsics)
+                return pub.depth.copy(), pub.intrinsics.copy()
             self._sleep(0.05)
         raise RuntimeError(f"depth frame read failed for {name} ({serial})")
 

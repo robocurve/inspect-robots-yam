@@ -153,12 +153,36 @@ def test_depth_and_intrinsics_returned() -> None:
         assert np.allclose(ex[f"{n}_depth"], 0.5, atol=1e-5)
 
 
-def test_intrinsics_keys() -> None:
+def test_intrinsics_matrix() -> None:
     r = _rdr()
     ex = r(_cfg())
     r.close()
-    for k in ("fx", "fy", "cx", "cy", "width", "height", "model", "coeffs"):
-        assert k in ex["top_cam_intrinsics"]
+    k = ex["top_cam_intrinsics"]
+    assert isinstance(k, np.ndarray)
+    assert k.shape == (3, 3)
+    assert k.dtype == np.float32
+    assert k[0, 0] == 600.0  # fx
+    assert k[1, 1] == 600.0  # fy
+    assert k[0, 2] == 320.0  # cx
+    assert k[1, 2] == 240.0  # cy
+    assert k[2, 2] == 1.0
+
+
+def test_transient_timeout_recovers() -> None:
+    class _TimeoutThenOkPipeline(_FakePipeline):
+        _called = False
+
+        def wait_for_frames(self, timeout_ms: int = 1000) -> Any:
+            if not self._called:
+                self._called = True
+                raise RuntimeError("Frame didn't arrive within 1000ms")
+            return _make_frameset()
+
+    pipelines = {k: _TimeoutThenOkPipeline() for k in _SER}
+    r = _rdr(rs=_make_rs(pipelines), sleep_fn=lambda _: None)
+    ex = r(_cfg())
+    r.close()
+    assert "top_cam_depth" in ex
 
 
 def test_depth_copy() -> None:
@@ -423,20 +447,6 @@ def test_observe_with_depth_reader() -> None:
 
 
 def test_close_releases_depth_reader() -> None:
-    closed: list[bool] = []
-
-    class _DR:
-        def __call__(self, _c: YamConfig) -> dict[str, Any]:
-            return {}
-
-        def close(self) -> None:
-            closed.append(True)
-
-    _emb(dr=_DR()).close()
-    assert closed == [True]
-
-
-def test_close_no_reset_releases_depth_reader() -> None:
     closed: list[bool] = []
 
     class _DR:

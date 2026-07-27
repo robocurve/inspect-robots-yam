@@ -171,6 +171,10 @@ store_frames = true        # keep the policy's camera frames per run
 top_cam_device = /dev/v4l/by-id/YOUR-TOP-CAM
 left_cam_device = /dev/v4l/by-id/YOUR-LEFT-CAM
 right_cam_device = /dev/v4l/by-id/YOUR-RIGHT-CAM
+# Optional RealSense depth (requires: uv pip install 'inspect-robots-yam[depth]')
+# top_depth_serial = 123456789012
+# left_depth_serial = 123456789013
+# right_depth_serial = 123456789014
 EOF
 ```
 
@@ -484,10 +488,11 @@ at the first reset before torque is released),
 *Settling before observing*), `settle_timeout_s` (default `1.0`),
 `settle_timeout_budget` (default `20`),
 `top/left/right_cam_device` (V4L2 paths for the builtin camera reader; all
-three or none), `max_steps_hint` (deprecated: on inspect-robots newer than
-0.8.1, framework runs feed the status line the real horizon automatically;
-the hint is only a fallback for direct `rollout()` calls or older cores;
-bounds nothing).
+three or none), `top/left/right_depth_serial` (RealSense D405 serial numbers
+for the optional depth reader extra; all three or none), `max_steps_hint`
+(deprecated: on inspect-robots newer than 0.8.1, framework runs feed the status
+line the real horizon automatically; the hint is only a fallback for direct
+`rollout()` calls or older cores; bounds nothing).
 The current factory value is available for inspection as
 `inspect_robots_yam.config.DEFAULT_REST_POSE`; this is an informational constant,
 not a stable import.
