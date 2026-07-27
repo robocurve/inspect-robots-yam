@@ -255,8 +255,9 @@ sources).
   one, likewise the depth reader — the injected-reader close and interrupt
   behavior pinned by `tests/test_camera_reader.py:421-490` is untouched).
   To fit that path, the builtin composite itself exposes `close()`, which
-  closes both wrapped readers; the embodiment does not hold the builtin
-  readers separately.
+  closes both wrapped readers. The embodiment keeps a reference to the
+  builtin rs reader for the `extra()` merge, but device release flows only
+  through `self._camera_reader.close()` (the composite or sole reader).
 - The `info.docs` depth paragraph's gate at `embodiment.py:847-854` —
   currently `self._depth_reader is not None`, which serial-configured rigs
   would no longer set — becomes "builtin rs reader built **or**

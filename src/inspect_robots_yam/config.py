@@ -288,6 +288,27 @@ class YamConfig(_FromKwargs):
             raise ValueError("rest_secs must be > 0")
         if self.max_steps_hint is not None and self.max_steps_hint < 1:
             raise ValueError("max_steps_hint must be >= 1")
+        camera_source_fields = tuple(
+            f"{slot}_{suffix}"
+            for slot in ("top", "left", "right")
+            for suffix in ("cam_device", "depth_serial")
+        )
+        for field in camera_source_fields:
+            value = getattr(self, field)
+            if value is not None and not value.strip():
+                raise ValueError(f"{field} must be a non-empty string")
+        depth_serial_fields: dict[str, str] = {}
+        for slot in ("top", "left", "right"):
+            field = f"{slot}_depth_serial"
+            serial = getattr(self, field)
+            if serial is None:
+                continue
+            previous = depth_serial_fields.get(serial)
+            if previous is not None:
+                raise ValueError(
+                    f"{previous} and {field} must be different; duplicate depth serial {serial!r}"
+                )
+            depth_serial_fields[serial] = field
         for slot in ("top", "left", "right"):
             if getattr(self, f"{slot}_cam_device") is not None and (
                 getattr(self, f"{slot}_depth_serial") is not None

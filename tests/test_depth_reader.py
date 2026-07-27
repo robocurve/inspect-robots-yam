@@ -495,6 +495,16 @@ def test_missing_serial_with_no_visible_devices_says_none() -> None:
         reader(cfg())
 
 
+def test_empty_configured_serial_does_not_match_missing_asic_serial() -> None:
+    devices = [FakeDevice("ASIC-less D405", "DEVICE-A", None)]
+    reader, rs, _, _, _ = build(serials={"top_cam": ""}, devices=devices)
+
+    with pytest.raises(RuntimeError, match=r"cannot find RealSense camera top_cam \(\)"):
+        reader(cfg())
+
+    assert rs.pipeline_calls == 0
+
+
 def test_intrinsics_are_scaled_to_the_published_resolution() -> None:
     reader, _, _, _, _ = build()
 
@@ -636,6 +646,23 @@ def test_open_failure_rolls_back_every_pipeline_that_started() -> None:
     assert pipelines[0].stopped
     assert pipelines[1].stopped
     assert not pipelines[2].stopped
+
+
+def test_warm_up_failure_stops_in_flight_and_rolled_back_pipelines() -> None:
+    pipelines = [
+        FakePipeline(),
+        FakePipeline([RuntimeError("device disconnected")]),
+    ]
+    reader, _, _, _, _ = build(
+        serials={"top_cam": "S1", "left_cam": "S2"},
+        pipelines=pipelines,
+    )
+
+    with pytest.raises(RuntimeError, match="device disconnected"):
+        reader(cfg())
+
+    assert all(pipeline.stopped for pipeline in pipelines)
+    assert reader._published == {}
 
 
 def test_close_stops_pipelines_and_is_idempotent_in_both_states() -> None:
@@ -791,6 +818,38 @@ def test_yamconfig_device_and_serial_for_one_slot_are_rejected() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "field",
+    (
+        "top_cam_device",
+        "left_cam_device",
+        "right_cam_device",
+        "top_depth_serial",
+        "left_depth_serial",
+        "right_depth_serial",
+    ),
+)
+@pytest.mark.parametrize("value", ("", " \t"))
+def test_yamconfig_empty_camera_source_is_rejected(field: str, value: str) -> None:
+    with pytest.raises(ValueError, match=rf"{field} must be a non-empty string"):
+        YamConfig(**{field: value})
+
+
+def test_yamconfig_duplicate_depth_serials_are_rejected() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "top_depth_serial and left_depth_serial must be different; "
+            "duplicate depth serial 'SAME'"
+        ),
+    ):
+        YamConfig(
+            top_depth_serial="SAME",
+            left_depth_serial="SAME",
+            right_depth_serial="S3",
+        )
+
+
 def test_yamconfig_none_ok() -> None:
     assert YamConfig().top_depth_serial is None
 
@@ -939,6 +998,35 @@ def test_serial_only_rig_includes_depth_docs(monkeypatch: pytest.MonkeyPatch) ->
     emb.close()
 
 
+def test_mixed_builtin_rig_depth_docs_name_only_serial_cameras() -> None:
+    emb = YAMEmbodiment(
+        YamConfig(
+            top_cam_device="/dev/top",
+            left_depth_serial="S2",
+            right_depth_serial="S3",
+        )
+    )
+
+    depth_docs = emb.info.docs.split("\n\nDepth:", maxsplit=1)[1]
+    assert depth_docs.startswith(" for each serial-configured camera (left_cam, right_cam),")
+    assert "top_cam" not in depth_docs
+    assert "aligned to" in depth_docs
+    assert "pixel-aligned" not in depth_docs
+    emb.close()
+
+
+def test_injected_only_depth_docs_make_no_specific_key_claim() -> None:
+    emb = embodiment(depth_reader=lambda _: {})
+
+    depth_docs = emb.info.docs.split("\n\nDepth:", maxsplit=1)[1]
+    assert "may contain additional depth data" in depth_docs
+    assert "consult its documentation" in depth_docs
+    assert "{cam}_depth" not in depth_docs
+    assert "{cam}_intrinsics" not in depth_docs
+    assert "ZERO-ARG CALLABLE" not in depth_docs
+    emb.close()
+
+
 def test_injected_camera_reader_conflicts_with_configured_serials() -> None:
     cfg_value = YamConfig(
         top_depth_serial="S1",
@@ -997,6 +1085,7 @@ def test_injected_depth_reader_overrides_serial_builtin_extra(
             "custom_depth": "serial path",
         },
     )
+    assert "injected ``depth_reader`` may add or override keys" in emb.info.docs
 
     observation = observe_once(emb)
 

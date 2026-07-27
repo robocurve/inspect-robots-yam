@@ -663,11 +663,11 @@ class _RealsenseCameraReader:
             self._generation += 1
             generation = self._generation
         devices = list(rs.context().query_devices())
-        visible: list[tuple[Any, str, str, str]] = []
+        visible: list[tuple[Any, str, str, str | None]] = []
         for device in devices:
             serial = str(device.get_info(rs.camera_info.serial_number))
             asic_info = rs.camera_info.asic_serial_number
-            asic_serial = str(device.get_info(asic_info)) if device.supports(asic_info) else ""
+            asic_serial = str(device.get_info(asic_info)) if device.supports(asic_info) else None
             device_name = str(device.get_info(rs.camera_info.name))
             visible.append((device, device_name, serial, asic_serial))
 
@@ -700,6 +700,9 @@ class _RealsenseCameraReader:
             for bundle in bundles.values():
                 with contextlib.suppress(Exception):
                     bundle.pipeline.stop()
+            with self._lock:
+                self._published = {}
+                self._faults = {}
             raise
         self._stop = threading.Event()
         self._bundles = bundles
@@ -721,17 +724,22 @@ class _RealsenseCameraReader:
         rs_cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
         pipeline = rs.pipeline()
         profile = pipeline.start(rs_cfg)
-        depth_scale: float = float(profile.get_device().first_depth_sensor().get_depth_scale())
-        align = rs.align(rs.stream.color)
-        for _ in range(10):  # warm-up: first frames may arrive after a brief delay
-            ok, frames = pipeline.try_wait_for_frames(timeout_ms=1000)
-            if not ok:
-                self._sleep(0.1)
-                continue
-            aligned = align.process(frames)
-            self._publish(name, aligned, depth_scale, generation)
-            break
-        return _PipelineBundle(pipeline=pipeline, align=align, depth_scale=depth_scale)
+        try:
+            depth_scale: float = float(profile.get_device().first_depth_sensor().get_depth_scale())
+            align = rs.align(rs.stream.color)
+            for _ in range(10):  # warm-up: first frames may arrive after a brief delay
+                ok, frames = pipeline.try_wait_for_frames(timeout_ms=1000)
+                if not ok:
+                    self._sleep(0.1)
+                    continue
+                aligned = align.process(frames)
+                self._publish(name, aligned, depth_scale, generation)
+                break
+            return _PipelineBundle(pipeline=pipeline, align=align, depth_scale=depth_scale)
+        except BaseException:
+            with contextlib.suppress(BaseException):
+                pipeline.stop()
+            raise
 
     def _drain(
         self,
@@ -956,13 +964,14 @@ class YAMEmbodiment:
         docs_extra = self._cfg.docs_extra.strip()
         if docs_extra:
             docs += "\n\n" + docs_extra
-        if self._builtin_realsense_reader is not None or self._depth_reader is not None:
+        if self._builtin_realsense_reader is not None:
+            depth_cameras = ", ".join(sorted(depth_serials))
             docs += (
-                "\n\nDepth: for each camera (top_cam, left_cam, right_cam), "
+                f"\n\nDepth: for each serial-configured camera ({depth_cameras}), "
                 '``observation.extra["{cam}_depth"]`` is a ZERO-ARG CALLABLE. '
                 "Resolve it when the observation is received. Calling it returns an "
                 "H\u00d7W float32 array of depth in metres at the same resolution as, and "
-                "pixel-aligned to, that camera's image in ``observation.images``. Each "
+                "aligned to, that camera's image in ``observation.images``. Each "
                 "call returns a fresh conversion of the newest captured frames, so "
                 "delayed resolution returns depth captured later than the image it "
                 "accompanies. "
@@ -970,6 +979,16 @@ class YAMEmbodiment:
                 "camera matrix K valid at that published resolution. Distortion "
                 "coefficients are omitted; the cameras are near-rectilinear at this "
                 "resolution."
+            )
+            if self._depth_reader is not None:
+                docs += (
+                    " An injected ``depth_reader`` may add or override keys in "
+                    "``observation.extra``."
+                )
+        elif self._depth_reader is not None:
+            docs += (
+                "\n\nDepth: ``observation.extra`` may contain additional depth data "
+                "from the configured depth reader; consult its documentation."
             )
         self.info = EmbodimentInfo(
             name="yam_arms",
