@@ -25,9 +25,12 @@ would inflate ``_pace``'s measured elapsed and break the pacing assertions.
 from __future__ import annotations
 
 import dataclasses
+import threading
+import time
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from inspect_robots_yam.config import YamConfig
@@ -37,6 +40,146 @@ from inspect_robots_yam.operator import OperatorIO
 #: Comfortably above _SETTLE_POLL_S (0.01), so the elapsed bound trips at 20
 #: polls while the count bound would need 100.
 READ_ADVANCE_S = 0.05
+
+
+def frame(fill: int = 7) -> npt.NDArray[np.uint8]:
+    """One BGR frame at capture resolution, filled with a recognizable value."""
+    return np.full((480, 640, 3), fill, dtype=np.uint8)
+
+
+class FakeCapture:
+    """A ``cv2.VideoCapture`` stand-in that records the calls made against it."""
+
+    def __init__(
+        self,
+        reads: list[tuple[bool, Any]] | None = None,
+        *,
+        opened: bool = True,
+        raise_at: int | None = None,
+        block: threading.Event | None = None,
+        idle_from: int | None = 2,
+    ) -> None:
+        self.calls: list[Any] = []
+        self.reads = list(reads if reads is not None else [(True, frame())])
+        self.count = 0
+        self.released = False
+        self._opened = opened
+        self._raise_at = raise_at
+        self._block = block
+        # A background drain thread reads flat out. Idling once the script is
+        # spent keeps it from burning a core for the length of the test, while
+        # still returning promptly enough for close() to join it.
+        self._idle_from = idle_from
+        self._stop: threading.Event | None = None
+        self._stop_after = 0
+
+    def stop_after(self, stop: threading.Event, reads: int) -> None:
+        """Have the Nth read set ``stop``, so a drain loop ends deterministically."""
+        self._stop, self._stop_after = stop, reads
+
+    def isOpened(self) -> bool:
+        """Whether the device opened, as cv2 reports it."""
+        return self._opened
+
+    def set(self, prop: int, value: float) -> bool:
+        """Record a property write in call order."""
+        self.calls.append(("set", prop, value))
+        return True
+
+    def read(self) -> tuple[bool, Any]:
+        """Return the next scripted result, repeating the last one forever."""
+        self.calls.append(("read",))
+        self.count += 1
+        if self._block is not None and self.count > 1:
+            self._block.wait(timeout=5.0)
+        if self._idle_from is not None and self.count >= self._idle_from:
+            time.sleep(0.01)
+        if self._raise_at is not None and self.count >= self._raise_at:
+            raise RuntimeError("device fell off the bus")
+        if self._stop is not None and self.count >= self._stop_after:
+            self._stop.set()
+        return self.reads[min(self.count, len(self.reads)) - 1]
+
+    def release(self) -> None:
+        """Mark the capture released."""
+        self.released = True
+
+
+class FakeCv2:
+    """The exact cv2 surface used by the camera reader, health montage, and watch.
+
+    Only the constants the production code touches are defined, so a
+    misspelled constant raises AttributeError instead of silently passing.
+    """
+
+    CAP_V4L2 = 200
+    CAP_PROP_BUFFERSIZE = 38
+    CAP_PROP_FOURCC = 6
+    CAP_PROP_FRAME_WIDTH = 3
+    CAP_PROP_FRAME_HEIGHT = 4
+    CAP_PROP_OPEN_TIMEOUT_MSEC = 53
+    CAP_PROP_READ_TIMEOUT_MSEC = 54
+    COLOR_BGR2RGB = 4
+    FONT_HERSHEY_SIMPLEX = 0
+
+    class VideoWriter:
+        """Namespace for the fourcc helper the reader calls."""
+
+        @staticmethod
+        def fourcc(*chars: str) -> float:
+            """Return a recognizable code so the recorded `set` is assertable."""
+            return 1448695129.0
+
+    def __init__(self, caps: dict[str, FakeCapture] | None = None) -> None:
+        self.caps = {} if caps is None else caps
+        self.opened: list[str] = []
+        self.put_text_calls: list[tuple[str, bool]] = []
+        self.writes: list[tuple[str, npt.NDArray[np.uint8]]] = []
+        self.encodes: list[tuple[str, npt.NDArray[np.uint8]]] = []
+        self.write_ok = True
+        self.encode_ok = True
+
+    def VideoCapture(self, device: str, api: int) -> FakeCapture:
+        """Hand back the scripted capture for a device path."""
+        self.opened.append(device)
+        return self.caps[device]
+
+    def cvtColor(self, src: Any, code: int) -> Any:
+        """Reverse the channel axis, standing in for a BGR to RGB conversion."""
+        return np.asarray(src)[..., ::-1]
+
+    def resize(self, src: Any, size: tuple[int, int]) -> Any:
+        """Return an array of the requested size carrying the source's values."""
+        width, height = size
+        return np.full((height, width, 3), np.asarray(src)[0, 0, :], dtype=np.uint8)
+
+    def putText(
+        self,
+        image: npt.NDArray[np.uint8],
+        text: str,
+        origin: tuple[int, int],
+        font: int,
+        scale: float,
+        color: tuple[int, int, int],
+        thickness: int,
+    ) -> npt.NDArray[np.uint8]:
+        """Record that labeling received a contiguous RGB tile, then mark it."""
+        self.put_text_calls.append((text, image.flags.c_contiguous))
+        image[0, 0] = (10, 20, 30)
+        return image
+
+    def imwrite(self, path: str, image: npt.NDArray[np.uint8]) -> bool:
+        """Record the exact non-contiguous BGR view handed to the encoder."""
+        self.writes.append((path, image.copy()))
+        return self.write_ok
+
+    def imencode(
+        self, ext: str, image: npt.NDArray[np.uint8]
+    ) -> tuple[bool, npt.NDArray[np.uint8]]:
+        """Record the encoded image and return recognizable JPEG-like bytes."""
+        self.encodes.append((ext, image.copy()))
+        encoded = np.frombuffer(b"\xff\xd8fake-jpeg\xff\xd9", dtype=np.uint8)
+        return self.encode_ok, encoded
 
 
 class Clock:
