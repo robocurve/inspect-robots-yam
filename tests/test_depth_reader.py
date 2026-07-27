@@ -1,364 +1,720 @@
-"""Tests for _RealsenseDepthReader and YAMEmbodiment depth integration.
+"""RealSense colour/depth camera reader and injected-depth embodiment integration.
 
-Uses a fake pyrealsense2 namespace so everything runs without hardware or the
-real SDK.
+The librealsense surface is represented by small recording fakes. Drain loops
+are driven synchronously where their generation and timeout behavior is the
+subject; readers opened normally are closed by an autouse fixture.
 """
 
 from __future__ import annotations
 
+import threading
+import time
 import types
+from collections.abc import Iterator
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 
+import inspect_robots_yam.embodiment as embodiment_module
 from inspect_robots_yam.config import YamConfig
 from inspect_robots_yam.embodiment import (
     YAMEmbodiment,
-    _PublishedDepth,
-    _RealsenseDepthReader,
+    _PipelineBundle,
+    _RealsenseCameraReader,
 )
 from inspect_robots_yam.operator import OperatorIO
 
-_DEPTH_SCALE = 0.001  # 1 count = 1 mm
+SERIALS = {"top_cam": "S1", "left_cam": "S2", "right_cam": "S3"}
+DEPTH_SCALE = 0.001
+
+_OPENED: list[_RealsenseCameraReader] = []
 
 
-# ---------------------------------------------------------------------------
-# Fake pyrealsense2 helpers
-# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def close_readers() -> Iterator[None]:
+    """Close every reader a test built, however the test ended."""
+    yield
+    while _OPENED:
+        _OPENED.pop().close()
 
 
-def _make_intr(width: int = 640, height: int = 480) -> Any:
-    return types.SimpleNamespace(
-        fx=600.0,
-        fy=600.0,
-        ppx=320.0,
-        ppy=240.0,
-        width=width,
-        height=height,
-        model="Brown Conrady",
-        coeffs=[0.0, 0.0, 0.0, 0.0, 0.0],
-    )
+class Clock:
+    """A monotonic clock advanced only by tests."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        """Advance the fake clock."""
+        self.now += seconds
 
 
-def _make_frameset(
-    depth_data: np.ndarray | None = None,
-    width: int = 640,
-    height: int = 480,
+class FakeFrame:
+    """A RealSense frame with data and optional video intrinsics."""
+
+    def __init__(self, data: npt.NDArray[Any], intrinsics: Any | None = None) -> None:
+        self._data = data
+        if intrinsics is not None:
+            video_profile = types.SimpleNamespace(intrinsics=intrinsics)
+            self.profile = types.SimpleNamespace(as_video_stream_profile=lambda: video_profile)
+
+    def get_data(self) -> npt.NDArray[Any]:
+        """Return the SDK-owned backing array."""
+        return self._data
+
+
+class FakeFrameset:
+    """An aligned colour/depth frameset."""
+
+    def __init__(self, colour: Any, depth: Any) -> None:
+        self._colour = colour
+        self._depth = depth
+
+    def get_color_frame(self) -> Any:
+        """Return the colour frame."""
+        return self._colour
+
+    def get_depth_frame(self) -> Any:
+        """Return the depth frame."""
+        return self._depth
+
+
+def frameset(
     *,
+    colour: npt.NDArray[np.uint8] | None = None,
+    depth: npt.NDArray[np.uint16] | None = None,
+    falsy_colour: bool = False,
     falsy_depth: bool = False,
-    falsy_color: bool = False,
-) -> Any:
-    if depth_data is None:
-        depth_data = np.ones((height, width), dtype=np.uint16) * 1000
-    intr = _make_intr(width, height)
-    vsp = types.SimpleNamespace(intrinsics=intr)
-    cp = types.SimpleNamespace(as_video_stream_profile=lambda: vsp)
-    df: Any = 0 if falsy_depth else types.SimpleNamespace(get_data=lambda: depth_data.copy())
-    cf: Any = 0 if falsy_color else types.SimpleNamespace(profile=cp)
-    return types.SimpleNamespace(get_depth_frame=lambda: df, get_color_frame=lambda: cf)
+) -> FakeFrameset:
+    """Build one native-resolution RGB8/z16 pair."""
+    if colour is None:
+        colour = np.full((480, 640, 3), 7, dtype=np.uint8)
+    if depth is None:
+        depth = np.full((480, 640), 1000, dtype=np.uint16)
+    intrinsics = types.SimpleNamespace(fx=600.0, fy=600.0, ppx=320.0, ppy=240.0)
+    colour_frame: Any = None if falsy_colour else FakeFrame(colour, intrinsics=intrinsics)
+    depth_frame: Any = None if falsy_depth else FakeFrame(depth)
+    return FakeFrameset(colour_frame, depth_frame)
 
 
-class _FakePipeline:
+Response = tuple[bool, Any] | BaseException
+
+
+class FakePipeline:
+    """A pipeline with scripted tuple-returning frame waits."""
+
     def __init__(
         self,
-        framesets: list[Any] | None = None,
+        responses: list[Response] | None = None,
         *,
-        depth_scale: float = _DEPTH_SCALE,
-        raise_on_wait: Exception | None = None,
+        depth_scale: float = DEPTH_SCALE,
+        start_error: BaseException | None = None,
+        stop_error: Exception | None = None,
+        block_after: int | None = None,
     ) -> None:
-        self._fs = list(framesets or [_make_frameset()])
-        self._ds = depth_scale
-        self._row = raise_on_wait
-        self._i = 0
-        self.stopped = False
+        self.responses = list(responses or [(True, frameset())])
+        self.depth_scale = depth_scale
+        self.start_error = start_error
+        self.stop_error = stop_error
+        self.block_after = block_after
+        self.block = threading.Event()
+        self.entered = threading.Event()
+        self.calls = 0
+        self.timeouts: list[int] = []
         self.started = False
+        self.stopped = False
+        self.config: FakeConfig | None = None
+        self._stop_after: tuple[threading.Event, int] | None = None
 
-    def start(self, cfg: Any) -> Any:
+    def start(self, config: FakeConfig) -> Any:
+        """Record the config and return a depth-scale profile."""
+        self.config = config
+        if self.start_error is not None:
+            raise self.start_error
         self.started = True
-        ds = types.SimpleNamespace(get_depth_scale=lambda: self._ds)
-        dev = types.SimpleNamespace(first_depth_sensor=lambda: ds)
-        return types.SimpleNamespace(get_device=lambda: dev)
+        sensor = types.SimpleNamespace(get_depth_scale=lambda: self.depth_scale)
+        device = types.SimpleNamespace(first_depth_sensor=lambda: sensor)
+        return types.SimpleNamespace(get_device=lambda: device)
 
-    def wait_for_frames(self, timeout_ms: int = 1000) -> Any:
-        if self._row is not None:
-            raise self._row
-        fs = self._fs[self._i % len(self._fs)]
-        self._i += 1
-        return fs
+    def try_wait_for_frames(self, timeout_ms: int) -> tuple[bool, Any]:
+        """Return the next scripted result, repeating the last one."""
+        self.timeouts.append(timeout_ms)
+        self.calls += 1
+        if self.block_after is not None and self.calls >= self.block_after:
+            self.entered.set()
+            self.block.wait(timeout=5.0)
+        if self.calls > len(self.responses):
+            time.sleep(0.01)
+        response = self.responses[min(self.calls, len(self.responses)) - 1]
+        if self._stop_after is not None and self.calls >= self._stop_after[1]:
+            self._stop_after[0].set()
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+    def stop_after(self, stop: threading.Event, calls: int) -> None:
+        """Set a stop event after a bounded number of waits."""
+        self._stop_after = (stop, calls)
+
+    def reset_responses(self, responses: list[Response]) -> None:
+        """Replace the script for a later synchronous drain."""
+        self.responses = responses
+        self.calls = 0
+        self._stop_after = None
 
     def stop(self) -> None:
+        """Record pipeline shutdown, optionally raising after doing so."""
         self.stopped = True
+        if self.stop_error is not None:
+            raise self.stop_error
 
 
-class _FakeAlign:
-    def process(self, frames: Any) -> Any:
-        return frames
+class FakeAlign:
+    """An align filter that records processing."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def process(self, source: Any) -> Any:
+        """Return an already-aligned frameset."""
+        self.calls += 1
+        return source
 
 
-def _make_rs(pipelines: dict[str, _FakePipeline] | None = None) -> Any:
-    pl: list[_FakePipeline] = list(pipelines.values()) if pipelines else []
-    cc = [0]
+class FakeConfig:
+    """A recording librealsense pipeline config."""
 
-    def _pf() -> Any:
-        i = cc[0]
-        cc[0] += 1
-        return pl[i] if i < len(pl) else _FakePipeline()
+    def __init__(self) -> None:
+        self.device: str | None = None
+        self.streams: list[tuple[Any, ...]] = []
 
-    rs_cfg = types.SimpleNamespace(enable_device=lambda s: None, enable_stream=lambda *a: None)
-    return types.SimpleNamespace(
-        pipeline=_pf,
-        config=lambda: rs_cfg,
-        align=lambda _: _FakeAlign(),
-        stream=types.SimpleNamespace(color="c", depth="d"),
-        format=types.SimpleNamespace(bgr8="bgr8", z16="z16"),
+    def enable_device(self, serial: str) -> None:
+        """Record the device serial passed to librealsense."""
+        self.device = serial
+
+    def enable_stream(self, *args: Any) -> None:
+        """Record one stream declaration."""
+        self.streams.append(args)
+
+
+class FakeDevice:
+    """A discoverable device with device and optional ASIC serials."""
+
+    def __init__(self, name: str, serial: str, asic_serial: str | None) -> None:
+        self.name = name
+        self.serial = serial
+        self.asic_serial = asic_serial
+
+    def supports(self, info: Any) -> bool:
+        """Report whether the optional ASIC serial is available."""
+        return info != FakeRs.camera_info.asic_serial_number or self.asic_serial is not None
+
+    def get_info(self, info: Any) -> str:
+        """Return the requested device identity field."""
+        if info == FakeRs.camera_info.name:
+            return self.name
+        if info == FakeRs.camera_info.serial_number:
+            return self.serial
+        if self.asic_serial is None:
+            raise AssertionError("unsupported ASIC serial queried")
+        return self.asic_serial
+
+
+class FakeContext:
+    """A context whose device enumeration count is assertable."""
+
+    def __init__(self, devices: list[FakeDevice]) -> None:
+        self.devices = devices
+        self.query_calls = 0
+
+    def query_devices(self) -> list[FakeDevice]:
+        """Return all visible devices."""
+        self.query_calls += 1
+        return self.devices
+
+
+class FakeRs:
+    """The pyrealsense2 namespace used by the reader."""
+
+    stream = types.SimpleNamespace(color="colour", depth="depth")
+    format = types.SimpleNamespace(rgb8="rgb8", z16="z16")
+    camera_info = types.SimpleNamespace(
+        name="name", serial_number="serial", asic_serial_number="asic"
     )
 
+    def __init__(
+        self,
+        pipelines: list[FakePipeline] | None = None,
+        devices: list[FakeDevice] | None = None,
+    ) -> None:
+        self.pipelines = list(pipelines or [])
+        self.context_value = FakeContext(
+            devices
+            if devices is not None
+            else [
+                FakeDevice("Top D405", "S1", "A1"),
+                FakeDevice("Left D405", "S2", "A2"),
+                FakeDevice("Right D405", "S3", "A3"),
+            ]
+        )
+        self.configs: list[FakeConfig] = []
+        self.aligns: list[FakeAlign] = []
+        self.pipeline_calls = 0
 
-_SER: dict[str, str] = {"top_cam": "S1", "left_cam": "S2", "right_cam": "S3"}
+    def context(self) -> FakeContext:
+        """Return the one enumeration context."""
+        return self.context_value
+
+    def config(self) -> FakeConfig:
+        """Return a fresh pipeline config."""
+        config = FakeConfig()
+        self.configs.append(config)
+        return config
+
+    def pipeline(self) -> FakePipeline:
+        """Return the next scripted pipeline."""
+        if self.pipeline_calls == len(self.pipelines):
+            self.pipelines.append(FakePipeline())
+        pipeline = self.pipelines[self.pipeline_calls]
+        self.pipeline_calls += 1
+        return pipeline
+
+    def align(self, stream: Any) -> FakeAlign:
+        """Return a fresh colour align filter."""
+        assert stream == self.stream.color
+        align = FakeAlign()
+        self.aligns.append(align)
+        return align
 
 
-def _rdr(
+class FakeCv2:
+    """The colour resize surface used by the reader."""
+
+    def resize(self, source: npt.NDArray[np.uint8], size: tuple[int, int]) -> npt.NDArray[np.uint8]:
+        """Resize by integer nearest-neighbour indexing."""
+        width, height = size
+        rows = np.arange(height) * source.shape[0] // height
+        columns = np.arange(width) * source.shape[1] // width
+        return source[rows[:, None], columns].copy()
+
+
+def build(
+    *,
     serials: dict[str, str] | None = None,
-    rs: Any = None,
-    clock: Any = None,
-    sleep_fn: Any = None,
-) -> _RealsenseDepthReader:
-    return _RealsenseDepthReader(
-        serials or _SER,
-        rs_module=rs or _make_rs(),
-        clock=clock or (lambda: 0.0),
-        sleep_fn=sleep_fn or (lambda _: None),
+    pipelines: list[FakePipeline] | None = None,
+    devices: list[FakeDevice] | None = None,
+    rs: FakeRs | None = None,
+    cv2: FakeCv2 | None = None,
+    clock: Clock | None = None,
+    sleeps: list[float] | None = None,
+) -> tuple[_RealsenseCameraReader, FakeRs, FakeCv2, Clock, list[float]]:
+    """Build a reader and all of its injected recording fakes."""
+    rs = rs if rs is not None else FakeRs(pipelines, devices)
+    cv2 = cv2 if cv2 is not None else FakeCv2()
+    clock = clock if clock is not None else Clock()
+    sleeps = sleeps if sleeps is not None else []
+    reader = _RealsenseCameraReader(
+        serials or SERIALS,
+        rs_module=rs,
+        cv2_module=cv2,
+        sleep_fn=sleeps.append,
+        clock=clock,
     )
+    _OPENED.append(reader)
+    return reader, rs, cv2, clock, sleeps
 
 
-def _cfg() -> YamConfig:
+def cfg() -> YamConfig:
+    """Use a tiny published size for fast assertions."""
     return YamConfig(cam_height=4, cam_width=4)
 
 
-# ---------------------------------------------------------------------------
-# Happy path
-# ---------------------------------------------------------------------------
+def drive(
+    reader: _RealsenseCameraReader,
+    name: str,
+    pipeline: FakePipeline,
+    responses: list[Response],
+) -> None:
+    """Drive one drain synchronously until its scripted final wait."""
+    stop = threading.Event()
+    pipeline.reset_responses(responses)
+    pipeline.stop_after(stop, len(responses))
+    bundle = _PipelineBundle(pipeline, FakeAlign(), DEPTH_SCALE)
+    reader._drain(name, bundle, stop, reader._generation)
 
 
-def test_depth_and_intrinsics_returned() -> None:
-    dd = np.full((480, 640), 500, dtype=np.uint16)
-    fs = _make_frameset(dd)
-    r = _rdr(rs=_make_rs({k: _FakePipeline(framesets=[fs]) for k in _SER}))
-    ex = r(_cfg())
-    r.close()
-    for n in _SER:
-        assert f"{n}_depth" in ex and f"{n}_intrinsics" in ex
-        assert ex[f"{n}_depth"].dtype == np.float32
-        assert np.allclose(ex[f"{n}_depth"], 0.5, atol=1e-5)
+def test_images_depth_thunks_and_intrinsics_are_returned_for_every_camera() -> None:
+    colour = np.dstack([np.full((480, 640), value, dtype=np.uint8) for value in (1, 2, 3)])
+    depth = np.full((480, 640), 500, dtype=np.uint16)
+    pipelines = [FakePipeline([(True, frameset(colour=colour, depth=depth))]) for _ in SERIALS]
+    reader, rs, _, _, _ = build(pipelines=pipelines)
 
+    images = reader(cfg())
+    extra = reader.extra(cfg())
 
-def test_intrinsics_matrix() -> None:
-    r = _rdr()
-    ex = r(_cfg())
-    r.close()
-    k = ex["top_cam_intrinsics"]
-    assert isinstance(k, np.ndarray)
-    assert k.shape == (3, 3)
-    assert k.dtype == np.float32
-    assert k[0, 0] == 600.0  # fx
-    assert k[1, 1] == 600.0  # fy
-    assert k[0, 2] == 320.0  # cx
-    assert k[1, 2] == 240.0  # cy
-    assert k[2, 2] == 1.0
-
-
-def test_transient_timeout_recovers() -> None:
-    class _TimeoutThenOkPipeline(_FakePipeline):
-        _called = False
-
-        def wait_for_frames(self, timeout_ms: int = 1000) -> Any:
-            if not self._called:
-                self._called = True
-                raise RuntimeError("Frame didn't arrive within 1000ms")
-            return _make_frameset()
-
-    pipelines = {k: _TimeoutThenOkPipeline() for k in _SER}
-    r = _rdr(rs=_make_rs(pipelines), sleep_fn=lambda _: None)
-    ex = r(_cfg())
-    r.close()
-    assert "top_cam_depth" in ex
-
-
-def test_depth_copy() -> None:
-    r = _rdr()
-    e1 = r(_cfg())
-    e2 = r(_cfg())
-    r.close()
-    assert e1["top_cam_depth"] is not e2["top_cam_depth"]
-
-
-def test_second_call_cached() -> None:
-    ps = {k: _FakePipeline() for k in _SER}
-    r = _rdr(rs=_make_rs(ps))
-    r(_cfg())
-    r(_cfg())
-    r.close()
-    for p in ps.values():
-        assert p.started
-
-
-# ---------------------------------------------------------------------------
-# Close behaviour
-# ---------------------------------------------------------------------------
-
-
-def test_close_stops_pipelines() -> None:
-    ps = {k: _FakePipeline() for k in _SER}
-    r = _rdr(rs=_make_rs(ps))
-    r(_cfg())
-    r.close()
-    for p in ps.values():
-        assert p.stopped
-
-
-def test_close_before_open() -> None:
-    _rdr().close()
-
-
-def test_close_idempotent() -> None:
-    ps = {k: _FakePipeline() for k in _SER}
-    r = _rdr(rs=_make_rs(ps))
-    r(_cfg())
-    r.close()
-    r.close()
-
-
-def test_stop_error_swallowed() -> None:
-    class _FS(_FakePipeline):
-        def stop(self) -> None:
-            raise RuntimeError("x")
-
-    r = _rdr(rs=_make_rs({k: _FS() for k in _SER}))
-    r(_cfg())
-    r.close()
-
-
-# ---------------------------------------------------------------------------
-# Stale frame
-# ---------------------------------------------------------------------------
-
-
-def test_stale_raises() -> None:
-    now = [0.0]
-    r = _rdr(clock=lambda: now[0], sleep_fn=lambda _: None)
-    r(_cfg())
-    now[0] = _RealsenseDepthReader.MAX_FRAME_AGE_S + 1.0
-    r._stop.set()  # stop drain threads so they cannot refresh
-    with pytest.raises(RuntimeError, match="depth frame read failed"):
-        r(_cfg())
-    r.close()
-
-
-def test_drain_fault_latched_and_reraised() -> None:
-    class _FaultingPipeline(_FakePipeline):
-        def wait_for_frames(self, timeout_ms: int = 1000) -> Any:
-            raise RuntimeError("sensor hardware failure")
-
-    pipelines = {k: _FaultingPipeline() for k in _SER}
-    r = _rdr(rs=_make_rs(pipelines), sleep_fn=lambda _: None)
-    # The drain thread starts immediately on open and hits wait_for_frames
-    with pytest.raises(RuntimeError, match="stopped reading"):
-        r(_cfg())
-    r.close()
-
-
-# ---------------------------------------------------------------------------
-# Falsy frames
-# ---------------------------------------------------------------------------
-
-
-def test_falsy_depth_raises() -> None:
-    fs = _make_frameset(falsy_depth=True)
-    sl: list[float] = []
-    r = _rdr(rs=_make_rs({k: _FakePipeline(framesets=[fs]) for k in _SER}), sleep_fn=sl.append)
-    with pytest.raises(RuntimeError, match="depth frame read failed"):
-        r(_cfg())
-    r.close()
-    assert len(sl) >= 10
-
-
-def test_falsy_color_raises() -> None:
-    fs = _make_frameset(falsy_color=True)
-    sl: list[float] = []
-    r = _rdr(rs=_make_rs({k: _FakePipeline(framesets=[fs]) for k in _SER}), sleep_fn=sl.append)
-    with pytest.raises(RuntimeError, match="depth frame read failed"):
-        r(_cfg())
-    r.close()
-
-
-# ---------------------------------------------------------------------------
-# Generation counter: zombie cannot write to new cycle
-# ---------------------------------------------------------------------------
-
-
-def test_zombie_rejected() -> None:
-    r = _rdr()
-    r(_cfg())
-    r.close()
-    fake = np.zeros((480, 640), dtype=np.float32)
-    pub = _PublishedDepth(depth=fake, intrinsics={}, published_s=9999.0)
-    with r._lock:  # type: ignore[attr-defined]
-        r._published["top_cam"] = pub  # type: ignore[attr-defined]
-    r(_cfg())
-    with r._lock:  # type: ignore[attr-defined]
-        pa = r._published.get("top_cam")  # type: ignore[attr-defined]
-    assert pa is None or pa.published_s != 9999.0
-    r.close()
-
-
-# ---------------------------------------------------------------------------
-# All-or-nothing open rollback
-# ---------------------------------------------------------------------------
-
-
-def test_open_failure_rollback() -> None:
-    opened: list[_FakePipeline] = []
-
-    class _T(_FakePipeline):
-        def start(self, cfg: Any) -> Any:
-            opened.append(self)
-            return super().start(cfg)
-
-    class _F(_FakePipeline):
-        def start(self, cfg: Any) -> Any:
-            raise RuntimeError("device busy")
-
-    order: list[Any] = [_T(), _T(), _F()]
-    cc = [0]
-
-    def _pf() -> Any:
-        i = cc[0]
-        cc[0] += 1
-        return order[i]
-
-    rc = types.SimpleNamespace(enable_device=lambda s: None, enable_stream=lambda *a: None)
-    rs = types.SimpleNamespace(
-        pipeline=_pf,
-        config=lambda: rc,
-        align=lambda _: _FakeAlign(),
-        stream=types.SimpleNamespace(color="c", depth="d"),
-        format=types.SimpleNamespace(bgr8="b", z16="z"),
+    assert set(images) == set(SERIALS)
+    assert rs.context_value.query_calls == 1
+    for name, image in images.items():
+        assert image.shape == (4, 4, 3)
+        assert image.dtype == np.uint8
+        assert list(image[0, 0]) == [1, 2, 3]
+        intrinsics = extra[f"{name}_intrinsics"]
+        assert intrinsics.shape == (3, 3)
+        assert intrinsics.dtype == np.float32
+        depth_thunk = extra[f"{name}_depth"]
+        assert callable(depth_thunk)
+        resolved = depth_thunk()
+        assert resolved.shape == (4, 4)
+        assert resolved.dtype == np.float32
+        assert np.all(resolved == np.float32(0.5))
+    assert all(
+        pipeline.config is not None
+        and pipeline.config.streams
+        == [
+            ("colour", 640, 480, "rgb8", 30),
+            ("depth", 640, 480, "z16", 30),
+        ]
+        for pipeline in pipelines
     )
+    assert all(timeout == 1000 for pipeline in pipelines for timeout in pipeline.timeouts)
+
+
+def test_rgb8_channel_order_is_not_swapped() -> None:
+    colour = np.dstack([np.full((480, 640), value, dtype=np.uint8) for value in (1, 2, 3)])
+    pipelines = [FakePipeline([(True, frameset(colour=colour))]) for _ in SERIALS]
+    reader, _, _, _, _ = build(pipelines=pipelines)
+
+    assert list(reader(cfg())["top_cam"][0, 0]) == [1, 2, 3]
+
+
+def test_asic_serial_matches_but_enable_device_receives_device_serial() -> None:
+    devices = [
+        FakeDevice("Top D405", "DEVICE-T", "ASIC-T"),
+        FakeDevice("Left D405", "DEVICE-L", "ASIC-L"),
+        FakeDevice("Right D405", "DEVICE-R", "ASIC-R"),
+    ]
+    serials = {"top_cam": "ASIC-T", "left_cam": "ASIC-L", "right_cam": "ASIC-R"}
+    reader, rs, _, _, _ = build(serials=serials, devices=devices)
+
+    reader(cfg())
+
+    assert [config.device for config in rs.configs] == [
+        "DEVICE-T",
+        "DEVICE-L",
+        "DEVICE-R",
+    ]
+
+
+def test_missing_serial_lists_every_visible_identity() -> None:
+    devices = [
+        FakeDevice("D405 Alpha", "DEVICE-A", "ASIC-A"),
+        FakeDevice("D405 Beta", "DEVICE-B", None),
+    ]
+    reader, _, _, _, _ = build(
+        serials={"top_cam": "MISSING"},
+        devices=devices,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        reader(cfg())
+
+    message = str(caught.value)
+    assert "top_cam" in message and "MISSING" in message
+    assert "D405 Alpha / DEVICE-A / ASIC-A" in message
+    assert "D405 Beta / DEVICE-B / <unavailable>" in message
+
+
+def test_missing_serial_with_no_visible_devices_says_none() -> None:
+    reader, _, _, _, _ = build(serials={"top_cam": "MISSING"}, devices=[])
+
+    with pytest.raises(RuntimeError, match="visible devices: none"):
+        reader(cfg())
+
+
+def test_intrinsics_are_scaled_to_the_published_resolution() -> None:
+    reader, _, _, _, _ = build()
+
+    intrinsics = reader.extra(cfg())["top_cam_intrinsics"]
+
+    expected = np.array(
+        [[600 * 4 / 640, 0, 320 * 4 / 640], [0, 600 * 4 / 480, 240 * 4 / 480], [0, 0, 1]],
+        dtype=np.float32,
+    )
+    assert np.array_equal(intrinsics, expected)
+
+
+def test_depth_resize_is_nearest_neighbour_without_averaged_values() -> None:
+    depth = np.empty((480, 640), dtype=np.uint16)
+    depth[:240] = 1000
+    depth[240:] = 3000
+    pipelines = [FakePipeline([(True, frameset(depth=depth))]) for _ in SERIALS]
+    reader, _, _, _, _ = build(pipelines=pipelines)
+
+    resized = reader.extra(cfg())["top_cam_depth"]()
+
+    assert np.allclose(
+        resized,
+        np.array(
+            [[1, 1, 1, 1], [1, 1, 1, 1], [3, 3, 3, 3], [3, 3, 3, 3]],
+            dtype=np.float32,
+        ),
+    )
+    assert all(np.isclose(value, 1.0) or np.isclose(value, 3.0) for value in np.unique(resized))
+
+
+def test_one_depth_thunk_resolves_the_newest_pair_each_time() -> None:
+    pipelines = [FakePipeline() for _ in SERIALS]
+    reader, _, _, _, _ = build(pipelines=pipelines)
+    thunk = reader.extra(cfg())["top_cam_depth"]
+    first = thunk()
+    reader._stop.set()
+    for thread in reader._threads.values():
+        thread.join(timeout=1.0)
+
+    newer = frameset(depth=np.full((480, 640), 2000, dtype=np.uint16))
+    drive(reader, "top_cam", pipelines[0], [(True, newer)])
+    second = thunk()
+
+    assert np.all(first == 1.0)
+    assert np.all(second == 2.0)
+    assert first is not second
+
+
+def test_depth_thunk_rejects_resolution_after_close() -> None:
+    reader, _, _, _, _ = build()
+    thunk = reader.extra(cfg())["top_cam_depth"]
+
+    reader.close()
+
+    with pytest.raises(RuntimeError, match="depth for top_cam resolved after camera close"):
+        thunk()
+
+
+def test_old_depth_thunk_stays_retired_after_close_and_reopen() -> None:
+    reader, _, _, _, _ = build()
+    thunk = reader.extra(cfg())["top_cam_depth"]
+    reader.close()
+
+    reader(cfg())
+
+    with pytest.raises(RuntimeError, match="resolved after camera close"):
+        thunk()
+
+
+def test_warm_up_timeout_retries_then_delivers_images() -> None:
+    pipelines = [
+        FakePipeline([(False, None), (True, frameset())]),
+        FakePipeline(),
+        FakePipeline(),
+    ]
+    reader, _, _, _, sleeps = build(pipelines=pipelines)
+
+    assert set(reader(cfg())) == set(SERIALS)
+    assert sleeps == [0.1]
+    assert pipelines[0].timeouts[:2] == [1000, 1000]
+
+
+def test_drain_timeout_continues_and_publishes_the_next_pair() -> None:
+    reader, _, _, _, _ = build()
+    pipeline = FakePipeline()
+
+    drive(reader, "top_cam", pipeline, [(False, None), (True, frameset())])
+
+    pair, _ = reader._latest("top_cam")
+    assert pair.depth[0, 0] == 1000
+
+
+def test_real_drain_exception_is_latched_and_reraised_by_call() -> None:
+    pipelines = [
+        FakePipeline([(True, frameset()), RuntimeError("sensor failed")]),
+        FakePipeline(),
+        FakePipeline(),
+    ]
+    reader, _, _, _, _ = build(pipelines=pipelines)
+
+    with pytest.raises(RuntimeError, match=r"camera top_cam \(S1\) stopped reading") as caught:
+        reader(cfg())
+
+    assert isinstance(caught.value.__cause__, RuntimeError)
+
+
+def test_retired_drain_cannot_publish_or_fault_the_new_cycle() -> None:
+    reader, _, _, _, _ = build()
+    reader._generation = 2
+    pipeline = FakePipeline()
+    stop = threading.Event()
+    pipeline.reset_responses([(True, frameset()), KeyboardInterrupt()])
+    pipeline.stop_after(stop, 2)
+    bundle = _PipelineBundle(pipeline, FakeAlign(), DEPTH_SCALE)
+
+    reader._drain(
+        "top_cam",
+        bundle,
+        stop,
+        generation=1,
+    )
+
+    assert "top_cam" not in reader._published
+    assert "top_cam" not in reader._faults
+
+
+def test_open_failure_rolls_back_every_pipeline_that_started() -> None:
+    pipelines = [
+        FakePipeline(),
+        FakePipeline(),
+        FakePipeline(start_error=RuntimeError("device busy")),
+    ]
+    reader, _, _, _, _ = build(pipelines=pipelines)
+
     with pytest.raises(RuntimeError, match="device busy"):
-        _rdr(rs=rs)(_cfg())
-    for p in opened:
-        assert p.stopped
+        reader(cfg())
+
+    assert pipelines[0].stopped
+    assert pipelines[1].stopped
+    assert not pipelines[2].stopped
 
 
-# ---------------------------------------------------------------------------
-# YamConfig depth-serial validation
-# ---------------------------------------------------------------------------
+def test_close_stops_pipelines_and_is_idempotent_in_both_states() -> None:
+    pipelines = [FakePipeline() for _ in SERIALS]
+    reader, _, _, _, _ = build(pipelines=pipelines)
+
+    reader.close()
+    reader.close()
+    assert not any(pipeline.started for pipeline in pipelines)
+
+    reader(cfg())
+    reader.close()
+    reader.close()
+    assert all(pipeline.stopped for pipeline in pipelines)
+
+
+def test_pipeline_stop_error_is_swallowed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    pipelines = [
+        FakePipeline(stop_error=RuntimeError("stop failed")),
+        FakePipeline(),
+        FakePipeline(),
+    ]
+    reader, _, _, _, _ = build(pipelines=pipelines)
+    reader(cfg())
+
+    reader.close()
+
+    assert "stopping RealSense pipeline for top_cam failed" in caplog.text
+    assert all(pipeline.stopped for pipeline in pipelines)
+
+
+def test_close_leaks_pipeline_whose_drain_is_still_alive() -> None:
+    pipelines = [
+        FakePipeline(block_after=2),
+        FakePipeline(),
+        FakePipeline(),
+    ]
+    reader, _, _, _, _ = build(pipelines=pipelines)
+    reader(cfg())
+    assert pipelines[0].entered.wait(timeout=1.0)
+
+    old_timeout = _RealsenseCameraReader.JOIN_TIMEOUT_S
+    _RealsenseCameraReader.JOIN_TIMEOUT_S = 0.05
+    try:
+        reader.close()
+    finally:
+        _RealsenseCameraReader.JOIN_TIMEOUT_S = old_timeout
+        pipelines[0].block.set()
+
+    assert not pipelines[0].stopped
+    assert pipelines[1].stopped
+    assert pipelines[2].stopped
+
+
+def test_stale_pair_raises_with_camera_name_and_serial() -> None:
+    clock = Clock()
+    reader, _, _, _, sleeps = build(clock=clock)
+    reader(cfg())
+    reader._stop.set()
+    for thread in reader._threads.values():
+        thread.join(timeout=1.0)
+    clock.advance(_RealsenseCameraReader.MAX_FRAME_AGE_S + 0.01)
+
+    with pytest.raises(RuntimeError, match=r"frame read failed for top_cam \(S1\)"):
+        reader(cfg())
+
+    assert sleeps == [0.05] * 10
+
+
+def test_warm_up_falsy_frames_publish_nothing_but_drain_can_recover() -> None:
+    pipelines = [
+        FakePipeline([(True, frameset(falsy_depth=True)), (True, frameset())]),
+        FakePipeline([(True, frameset(falsy_colour=True)), (True, frameset())]),
+        FakePipeline(),
+    ]
+    reader, _, _, _, _ = build(pipelines=pipelines)
+    reader._sleep = time.sleep
+
+    assert set(reader(cfg())) == set(SERIALS)
+
+
+def test_camera_that_never_warms_or_drains_fails_at_consumption() -> None:
+    pipelines = [FakePipeline([(False, None)]) for _ in SERIALS]
+    reader, _, _, _, sleeps = build(pipelines=pipelines)
+
+    with pytest.raises(RuntimeError, match=r"frame read failed for top_cam \(S1\)"):
+        reader(cfg())
+
+    assert sleeps.count(0.1) == 30
+    assert sleeps.count(0.05) == 10
+
+
+def test_raw_sdk_buffers_are_copied_before_publication() -> None:
+    colour = np.full((480, 640, 3), 4, dtype=np.uint8)
+    depth = np.full((480, 640), 900, dtype=np.uint16)
+    reader, _, _, _, _ = build()
+
+    reader._publish("top_cam", frameset(colour=colour, depth=depth), DEPTH_SCALE, 0)
+    colour[:] = 8
+    depth[:] = 1800
+    pair, _ = reader._latest("top_cam")
+
+    assert pair.colour[0, 0, 0] == 4
+    assert pair.depth[0, 0] == 900
+
+
+def test_extra_can_open_first_and_modules_are_resolved_lazily(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rs = FakeRs()
+    cv2 = FakeCv2()
+    monkeypatch.setattr(embodiment_module, "_import_rs", lambda: rs)
+    monkeypatch.setattr(embodiment_module, "_import_cv2", lambda: cv2)
+    reader = _RealsenseCameraReader(
+        SERIALS,
+        sleep_fn=lambda _: None,
+        clock=lambda: 0.0,
+    )
+    _OPENED.append(reader)
+
+    extra = reader.extra(cfg())
+    images = reader(cfg())
+
+    assert callable(extra["top_cam_depth"])
+    assert images["top_cam"].shape == (4, 4, 3)
+    assert reader._rs is rs
+    assert reader._cv2 is cv2
 
 
 def test_yamconfig_all_serials() -> None:
-    cfg = YamConfig(top_depth_serial="S1", left_depth_serial="S2", right_depth_serial="S3")
-    assert cfg.top_depth_serial == "S1"
+    cfg_value = YamConfig(
+        top_depth_serial="S1",
+        left_depth_serial="S2",
+        right_depth_serial="S3",
+    )
+    assert cfg_value.top_depth_serial == "S1"
 
 
 def test_yamconfig_partial_rejected() -> None:
@@ -370,41 +726,41 @@ def test_yamconfig_none_ok() -> None:
     assert YamConfig().top_depth_serial is None
 
 
-# ---------------------------------------------------------------------------
-# YAMEmbodiment integration
-# ---------------------------------------------------------------------------
+def cameras(_config: YamConfig) -> dict[str, Any]:
+    """Return three tiny injected colour images."""
+    image = np.zeros((4, 4, 3), dtype=np.uint8)
+    return {"top_cam": image, "left_cam": image, "right_cam": image}
 
 
-def _cameras(_c: YamConfig) -> dict[str, Any]:
-    img = np.zeros((4, 4, 3), dtype=np.uint8)
-    return {"top_cam": img, "left_cam": img, "right_cam": img}
+def driver_factory(_config: YamConfig) -> Any:
+    """Return a minimal injected arm driver."""
 
-
-def _driver_factory(_c: YamConfig) -> Any:
-    class _D:
+    class Driver:
         def get_joint_pos(self) -> np.ndarray:
             return np.zeros(14)
 
-        def command_joint_pos(self, t: np.ndarray) -> None:
-            pass
+        def command_joint_pos(self, target: np.ndarray) -> None:
+            del target
 
         def close(self) -> None:
             pass
 
-    return _D()
+    return Driver()
 
 
-def _silent() -> OperatorIO:
+def silent_operator() -> OperatorIO:
+    """Return operator I/O that never blocks."""
     return OperatorIO(input_fn=lambda _: "", output_fn=lambda _: None)
 
 
-def _emb(dr: Any = None) -> YAMEmbodiment:
+def embodiment(depth_reader: Any = None) -> YAMEmbodiment:
+    """Build an embodiment with all hardware seams injected."""
     return YAMEmbodiment(
         YamConfig(cam_height=4, cam_width=4),
-        driver_factory=_driver_factory,
-        camera_reader=_cameras,
-        depth_reader=dr,
-        operator=_silent(),
+        driver_factory=driver_factory,
+        camera_reader=cameras,
+        depth_reader=depth_reader,
+        operator=silent_operator(),
         poll_end=lambda: False,
         sleep_fn=lambda _: None,
         clock=lambda: 0.0,
@@ -412,25 +768,27 @@ def _emb(dr: Any = None) -> YAMEmbodiment:
     )
 
 
-class _Action:
+class Action:
+    """A zero joint-position action."""
+
     data = np.zeros(14)
 
 
 def test_observe_no_depth_reader() -> None:
     from inspect_robots.scene import Scene
 
-    emb = _emb()
+    emb = embodiment()
     emb.reset(Scene(id="s", instruction="t"))
-    result = emb.step(_Action())
+    result = emb.step(Action())
     emb.close()
-    obs = result.observation
-    assert not hasattr(obs, "extra") or obs.extra is None or obs.extra == {}
+    observation = result.observation
+    assert not hasattr(observation, "extra") or observation.extra is None or observation.extra == {}
 
 
-def test_observe_with_depth_reader() -> None:
+def test_observe_with_injected_depth_reader() -> None:
     from inspect_robots.scene import Scene
 
-    de: dict[str, Any] = {
+    depth_extra: dict[str, Any] = {
         "top_cam_depth": np.zeros((4, 4), dtype=np.float32),
         "top_cam_intrinsics": {"fx": 1.0},
         "left_cam_depth": np.zeros((4, 4), dtype=np.float32),
@@ -438,58 +796,35 @@ def test_observe_with_depth_reader() -> None:
         "right_cam_depth": np.zeros((4, 4), dtype=np.float32),
         "right_cam_intrinsics": {"fx": 1.0},
     }
-    emb = _emb(dr=lambda _: de)
+    emb = embodiment(depth_reader=lambda _: depth_extra)
     emb.reset(Scene(id="s", instruction="t"))
-    result = emb.step(_Action())
+    result = emb.step(Action())
     emb.close()
-    obs = result.observation
-    assert obs.extra is not None and "top_cam_depth" in obs.extra
+    observation = result.observation
+    assert observation.extra is not None
+    assert "top_cam_depth" in observation.extra
 
 
-def test_close_releases_depth_reader() -> None:
+def test_close_releases_injected_depth_reader() -> None:
     closed: list[bool] = []
 
-    class _DR:
-        def __call__(self, _c: YamConfig) -> dict[str, Any]:
+    class DepthReader:
+        def __call__(self, _config: YamConfig) -> dict[str, Any]:
             return {}
 
         def close(self) -> None:
             closed.append(True)
 
-    _emb(dr=_DR()).close()
+    embodiment(depth_reader=DepthReader()).close()
     assert closed == [True]
 
 
-def test_emb_auto_constructs_depth_reader_from_config() -> None:
-    cfg = YamConfig(
-        cam_height=4,
-        cam_width=4,
-        top_depth_serial="S1",
-        left_depth_serial="S2",
-        right_depth_serial="S3",
-    )
-    emb = YAMEmbodiment(
-        cfg,
-        driver_factory=_driver_factory,
-        camera_reader=_cameras,
-        operator=_silent(),
-        poll_end=lambda: False,
-        sleep_fn=lambda _: None,
-        clock=lambda: 0.0,
-        status_fn=lambda _: None,
-    )
-    assert emb._depth_reader is not None  # type: ignore[attr-defined]
-    assert "Depth: when depth serial numbers are configured" in emb.info.docs
-    emb.close()
-
-
-def test_close_depth_reader_release_error_swallowed() -> None:
-    class _FailingDepthReader:
-        def __call__(self, _c: YamConfig) -> dict[str, Any]:
+def test_close_depth_reader_release_error_is_swallowed() -> None:
+    class FailingDepthReader:
+        def __call__(self, _config: YamConfig) -> dict[str, Any]:
             return {}
 
         def close(self) -> None:
             raise RuntimeError("release failed")
 
-    emb = _emb(dr=_FailingDepthReader())
-    emb.close()  # must not raise
+    embodiment(depth_reader=FailingDepthReader()).close()

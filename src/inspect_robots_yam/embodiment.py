@@ -267,7 +267,7 @@ def _import_cv2() -> Any:  # pragma: no cover - real OpenCV
 def _import_rs() -> Any:  # pragma: no cover - real pyrealsense2
     """Import pyrealsense2 on first use with an actionable error when absent."""
     try:
-        import pyrealsense2 as rs  # type: ignore[import-not-found]
+        import pyrealsense2 as rs  # type: ignore
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             "pyrealsense2 is required for RealSense depth streams. "
@@ -295,11 +295,13 @@ class _PipelineBundle:
 
 
 @dataclass(frozen=True)
-class _PublishedDepth:
-    """One captured depth frame plus 3x3 camera matrix K and its publication timestamp."""
+class _PublishedPair:
+    """One raw aligned colour/depth pair, its camera matrix K, and when it landed."""
 
-    depth: npt.NDArray[np.float32]
+    colour: npt.NDArray[np.uint8]
+    depth: npt.NDArray[np.uint16]
     intrinsics: npt.NDArray[np.float32]
+    depth_scale: float
     published_s: float
 
 
@@ -541,78 +543,95 @@ def _default_camera_reader(cfg: YamConfig) -> ImageMap:
     )
 
 
-class _RealsenseDepthReader:
-    """Librealsense D405 depth publisher for RealSense cameras alongside the OpenCV reader.
+class _RealsenseCameraReader:
+    """Librealsense owner serving colour images plus aligned depth and camera K.
 
-    One daemon thread per camera opens a RealSense pipeline by serial number,
-    streams aligned colour+depth, and publishes the newest pair. ``__call__``
-    returns a dict ready to merge into ``Observation.extra``::
-
-        {cam_name}_depth       — (H, W) float32 array, metres, aligned to colour
-        {cam_name}_intrinsics  — (3, 3) float32 array (Camera Matrix K)
-
-    Colour frames remain the responsibility of the OpenCV V4L2 ``camera_reader``;
-    this reader is the depth-only supplement.
-
-    ``close()`` is required: drain threads keep pipelines open and, being live
-    threads, keep this object reachable. ``YAMEmbodiment.close()`` calls it.
+    One pipeline owns each configured camera. Device selection accepts either
+    its device serial or ASIC/USB serial, colour serves ``Observation.images``,
+    and depth plus intrinsics serve ``Observation.extra``.
     """
 
-    #: Depth frames older than this mean the camera has stopped delivering.
+    #: Frames older than this mean the camera has stopped delivering.
     MAX_FRAME_AGE_S: ClassVar[float] = 0.5
 
-    #: Grace period before releasing a pipeline whose drain thread is still alive.
+    #: Grace period before stopping a pipeline whose drain thread is still alive.
     JOIN_TIMEOUT_S: ClassVar[float] = 2.0
 
     def __init__(
         self,
         serials: Mapping[str, str],
         rs_module: Any | None = None,
+        cv2_module: Any | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._serials = dict(serials)
         self._rs = rs_module
+        self._cv2 = cv2_module
         self._sleep = sleep_fn
         self._clock = clock
         self._bundles: dict[str, _PipelineBundle] = {}
         self._threads: dict[str, threading.Thread] = {}
-        self._published: dict[str, _PublishedDepth] = {}
+        self._published: dict[str, _PublishedPair] = {}
         self._faults: dict[str, BaseException] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._generation = 0
 
-    def __call__(self, cfg: YamConfig) -> dict[str, Any]:
-        """Return latest aligned depth and intrinsics for every configured camera."""
+    def __call__(self, cfg: YamConfig) -> ImageMap:
+        """Return the newest RGB frame from every camera, opening them on first use."""
+        self._ensure_open()
+        cv2 = self._cv2 if self._cv2 is not None else _import_cv2()
+        self._cv2 = cv2
+        images: dict[str, npt.NDArray[np.uint8]] = {}
+        for name in self._serials:
+            pair, _ = self._latest(name)
+            resized = cv2.resize(pair.colour, (cfg.cam_width, cfg.cam_height))
+            images[name] = np.asarray(resized).astype(np.uint8)
+        return images
+
+    def extra(self, cfg: YamConfig) -> dict[str, Any]:
+        """Return scaled camera matrices and generation-bound lazy depth arrays."""
+        self._ensure_open()
+        extra: dict[str, Any] = {}
+        for name in self._serials:
+            pair, generation = self._latest(name)
+            intrinsics = pair.intrinsics.copy()
+            intrinsics[0, 0] = float(pair.intrinsics[0, 0]) * cfg.cam_width / 640
+            intrinsics[0, 2] = float(pair.intrinsics[0, 2]) * cfg.cam_width / 640
+            intrinsics[1, 1] = float(pair.intrinsics[1, 1]) * cfg.cam_height / 480
+            intrinsics[1, 2] = float(pair.intrinsics[1, 2]) * cfg.cam_height / 480
+            extra[f"{name}_intrinsics"] = intrinsics
+            extra[f"{name}_depth"] = self._depth_thunk(
+                name, cfg.cam_width, cfg.cam_height, generation
+            )
+        return extra
+
+    def _ensure_open(self) -> None:
+        """Resolve librealsense and open all configured cameras on first use."""
         rs = self._rs if self._rs is not None else _import_rs()
         self._rs = rs
         if not self._bundles:
             self._open_all(rs)
-        extra: dict[str, Any] = {}
-        for name in self._serials:
-            depth, intr = self._latest(name)
-            extra[f"{name}_depth"] = depth
-            extra[f"{name}_intrinsics"] = intr
-        return extra
 
     def close(self) -> None:
         """Stop every drain thread and stop all RealSense pipelines.
 
-        Joins each thread up to ``JOIN_TIMEOUT_S`` before stopping its
-        pipeline. Safe while arms are holding torque: if a thread hangs, the
-        pipeline is left running to avoid crashing hardware reads in live
-        arms. A leaked pipeline is the better failure. Idempotent, and a no-op
-        before the first call since pipelines open lazily.
+        Joins before stopping, and skips the stop of any pipeline whose thread
+        is still running: stopping underneath an in-flight hardware read can
+        crash the process, and this process is holding torque-enabled arms. A
+        leaked pipeline is the better failure. Idempotent, and a no-op before
+        the first read since cameras open lazily.
         """
         self._stop.set()
         for thread in self._threads.values():
             thread.join(timeout=self.JOIN_TIMEOUT_S)
         for name, bundle in self._bundles.items():
-            drain = self._threads.get(name)
-            if drain is not None and drain.is_alive():  # pragma: no cover
+            drain = self._threads[name]
+            if drain.is_alive():
                 logger.warning(
-                    "RealSense drain thread %s (%s) still running; leaving pipeline open",
+                    "camera %s (%s) is still reading; leaving the RealSense "
+                    "pipeline open rather than stopping it underneath the read",
                     name,
                     self._serials[name],
                 )
@@ -629,18 +648,48 @@ class _RealsenseDepthReader:
             self._faults = {}
 
     def _open_all(self, rs: Any) -> None:
-        """Open all pipelines, or stop the ones opened and re-raise.
+        """Resolve and open every camera, or stop the ones opened and re-raise.
 
         All-or-nothing: a half-populated state would never be retried (the
         ``if not self._bundles`` guard would be satisfied by opened cameras),
-        and the rollout would run with a subset of depth streams.
+        and the rollout would run with a subset of its declared views.
         """
         with self._lock:
             self._generation += 1
             generation = self._generation
+        devices = list(rs.context().query_devices())
+        visible: list[tuple[Any, str, str, str]] = []
+        for device in devices:
+            serial = str(device.get_info(rs.camera_info.serial_number))
+            asic_info = rs.camera_info.asic_serial_number
+            asic_serial = str(device.get_info(asic_info)) if device.supports(asic_info) else ""
+            device_name = str(device.get_info(rs.camera_info.name))
+            visible.append((device, device_name, serial, asic_serial))
+
+        resolved: dict[str, str] = {}
+        for name, configured_serial in self._serials.items():
+            match = next(
+                (
+                    serial
+                    for _, _, serial, asic_serial in visible
+                    if configured_serial in (serial, asic_serial)
+                ),
+                None,
+            )
+            if match is None:
+                listing = ", ".join(
+                    f"{device_name} / {serial} / {asic_serial or '<unavailable>'}"
+                    for _, device_name, serial, asic_serial in visible
+                )
+                raise RuntimeError(
+                    f"cannot find RealSense camera {name} ({configured_serial}); "
+                    f"visible devices: {listing or 'none'}"
+                )
+            resolved[name] = match
+
         bundles: dict[str, _PipelineBundle] = {}
         try:
-            for name, serial in self._serials.items():
+            for name, serial in resolved.items():
                 bundles[name] = self._open_one(rs, name, serial, generation)
         except BaseException:
             for bundle in bundles.values():
@@ -653,7 +702,7 @@ class _RealsenseDepthReader:
             thread = threading.Thread(
                 target=self._drain,
                 args=(name, bundle, self._stop, generation),
-                name=f"yam-depth-{name}",
+                name=f"yam-camera-{name}",
                 daemon=True,
             )
             self._threads[name] = thread
@@ -663,20 +712,20 @@ class _RealsenseDepthReader:
         """Open one pipeline, configure colour+depth streams, and seed from a warm-up frame."""
         rs_cfg = rs.config()
         rs_cfg.enable_device(serial)
-        rs_cfg.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+        rs_cfg.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, 30)
         rs_cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
         pipeline = rs.pipeline()
         profile = pipeline.start(rs_cfg)
         depth_scale: float = float(profile.get_device().first_depth_sensor().get_depth_scale())
         align = rs.align(rs.stream.color)
         for _ in range(10):  # warm-up: first frames may arrive after a brief delay
-            try:
-                frames = pipeline.wait_for_frames(timeout_ms=300)
-                aligned = align.process(frames)
-                self._publish(name, aligned, depth_scale, generation)
-                break
-            except Exception:
+            ok, frames = pipeline.try_wait_for_frames(timeout_ms=1000)
+            if not ok:
                 self._sleep(0.1)
+                continue
+            aligned = align.process(frames)
+            self._publish(name, aligned, depth_scale, generation)
+            break
         return _PipelineBundle(pipeline=pipeline, align=align, depth_scale=depth_scale)
 
     def _drain(
@@ -686,44 +735,29 @@ class _RealsenseDepthReader:
         stop: threading.Event,
         generation: int,
     ) -> None:
-        """Publish frames until stopped, latching whatever non-timeout faults the loop.
-
-        Timeouts (e.g. under USB load) are retryable: we log/continue and rely
-        on staleness detection in ``_latest`` for real stalls. Fatal exceptions
-        are latched and re-raised by ``_latest``.
-        """
+        """Publish frames until stopped, latching whatever ends the loop."""
         while not stop.is_set():
             try:
-                frames = bundle.pipeline.wait_for_frames(timeout_ms=1000)
-            except Exception as exc:
-                # Transient timeouts (RuntimeError from librealsense under USB load) are retryable.
-                # Only latch non-timeout errors or stop signals.
-                err_msg = str(exc).lower()
-                if "frame didn't arrive within" in err_msg or "timeout" in err_msg:
-                    continue  # pragma: no cover
-                with self._lock:
-                    if generation == self._generation:  # pragma: no cover
-                        self._faults[name] = exc
-                return
-            except BaseException as exc:  # pragma: no cover
+                ok, frames = bundle.pipeline.try_wait_for_frames(timeout_ms=1000)
+                if not ok:
+                    continue
+                aligned = bundle.align.process(frames)
+                self._publish(name, aligned, bundle.depth_scale, generation)
+            except BaseException as exc:
                 with self._lock:
                     if generation == self._generation:
                         self._faults[name] = exc
                 return
 
-            aligned = bundle.align.process(frames)
-            self._publish(name, aligned, bundle.depth_scale, generation)
-
     def _publish(self, name: str, aligned: Any, depth_scale: float, generation: int) -> None:
-        """Convert one aligned frame-set into a depth array and store it."""
+        """Copy one aligned raw frame pair out of librealsense into the slot."""
         depth_frame = aligned.get_depth_frame()
-        color_frame = aligned.get_color_frame()
-        if not depth_frame or not color_frame:
+        colour_frame = aligned.get_color_frame()
+        if not depth_frame or not colour_frame:
             return
-        depth_arr: npt.NDArray[np.float32] = (
-            np.asarray(depth_frame.get_data(), dtype=np.float32) * depth_scale
-        )
-        intr = color_frame.profile.as_video_stream_profile().intrinsics
+        colour: npt.NDArray[np.uint8] = np.asarray(colour_frame.get_data(), dtype=np.uint8).copy()
+        depth: npt.NDArray[np.uint16] = np.asarray(depth_frame.get_data(), dtype=np.uint16).copy()
+        intr = colour_frame.profile.as_video_stream_profile().intrinsics
         k_matrix: npt.NDArray[np.float32] = np.array(
             [
                 [float(intr.fx), 0.0, float(intr.ppx)],
@@ -732,27 +766,52 @@ class _RealsenseDepthReader:
             ],
             dtype=np.float32,
         )
-        copy: npt.NDArray[np.float32] = depth_arr.copy()
         with self._lock:
-            if generation != self._generation:  # pragma: no cover
+            if generation != self._generation:
                 return
-            self._published[name] = _PublishedDepth(
-                depth=copy, intrinsics=k_matrix, published_s=self._clock()
+            self._published[name] = _PublishedPair(
+                colour=colour,
+                depth=depth,
+                intrinsics=k_matrix,
+                depth_scale=depth_scale,
+                published_s=self._clock(),
             )
 
-    def _latest(self, name: str) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
-        """Return the newest depth + intrinsics matrix K, waiting briefly for a fresh one."""
+    def _latest(
+        self, name: str, expected_generation: int | None = None
+    ) -> tuple[_PublishedPair, int]:
+        """Return the newest raw pair, waiting briefly for a fresh one."""
         serial = self._serials[name]
         for _ in range(10):
             with self._lock:
+                generation = self._generation
+                if expected_generation is not None and expected_generation != generation:
+                    raise RuntimeError(f"depth for {name} resolved after camera close")
                 fault = self._faults.get(name)
-                pub = self._published.get(name)
+                published = self._published.get(name)
             if fault is not None:
-                raise RuntimeError(f"RealSense depth {name} ({serial}) stopped reading") from fault
-            if pub is not None and self._clock() - pub.published_s <= self.MAX_FRAME_AGE_S:
-                return pub.depth.copy(), pub.intrinsics.copy()
+                raise RuntimeError(f"camera {name} ({serial}) stopped reading") from fault
+            if published is not None and self._clock() - published.published_s <= (
+                self.MAX_FRAME_AGE_S
+            ):
+                return published, generation
             self._sleep(0.05)
-        raise RuntimeError(f"depth frame read failed for {name} ({serial})")
+        raise RuntimeError(f"frame read failed for {name} ({serial})")
+
+    def _depth_thunk(
+        self, name: str, width: int, height: int, generation: int
+    ) -> Callable[[], npt.NDArray[np.float32]]:
+        """Build a lazy nearest-neighbour depth conversion for one open cycle."""
+
+        def resolve() -> npt.NDArray[np.float32]:
+            pair, _ = self._latest(name, generation)
+            depth_m = pair.depth.astype(np.float32) * np.float32(pair.depth_scale)
+            rows = np.arange(height) * depth_m.shape[0] // height
+            columns = np.arange(width) * depth_m.shape[1] // width
+            resized: npt.NDArray[np.float32] = depth_m[rows[:, None], columns]
+            return resized.copy()
+
+        return resolve
 
 
 class YAMEmbodiment:
@@ -807,19 +866,6 @@ class YAMEmbodiment:
         self._sleep: Callable[[float], None] = sleep_fn or time.sleep
         self._clock: Callable[[], float] = clock or time.perf_counter
         self._status: Callable[[str | None], None] = status_fn or _default_status
-        if depth_reader is None and self._cfg.top_depth_serial is not None:
-            left = self._cfg.left_depth_serial
-            right = self._cfg.right_depth_serial
-            assert left is not None and right is not None  # validated by YamConfig
-            depth_reader = _RealsenseDepthReader(
-                {
-                    "top_cam": self._cfg.top_depth_serial,
-                    "left_cam": left,
-                    "right_cam": right,
-                },
-                sleep_fn=self._sleep,
-                clock=self._clock,
-            )
         self._depth_reader: DepthReader | None = depth_reader
 
         self._driver: BimanualDriver | None = None
