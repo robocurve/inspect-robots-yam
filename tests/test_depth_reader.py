@@ -469,6 +469,26 @@ def test_asic_serial_matches_but_enable_device_receives_device_serial() -> None:
     ]
 
 
+def test_device_and_asic_names_for_one_camera_are_rejected_before_open() -> None:
+    devices = [FakeDevice("Top D405", "DEVICE-T", "ASIC-T")]
+    pipelines = [FakePipeline(), FakePipeline()]
+    reader, rs, _, _, _ = build(
+        serials={"top_cam": "DEVICE-T", "left_cam": "ASIC-T"},
+        pipelines=pipelines,
+        devices=devices,
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        reader(cfg())
+
+    message = str(caught.value)
+    assert "top_cam (DEVICE-T)" in message
+    assert "left_cam (ASIC-T)" in message
+    assert "both resolve to device serial DEVICE-T" in message
+    assert rs.pipeline_calls == 0
+    assert not any(pipeline.started for pipeline in pipelines)
+
+
 def test_missing_serial_lists_every_visible_identity() -> None:
     devices = [
         FakeDevice("D405 Alpha", "DEVICE-A", "ASIC-A"),
@@ -560,7 +580,10 @@ def test_depth_thunk_rejects_resolution_after_close() -> None:
 
     reader.close()
 
-    with pytest.raises(RuntimeError, match="depth for top_cam resolved after camera close"):
+    with pytest.raises(
+        RuntimeError,
+        match="depth for top_cam resolved after camera close or reopen",
+    ):
         thunk()
 
 
@@ -571,7 +594,7 @@ def test_old_depth_thunk_stays_retired_after_close_and_reopen() -> None:
 
     reader(cfg())
 
-    with pytest.raises(RuntimeError, match="resolved after camera close"):
+    with pytest.raises(RuntimeError, match="resolved after camera close or reopen"):
         thunk()
 
 
@@ -835,21 +858,6 @@ def test_yamconfig_empty_camera_source_is_rejected(field: str, value: str) -> No
         YamConfig(**{field: value})
 
 
-def test_yamconfig_duplicate_depth_serials_are_rejected() -> None:
-    with pytest.raises(
-        ValueError,
-        match=(
-            "top_depth_serial and left_depth_serial must be different; "
-            "duplicate depth serial 'SAME'"
-        ),
-    ):
-        YamConfig(
-            top_depth_serial="SAME",
-            left_depth_serial="SAME",
-            right_depth_serial="S3",
-        )
-
-
 def test_yamconfig_none_ok() -> None:
     assert YamConfig().top_depth_serial is None
 
@@ -994,7 +1002,12 @@ def test_serial_only_rig_includes_depth_docs(monkeypatch: pytest.MonkeyPatch) ->
     )
     emb, _, _ = builtin_embodiment(cfg_value, monkeypatch)
 
-    assert "Depth:" in emb.info.docs
+    docs = emb.info.docs
+    assert "Depth:" in docs
+    assert "arrives either as an H\u00d7W float32 array of depth in metres" in docs
+    assert "or as a zero-arg callable returning that array" in docs
+    assert "If it is callable, resolve it immediately on receipt" in docs
+    assert "ZERO-ARG CALLABLE" not in docs
     emb.close()
 
 

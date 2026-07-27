@@ -554,6 +554,8 @@ class _RealsenseCameraReader:
     ``rs.camera_info.serial_number``, or the ASIC/USB serial that librealsense calls
     ``asic_serial_number`` and embeds in ``/dev/v4l/by-id`` path names. Colour serves
     ``Observation.images``; aligned depth and intrinsics serve ``Observation.extra``.
+    The composite has no cross-reader all-or-nothing guarantee: cv2 slots stay open
+    if the RealSense open fails, and ``close()`` recovers them.
     """
 
     #: Frames older than this mean the camera has stopped delivering.
@@ -692,6 +694,20 @@ class _RealsenseCameraReader:
                 )
             resolved[name] = match
 
+        resolved_slots: dict[str, tuple[str, str]] = {}
+        for name, resolved_serial in resolved.items():
+            configured_serial = self._serials[name]
+            previous = resolved_slots.get(resolved_serial)
+            if previous is not None:
+                previous_name, previous_configured_serial = previous
+                raise RuntimeError(
+                    f"cannot use RealSense cameras {previous_name} "
+                    f"({previous_configured_serial}) and {name} ({configured_serial}): "
+                    f"both resolve to device serial {resolved_serial}; configure each "
+                    f"slot with a different visible device"
+                )
+            resolved_slots[resolved_serial] = (name, configured_serial)
+
         bundles: dict[str, _PipelineBundle] = {}
         try:
             for name, serial in resolved.items():
@@ -717,7 +733,11 @@ class _RealsenseCameraReader:
             thread.start()
 
     def _open_one(self, rs: Any, name: str, serial: str, generation: int) -> _PipelineBundle:
-        """Open one pipeline, configure colour+depth streams, and seed from a warm-up frame."""
+        """Open one pipeline, configure colour+depth streams, and seed from warm-up.
+
+        A warm-up that never yields a frame is not fatal here: the drain thread
+        gets its own chance and ``_latest`` waits for it.
+        """
         rs_cfg = rs.config()
         rs_cfg.enable_device(serial)
         rs_cfg.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, 30)
@@ -799,7 +819,7 @@ class _RealsenseCameraReader:
             with self._lock:
                 generation = self._generation
                 if expected_generation is not None and expected_generation != generation:
-                    raise RuntimeError(f"depth for {name} resolved after camera close")
+                    raise RuntimeError(f"depth for {name} resolved after camera close or reopen")
                 fault = self._faults.get(name)
                 published = self._published.get(name)
             if fault is not None:
@@ -968,13 +988,13 @@ class YAMEmbodiment:
             depth_cameras = ", ".join(sorted(depth_serials))
             docs += (
                 f"\n\nDepth: for each serial-configured camera ({depth_cameras}), "
-                '``observation.extra["{cam}_depth"]`` is a ZERO-ARG CALLABLE. '
-                "Resolve it when the observation is received. Calling it returns an "
-                "H\u00d7W float32 array of depth in metres at the same resolution as, and "
-                "aligned to, that camera's image in ``observation.images``. Each "
-                "call returns a fresh conversion of the newest captured frames, so "
-                "delayed resolution returns depth captured later than the image it "
-                "accompanies. "
+                '``observation.extra["{cam}_depth"]`` arrives either as an H\u00d7W '
+                "float32 array of depth in metres, or as a zero-arg callable returning "
+                "that array. If it is callable, resolve it immediately on receipt. The "
+                "array has the same resolution as, and is aligned to, that camera's "
+                "image in ``observation.images``. Resolving the callable returns a "
+                "fresh conversion of the newest captured frames, so delayed resolution "
+                "returns depth captured later than the image it accompanies. "
                 '``observation.extra["{cam}_intrinsics"]`` is a plain 3\u00d73 float32 '
                 "camera matrix K valid at that published resolution. Distortion "
                 "coefficients are omitted; the cameras are near-rectilinear at this "

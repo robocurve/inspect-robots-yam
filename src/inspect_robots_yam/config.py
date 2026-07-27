@@ -297,6 +297,18 @@ class YamConfig(_FromKwargs):
             value = getattr(self, field)
             if value is not None and not value.strip():
                 raise ValueError(f"{field} must be a non-empty string")
+        cam_device_fields: dict[str, str] = {}
+        for slot in ("top", "left", "right"):
+            field = f"{slot}_cam_device"
+            device = getattr(self, field)
+            if device is None:
+                continue
+            previous = cam_device_fields.get(device)
+            if previous is not None:
+                raise ValueError(
+                    f"{previous} and {field} must be different; duplicate camera device {device!r}"
+                )
+            cam_device_fields[device] = field
         depth_serial_fields: dict[str, str] = {}
         for slot in ("top", "left", "right"):
             field = f"{slot}_depth_serial"
