@@ -1,6 +1,6 @@
 # 0012: `inspect-robots-yam-health --watch` — live browser view (issue #75)
 
-Revision 5: round 1 replaced the broken replug-recovery story with supervised
+Revision 6: round 1 replaced the broken replug-recovery story with supervised
 reader reconstruction, fixed the 224x224 default resolution, serialized first
 open behind the supervisor lock, pinned the handler test shim, the dispatch
 point, the URL line, the BGR flip, `--bind`, and the docstring updates.
@@ -13,7 +13,8 @@ range validation, the last_error API, the prime-after-bind ordering, and
 closed four coverage/typing gaps. Round 4 scoped resolution substitution to
 the watch branch (it would otherwise silently change the one-shot montage),
 added the explicit --port/--bind happy-path test, and fixed shim/count
-inconsistencies.
+inconsistencies. Round 5 (no majors) pinned close_connection on stream end,
+annotations-only _WatchServer, and small argparse/guard details.
 
 ## Motivation
 
@@ -53,8 +54,9 @@ inspect-robots-yam-health --watch [--port 8807] [--bind 0.0.0.0] \
   default binds all interfaces — any LAN the rig touches, not just the
   tailnet — and the stream is unauthenticated; the README says so and shows
   `--bind <tailscale-ip>` for narrowing. `main` validates the port range
-  (1-65535; out-of-range raises `OverflowError` from `socket.bind`, not
-  `OSError`, so range checking must happen up front as a usage error). A
+  (`--port` is `type=int`; 1-65535 — out-of-range raises `OverflowError`
+  from `socket.bind`, not `OSError`, so range checking must happen up front
+  as a usage error). A
   bind failure (`EADDRINUSE`, bad address) is operator input, not a bug:
   `serve()` catches `OSError` from server construction, prints the reason
   to stderr, and returns 2.
@@ -130,9 +132,11 @@ in a `_CameraSupervisor` owning the current reader behind a `threading.Lock`:
   success return the frame. On exception: record the message, and if at
   least `RECOVER_INTERVAL_S` (2.0) has passed since the last rebuild,
   `close()` the old reader (joins its drain threads, bounding the dead-fd
-  spin) and construct a fresh one via the factory — a new reader opens a
-  new `VideoCapture`, which is what actually picks up a replugged device
-  node. The rebuilt reader is NOT retried within the same `frame()` call
+  spin) and construct a fresh one via the factory (the factory call sits
+  inside the same exception guard; the default factory is inert, but an
+  injected test factory that raises must not escape into a stream thread) —
+  a new reader opens a new `VideoCapture`, which is what actually picks up
+  a replugged device node. The rebuilt reader is NOT retried within the same `frame()` call
   (bounding the lock hold); this call returns `None` and the next one reads
   from the fresh reader.
 - `last_error() -> str`: the recorded message, read under the lock — this is
@@ -182,6 +186,10 @@ they would be dead configuration. The module still defines
 `_WatchServer(ThreadingHTTPServer)`, purely as the typed home for shared
 state (supervisors, cv2 module, pacing functions): handlers reach it via
 `self.server` typed as `_WatchServer`, no casts on an untyped stub. The
+class body is ANNOTATIONS ONLY (no `__init__`, no methods); `serve()`
+assigns the attributes after construction — the listed tests never
+instantiate the real class, so any executable member would be an
+unreachable line under the 100% gate with no pragma budget. The
 handler also overrides `log_message` to a no-op: the default writes one
 stderr line per request (noise for operators, surprise lines for capsys
 tests). `serve()` runs `try: server.serve_forever() / except
@@ -202,7 +210,16 @@ terminal closed state.
   unflipped stream is red/blue-swapped video, the one failure a camera-aiming
   tool half-hides); `imencode('.jpg')`; write part; `sleep_fn(1 / FPS)` }
   until the client disconnects (`BrokenPipeError`/`ConnectionResetError`
-  swallowed per connection). `FPS = 10`, module constant.
+  swallowed per connection). When the stream loop ends the handler sets
+  `self.close_connection = True` before returning: without it,
+  `BaseHTTPRequestHandler.handle()` loops on the HTTP/1.1 keep-alive and
+  re-reads the dead socket, and the resulting `ConnectionResetError`
+  escapes `handle_one_request` into `BaseServer.handle_error`, printing a
+  full traceback banner to stderr on every browser RST — the shim test
+  asserts the flag. An `imencode` returning `ok=False` is treated like a
+  read failure (placeholder next frame), not ignored. Placeholder tiles use
+  the camera's last good frame shape, or 480x640 before any frame arrived.
+  `FPS = 10`, module constant.
 - Unknown paths: 404.
 
 ### Injection and coverage (100% line+branch gate)
