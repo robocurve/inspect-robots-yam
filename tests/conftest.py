@@ -106,7 +106,7 @@ class FakeCapture:
 
 
 class FakeCv2:
-    """The exact cv2 surface used by the camera reader and health montage.
+    """The exact cv2 surface used by the camera reader, health montage, and watch.
 
     Only the constants the production code touches are defined, so a
     misspelled constant raises AttributeError instead of silently passing.
@@ -135,7 +135,9 @@ class FakeCv2:
         self.opened: list[str] = []
         self.put_text_calls: list[tuple[str, bool]] = []
         self.writes: list[tuple[str, npt.NDArray[np.uint8]]] = []
+        self.encodes: list[tuple[str, npt.NDArray[np.uint8]]] = []
         self.write_ok = True
+        self.encode_ok = True
 
     def VideoCapture(self, device: str, api: int) -> FakeCapture:
         """Hand back the scripted capture for a device path."""
@@ -170,6 +172,14 @@ class FakeCv2:
         """Record the exact non-contiguous BGR view handed to the encoder."""
         self.writes.append((path, image.copy()))
         return self.write_ok
+
+    def imencode(
+        self, ext: str, image: npt.NDArray[np.uint8]
+    ) -> tuple[bool, npt.NDArray[np.uint8]]:
+        """Record the encoded image and return recognizable JPEG-like bytes."""
+        self.encodes.append((ext, image.copy()))
+        encoded = np.frombuffer(b"\xff\xd8fake-jpeg\xff\xd9", dtype=np.uint8)
+        return self.encode_ok, encoded
 
 
 class Clock:

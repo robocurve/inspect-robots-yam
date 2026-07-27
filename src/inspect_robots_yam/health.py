@@ -1,15 +1,19 @@
-"""One-shot camera and motor health gate for an idle YAM rig.
+"""Camera and motor health tools for an idle YAM rig.
 
 Run this check only with both arms at rest or supported and an e-stop in hand.
 Connecting and then closing the driver drops motor torque. This is not the
 mid-workspace setup used by holdcheck.
 
-The CLI exits 0 when every executed check passes and 1 when any hardware check
-reports a fault. It exits 2 for bad flags, a partial camera set, an unknown
-``-E`` key, a camera device set by both a flag and ``-E``, ``--skip-cameras``
-with a configured camera device, an invocation that would execute zero checks,
-``--settle-s`` non-finite or below the 0.2-second floor, or ``--joint-epsilon``
-non-finite or negative.
+The one-shot CLI exits 0 when every executed check passes and 1 when any
+hardware check reports a fault. It exits 2 for bad flags, a partial camera set,
+an unknown ``-E`` key, a camera device set by both a flag and ``-E``,
+``--skip-cameras`` with a configured camera device, an invocation that would
+execute zero checks, ``--settle-s`` non-finite or below the 0.2-second floor,
+``--joint-epsilon`` non-finite or negative, ``--watch`` combined with a skip or
+``--json``, ``--watch`` without configured cameras, ``--port`` or ``--bind``
+without ``--watch``, or a provided port outside 1 through 65535. Those usage
+errors are routed through ``parser.error``. A watch bind failure also returns
+2 directly from ``watch.serve``.
 """
 
 from __future__ import annotations
@@ -301,7 +305,7 @@ def main(argv: list[str] | None = None, *, run: RunHealth = run_health) -> int:
     """Run the CLI, returning 0 for healthy, 1 for faults, or exiting 2 on usage errors."""
     parser = argparse.ArgumentParser(
         prog="inspect-robots-yam-health",
-        description="Check configured cameras and both YAM arms once.",
+        description="Check the idle rig once or serve configured cameras for aiming.",
     )
     parser.add_argument("--top-cam", dest="top_cam_device")
     parser.add_argument("--left-cam", dest="left_cam_device")
@@ -310,6 +314,9 @@ def main(argv: list[str] | None = None, *, run: RunHealth = run_health) -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--skip-cameras", action="store_true")
     parser.add_argument("--skip-motors", action="store_true")
+    parser.add_argument("--watch", action="store_true")
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--bind", default=None)
     parser.add_argument("--settle-s", type=float, default=1.0)
     parser.add_argument("--joint-epsilon", type=float, default=0.02)
     parser.add_argument("-E", dest="extras", action="append", default=[], metavar="key=value")
@@ -326,6 +333,12 @@ def main(argv: list[str] | None = None, *, run: RunHealth = run_health) -> int:
     conflicts = camera_keys & extras.keys() & flag_values.keys()
     if conflicts:
         parser.error(f"camera device set by both flag and -E: {sorted(conflicts)}")
+    if args.watch and (args.skip_cameras or args.skip_motors or args.json):
+        parser.error("--watch cannot be combined with --skip-cameras, --skip-motors, or --json")
+    if args.port is not None and not 1 <= args.port <= 65535:
+        parser.error("--port must be between 1 and 65535")
+    if not args.watch and (args.port is not None or args.bind is not None):
+        parser.error("--port and --bind require --watch")
     if args.skip_cameras and (camera_keys & (extras.keys() | flag_values.keys())):
         parser.error("--skip-cameras cannot be combined with configured camera devices")
 
@@ -336,6 +349,24 @@ def main(argv: list[str] | None = None, *, run: RunHealth = run_health) -> int:
         parser.error(str(exc))
 
     cameras_configured = cfg.top_cam_device is not None
+    if args.watch and not cameras_configured:
+        parser.error("--watch requires configured camera devices")
+    if args.watch:
+        for key, value in (("cam_width", 640), ("cam_height", 480)):
+            if key not in config_values:
+                cfg = dataclasses.replace(cfg, **{key: cast(Any, value)})
+        from inspect_robots_yam import watch
+
+        port = args.port if args.port is not None else 8807
+        bind = args.bind if args.bind is not None else "0.0.0.0"
+        bind_was_explicit = args.bind is not None
+        return watch.serve(
+            cfg,
+            port=port,
+            bind=bind,
+            bind_was_explicit=bind_was_explicit,
+        )
+
     cameras_will_run = cameras_configured and not args.skip_cameras
     motors_will_run = not args.skip_motors
     if not cameras_will_run and not motors_will_run:
