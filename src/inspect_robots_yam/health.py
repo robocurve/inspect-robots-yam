@@ -8,7 +8,8 @@ The CLI exits 0 when every executed check passes and 1 when any hardware check
 reports a fault. It exits 2 for bad flags, a partial camera set, an unknown
 ``-E`` key, a camera device set by both a flag and ``-E``, ``--skip-cameras``
 with a configured camera device, an invocation that would execute zero checks,
-or ``--settle-s`` below the 0.2-second floor.
+``--settle-s`` non-finite or below the 0.2-second floor, or ``--joint-epsilon``
+non-finite or negative.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import sys
 import time
 from collections.abc import Callable, Mapping
@@ -30,6 +32,11 @@ from inspect_robots_yam.config import DEFAULT_CAMERAS, YamConfig
 
 UNIFORM_STD_MAX = 1.0
 MIN_SETTLE_S = 0.2
+
+#: Config keys naming V4L2 device paths. Their ``-E`` values stay raw strings:
+#: scalar coercion would turn ``-E top_cam_device=0`` into an int that only
+#: reaches a camera by cv2's index fallback, on whatever enumerates as 0.
+_CAMERA_DEVICE_KEYS = frozenset({"top_cam_device", "left_cam_device", "right_cam_device"})
 
 Image = npt.NDArray[np.uint8]
 
@@ -215,8 +222,16 @@ def run_health(
         )
         if out_path is not None and captured:
             faulted = frozenset(result.name for result in camera_results if not result.ok)
-            write_montage(out_path, captured, faulted)
-            montage_path = out_path
+            # A typo'd --out is operator input; it must not traceback past the
+            # motors section, so a failed write becomes one more camera FAULT.
+            try:
+                write_montage(out_path, captured, faulted)
+                montage_path = out_path
+            except Exception as exc:
+                camera_results = (
+                    *camera_results,
+                    CheckResult(name="montage", ok=False, detail=str(exc)),
+                )
 
     joint_results = (
         ()
@@ -278,7 +293,7 @@ def _parse_extras(parser: argparse.ArgumentParser, values: list[str]) -> dict[st
         key, value = assignment.split("=", 1)
         if not key:
             parser.error("-E config key cannot be empty")
-        extras[key] = _parse_scalar(value)
+        extras[key] = value if key in _CAMERA_DEVICE_KEYS else _parse_scalar(value)
     return extras
 
 
@@ -300,15 +315,13 @@ def main(argv: list[str] | None = None, *, run: RunHealth = run_health) -> int:
     parser.add_argument("-E", dest="extras", action="append", default=[], metavar="key=value")
     args = parser.parse_args(argv)
 
-    if args.settle_s < MIN_SETTLE_S:
-        parser.error(f"--settle-s must be at least {MIN_SETTLE_S}")
+    if not math.isfinite(args.settle_s) or args.settle_s < MIN_SETTLE_S:
+        parser.error(f"--settle-s must be finite and at least {MIN_SETTLE_S}")
+    if not math.isfinite(args.joint_epsilon) or args.joint_epsilon < 0:
+        parser.error("--joint-epsilon must be finite and non-negative")
 
     extras = _parse_extras(parser, args.extras)
-    camera_keys = {
-        "top_cam_device",
-        "left_cam_device",
-        "right_cam_device",
-    }
+    camera_keys = _CAMERA_DEVICE_KEYS
     flag_values = {key: getattr(args, key) for key in camera_keys if getattr(args, key) is not None}
     conflicts = camera_keys & extras.keys() & flag_values.keys()
     if conflicts:

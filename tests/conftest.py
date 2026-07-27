@@ -106,7 +106,11 @@ class FakeCapture:
 
 
 class FakeCv2:
-    """The exact cv2 surface used by the camera reader and health montage."""
+    """The exact cv2 surface used by the camera reader and health montage.
+
+    Only the constants the production code touches are defined, so a
+    misspelled constant raises AttributeError instead of silently passing.
+    """
 
     CAP_V4L2 = 200
     CAP_PROP_BUFFERSIZE = 38

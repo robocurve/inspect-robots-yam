@@ -212,6 +212,8 @@ def test_camera_fault_classes_exit_one(
     left = next(result for result in report.cameras if result.name == "left_cam")
     assert not left.ok
     assert left.detail == detail
+    others = [result for result in report.cameras if result.name != "left_cam"]
+    assert len(others) == 2 and all(result.ok for result in others)
     assert cli_code(report, capsys) == 1
 
 
@@ -437,6 +439,57 @@ def test_default_reader_factory_is_inert() -> None:
     reader.close()
 
 
+def test_montage_write_failure_faults_cameras_but_not_motors(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    driver = FakeDriver(good_positions())
+
+    def raising_montage(
+        path: str, frames: Mapping[str, np.ndarray], faulted: frozenset[str]
+    ) -> None:
+        raise RuntimeError("failed to write montage to /no/such/dir.jpg")
+
+    report = run(driver=driver, montage=raising_montage)
+
+    montage = next(result for result in report.cameras if result.name == "montage")
+    assert not montage.ok
+    assert "failed to write montage" in montage.detail
+    assert report.montage_path is None
+    assert [result.name for result in report.joints] == list(packing.DIM_LABELS)
+    assert driver.closed == 1
+    assert cli_code(report, capsys) == 1
+
+
+def test_extra_camera_device_values_stay_strings() -> None:
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return HealthReport(
+            cameras=(), cameras_skipped=False, joints=(), joints_skipped=True, montage_path=None
+        )
+
+    code = main(
+        [
+            "--skip-motors",
+            "-E",
+            "top_cam_device=0",
+            "-E",
+            "left_cam_device=1",
+            "-E",
+            "right_cam_device=2",
+        ],
+        run=capture,
+    )
+
+    assert code == 0
+    assert (seen[0].top_cam_device, seen[0].left_cam_device, seen[0].right_cam_device) == (
+        "0",
+        "1",
+        "2",
+    )
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -445,6 +498,10 @@ def test_default_reader_factory_is_inert() -> None:
         ["--skip-cameras", "--top-cam", "/dev/top"],
         ["--skip-cameras", "-E", "top_cam_device=/dev/top"],
         ["--settle-s", "0.19"],
+        ["--settle-s", "nan"],
+        ["--settle-s", "inf"],
+        ["--joint-epsilon", "nan"],
+        ["--joint-epsilon", "-0.1"],
         ["--top-cam", "/dev/top"],
         ["--top-cam", "/dev/top", "-E", "top_cam_device=/dev/other"],
         ["-E", "unknown_key=value"],
@@ -457,6 +514,10 @@ def test_default_reader_factory_is_inert() -> None:
         "skip-cameras-flag-device",
         "skip-cameras-extra-device",
         "settle-floor",
+        "settle-nan",
+        "settle-inf",
+        "epsilon-nan",
+        "epsilon-negative",
         "partial-cameras",
         "flag-extra-conflict",
         "unknown-extra",
