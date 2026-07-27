@@ -145,7 +145,10 @@ class _WatchRequestHandler(BaseHTTPRequestHandler):
             "<!doctype html><html><head>"
             f"<title>{self.server.hostname} camera watch</title>"
             "<style>body{background:#111;color:#eee;font-family:sans-serif}"
-            "img{max-width:100%;height:auto}figure{margin:1rem}</style>"
+            # The border marks the frame edge even when dark content blends
+            # into the dark page background (#77).
+            "img{max-width:100%;height:auto;border:3px solid #00e676}"
+            "figure{margin:1rem}</style>"
             f"</head><body>{cameras}</body></html>"
         ).encode()
         self.send_response(200)

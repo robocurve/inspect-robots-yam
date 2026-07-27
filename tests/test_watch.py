@@ -131,6 +131,7 @@ def test_index_lists_canonical_labeled_streams() -> None:
     assert offsets == sorted(offsets)
     for name in DEFAULT_CAMERAS:
         assert f"<figcaption>{name}</figcaption>".encode() in response
+    assert b"border:3px solid #00e676" in response
     assert handler.close_connection
 
 
