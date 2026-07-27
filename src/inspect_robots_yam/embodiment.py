@@ -27,7 +27,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, ClassVar, Protocol, cast, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
@@ -527,14 +527,17 @@ class _OpenCVCameraReader:
 
 
 def _opencv_camera_reader(cfg: YamConfig) -> CameraReader:
-    """Build the builtin V4L2 reader for the three configured camera devices."""
-    return _OpenCVCameraReader(
-        {
-            "top_cam": cast(str, cfg.top_cam_device),
-            "left_cam": cast(str, cfg.left_cam_device),
-            "right_cam": cast(str, cfg.right_cam_device),
-        }
-    )
+    """Build the builtin V4L2 reader for device-sourced camera slots."""
+    devices = {
+        name: device
+        for name, device in (
+            ("top_cam", cfg.top_cam_device),
+            ("left_cam", cfg.left_cam_device),
+            ("right_cam", cfg.right_cam_device),
+        )
+        if device is not None
+    }
+    return _OpenCVCameraReader(devices)
 
 
 def _default_camera_reader(cfg: YamConfig) -> ImageMap:
@@ -814,6 +817,28 @@ class _RealsenseCameraReader:
         return resolve
 
 
+class _CompositeCameraReader:
+    """Merge disjoint builtin image readers and release all of their devices."""
+
+    def __init__(self, *readers: CameraReader) -> None:
+        self._readers = readers
+
+    def __call__(self, cfg: YamConfig) -> ImageMap:
+        """Return the union of every wrapped reader's camera images."""
+        images: dict[str, npt.NDArray[np.uint8]] = {}
+        for reader in self._readers:
+            images.update(reader(cfg))
+        return images
+
+    def close(self) -> None:
+        """Close every wrapped reader that exposes a duck-typed close method."""
+        with contextlib.ExitStack() as stack:
+            for reader in self._readers:
+                release = getattr(reader, "close", None)
+                if callable(release):
+                    stack.callback(release)
+
+
 class YAMEmbodiment:
     """Inspect Robots embodiment for bimanual YAM joint or Cartesian control."""
 
@@ -826,8 +851,9 @@ class YAMEmbodiment:
     # The setup wizard interviews these with real-device probes (issue
     # inspect-robots#61). CAN channels are grouped: a config naming only one
     # arm's channel silently drives the other on the plugin default, the
-    # exact failure the interview exists to prevent. Cameras mirror
-    # YamConfig's all-three-or-none validation.
+    # exact failure the interview exists to prevent. Camera configs source
+    # exactly one reader per slot; the wizard fills all three V4L2 device slots,
+    # while RealSense depth serials are outside its scope.
     DEVICE_SLOTS: ClassVar[tuple[DeviceSlot, ...]] = (
         DeviceSlot(arg="left_channel", kind="can", label="left arm CAN channel", group="arms"),
         DeviceSlot(arg="right_channel", kind="can", label="right arm CAN channel", group="arms"),
@@ -851,16 +877,54 @@ class YAMEmbodiment:
         status_fn: Callable[[str | None], None] | None = None,
         **flat: Any,
     ) -> None:
+        """Construct the embodiment and its configured camera readers.
+
+        An injected ``depth_reader`` is merged after builtin RealSense metadata,
+        so injected keys override builtin values when both publish the same key.
+        """
         self._cfg = config if config is not None else YamConfig.from_kwargs(**flat)
         self._driver_factory: DriverFactory = driver_factory or _default_driver_factory
         self._kinematics_factory: KinematicsFactory = (
             kinematics_factory or _default_kinematics_factory
         )
-        if camera_reader is None and self._cfg.top_cam_device is not None:
-            # All three device paths are set (YamConfig validates all-or-none):
-            # use the builtin OpenCV reader, so config/CLI-only setups work.
-            camera_reader = _opencv_camera_reader(self._cfg)
-        self._camera_reader: CameraReader = camera_reader or _default_camera_reader
+        depth_serials = {
+            name: serial
+            for name, serial in (
+                ("top_cam", self._cfg.top_depth_serial),
+                ("left_cam", self._cfg.left_depth_serial),
+                ("right_cam", self._cfg.right_depth_serial),
+            )
+            if serial is not None
+        }
+        self._builtin_realsense_reader: _RealsenseCameraReader | None = None
+        if camera_reader is not None:
+            if depth_serials:
+                raise ValueError(
+                    "custom camera_reader conflicts with configured *_depth_serial "
+                    "values: configured depth serials drive the builtin capture path; "
+                    "with a custom camera_reader, supply depth via depth_reader instead"
+                )
+        else:
+            builtin_readers: list[CameraReader] = []
+            if any(
+                device is not None
+                for device in (
+                    self._cfg.top_cam_device,
+                    self._cfg.left_cam_device,
+                    self._cfg.right_cam_device,
+                )
+            ):
+                builtin_readers.append(_opencv_camera_reader(self._cfg))
+            if depth_serials:
+                self._builtin_realsense_reader = _RealsenseCameraReader(depth_serials)
+                builtin_readers.append(self._builtin_realsense_reader)
+            if len(builtin_readers) == 1:
+                camera_reader = builtin_readers[0]
+            elif builtin_readers:
+                camera_reader = _CompositeCameraReader(*builtin_readers)
+        self._camera_reader: CameraReader = (
+            camera_reader if camera_reader is not None else _default_camera_reader
+        )
         self._operator = operator if operator is not None else OperatorIO()
         self._poll_end: Callable[[], bool] = poll_end or default_poll_end
         self._sleep: Callable[[float], None] = sleep_fn or time.sleep
@@ -890,7 +954,7 @@ class YAMEmbodiment:
         docs_extra = self._cfg.docs_extra.strip()
         if docs_extra:
             docs += "\n\n" + docs_extra
-        if self._depth_reader is not None:
+        if self._builtin_realsense_reader is not None or self._depth_reader is not None:
             docs += (
                 "\n\nDepth: when depth serial numbers are configured, "
                 "observation.extra contains ``{cam}_depth`` (H\u00d7W float32, metres, "
@@ -950,10 +1014,10 @@ class YAMEmbodiment:
         # also catches a CLI-injected scalar (`-E camera_reader=...` binds a str).
         if self._camera_reader is _default_camera_reader or not callable(self._camera_reader):
             raise ConfigError(
-                "yam_arms has no cameras configured. Set the three V4L2 device "
-                "paths - top/left/right_cam_device - in YamConfig, config.ini "
-                "([embodiment.args]) or the CLI (-E top_cam_device=/dev/video0 "
-                "...) to use the builtin OpenCV reader, or provide a custom "
+                "yam_arms has no cameras configured. Set exactly one source per "
+                "camera slot: *_cam_device for V4L2 colour or *_depth_serial for "
+                "RealSense colour+depth, in YamConfig, config.ini "
+                "([embodiment.args]), or the CLI; or provide a custom "
                 "camera_reader= via the Python API."
             )
         if self._driver is None:
@@ -1441,11 +1505,16 @@ class YAMEmbodiment:
                 gripper=float(state[13]),
             )
             values["eef_state"] = np.concatenate((left, right))
-        if self._depth_reader is None:
+        if self._builtin_realsense_reader is None and self._depth_reader is None:
             return Observation(images=images, state=values, instruction=instruction)
+        extra: dict[str, Any] = {}
+        if self._builtin_realsense_reader is not None:
+            extra.update(self._builtin_realsense_reader.extra(self._cfg))
+        if self._depth_reader is not None:
+            extra.update(self._depth_reader(self._cfg))
         return Observation(
             images=images,
             state=values,
             instruction=instruction,
-            extra=self._depth_reader(self._cfg),
+            extra=extra,
         )

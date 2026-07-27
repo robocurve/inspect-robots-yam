@@ -200,8 +200,8 @@ class YamConfig(_FromKwargs):
         """Reject values that violate the 14-D packing and hardware invariants.
 
         Pose and step vectors must span both arms, every step limit must be
-        finite and positive, the gripper stroke must be nonzero, and builtin
-        camera device paths must be configured all together or not at all.
+        finite and positive, the gripper stroke must be nonzero, and every
+        builtin camera slot must have exactly one source or all must be unset.
         """
         if self.gripper_type not in SUPPORTED_GRIPPER_TYPES:
             raise ValueError(
@@ -285,19 +285,25 @@ class YamConfig(_FromKwargs):
             raise ValueError("rest_secs must be > 0")
         if self.max_steps_hint is not None and self.max_steps_hint < 1:
             raise ValueError("max_steps_hint must be >= 1")
-        devices = (self.top_cam_device, self.left_cam_device, self.right_cam_device)
-        if any(d is not None for d in devices) and not all(d is not None for d in devices):
+        for slot in ("top", "left", "right"):
+            if getattr(self, f"{slot}_cam_device") is not None and (
+                getattr(self, f"{slot}_depth_serial") is not None
+            ):
+                raise ValueError(
+                    f"{slot}_cam_device and {slot}_depth_serial are mutually "
+                    f"exclusive: a RealSense camera opened through librealsense "
+                    f"cannot also be opened through V4L2 (one streamer per node)"
+                )
+        sourced = {
+            slot
+            for slot in ("top", "left", "right")
+            if getattr(self, f"{slot}_cam_device") is not None
+            or getattr(self, f"{slot}_depth_serial") is not None
+        }
+        if sourced and len(sourced) != 3:
+            unsourced = ", ".join(slot for slot in ("top", "left", "right") if slot not in sourced)
             raise ValueError(
-                "camera devices must be set all three or none "
-                "(top_cam_device, left_cam_device, right_cam_device)"
-            )
-        depth_serials = (self.top_depth_serial, self.left_depth_serial, self.right_depth_serial)
-        if any(s is not None for s in depth_serials) and not all(
-            s is not None for s in depth_serials
-        ):
-            raise ValueError(
-                "depth serial numbers must be set all three or none "
-                "(top_depth_serial, left_depth_serial, right_depth_serial)"
+                f"camera sources must be set for all slots or none; unsourced slots: {unsourced}"
             )
         if len(self.step_limits) != TOTAL_DIM or any(
             not (s > 0) or not np.isfinite(s) for s in self.step_limits

@@ -307,8 +307,8 @@ def test_yam_camera_devices_default_none() -> None:
     assert cfg.right_cam_device is None
 
 
-def test_yam_camera_devices_all_or_none() -> None:
-    with pytest.raises(ValueError, match="all three or none"):
+def test_yam_camera_sources_all_slots_or_none() -> None:
+    with pytest.raises(ValueError, match="unsourced slots: left, right"):
         YamConfig(top_cam_device="/dev/video0")
     cfg = YamConfig(
         top_cam_device="/dev/video0",

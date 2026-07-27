@@ -21,6 +21,7 @@ import inspect_robots_yam.embodiment as embodiment_module
 from inspect_robots_yam.config import YamConfig
 from inspect_robots_yam.embodiment import (
     YAMEmbodiment,
+    _CompositeCameraReader,
     _PipelineBundle,
     _RealsenseCameraReader,
 )
@@ -292,8 +293,66 @@ class FakeRs:
         return align
 
 
+class FakeCapture:
+    """An always-readable V4L2 capture for embodiment-level builtin tests."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.released = False
+
+    def isOpened(self) -> bool:
+        """Report a successful device open."""
+        return True
+
+    def set(self, _prop: int, _value: float) -> bool:
+        """Accept every capture setting."""
+        return True
+
+    def read(self) -> tuple[bool, npt.NDArray[np.uint8]]:
+        """Return a stable BGR frame without spinning a drain thread."""
+        self.calls += 1
+        if self.calls > 1:
+            time.sleep(0.01)
+        return True, np.full((480, 640, 3), 9, dtype=np.uint8)
+
+    def release(self) -> None:
+        """Record release by the composite reader."""
+        self.released = True
+
+
 class FakeCv2:
-    """The colour resize surface used by the reader."""
+    """The colour resize and V4L2 surfaces used by builtin readers."""
+
+    CAP_V4L2 = 200
+    CAP_PROP_BUFFERSIZE = 38
+    CAP_PROP_FOURCC = 6
+    CAP_PROP_FRAME_WIDTH = 3
+    CAP_PROP_FRAME_HEIGHT = 4
+    CAP_PROP_OPEN_TIMEOUT_MSEC = 53
+    CAP_PROP_READ_TIMEOUT_MSEC = 54
+    COLOR_BGR2RGB = 4
+
+    class VideoWriter:
+        """Namespace for the capture fourcc helper."""
+
+        @staticmethod
+        def fourcc(*_chars: str) -> float:
+            """Return a harmless recognizable code."""
+            return 1.0
+
+    def __init__(self) -> None:
+        self.captures: dict[str, FakeCapture] = {}
+
+    def VideoCapture(self, device: str, _api: int) -> FakeCapture:
+        """Return one persistent fake capture per configured path."""
+        capture = FakeCapture()
+        self.captures[device] = capture
+        return capture
+
+    def cvtColor(self, source: Any, code: int) -> npt.NDArray[np.uint8]:
+        """Reverse BGR channels into RGB."""
+        assert code == self.COLOR_BGR2RGB
+        return np.asarray(source)[..., ::-1]
 
     def resize(self, source: npt.NDArray[np.uint8], size: tuple[int, int]) -> npt.NDArray[np.uint8]:
         """Resize by integer nearest-neighbour indexing."""
@@ -717,9 +776,19 @@ def test_yamconfig_all_serials() -> None:
     assert cfg_value.top_depth_serial == "S1"
 
 
-def test_yamconfig_partial_rejected() -> None:
-    with pytest.raises(ValueError, match="depth serial numbers must be set all three or none"):
-        YamConfig(top_depth_serial="S1")
+def test_yamconfig_device_and_serial_for_one_slot_are_rejected() -> None:
+    message = (
+        "top_cam_device and top_depth_serial are mutually exclusive: "
+        "a RealSense camera opened through librealsense cannot also be opened "
+        "through V4L2 \\(one streamer per node\\)"
+    )
+    with pytest.raises(ValueError, match=message):
+        YamConfig(
+            top_cam_device="/dev/video0",
+            top_depth_serial="S1",
+            left_depth_serial="S2",
+            right_depth_serial="S3",
+        )
 
 
 def test_yamconfig_none_ok() -> None:
@@ -753,6 +822,40 @@ def silent_operator() -> OperatorIO:
     return OperatorIO(input_fn=lambda _: "", output_fn=lambda _: None)
 
 
+def builtin_embodiment(
+    config: YamConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    depth_reader: Any = None,
+) -> tuple[YAMEmbodiment, FakeRs, FakeCv2]:
+    """Build an embodiment whose lazy builtin imports resolve to camera fakes."""
+    rs = FakeRs()
+    cv2 = FakeCv2()
+    monkeypatch.setattr(embodiment_module, "_import_rs", lambda: rs)
+    monkeypatch.setattr(embodiment_module, "_import_cv2", lambda: cv2)
+    emb = YAMEmbodiment(
+        config,
+        driver_factory=driver_factory,
+        depth_reader=depth_reader,
+        operator=silent_operator(),
+        poll_end=lambda: False,
+        sleep_fn=lambda _: None,
+        clock=lambda: 0.0,
+        status_fn=lambda _: None,
+    )
+    return emb, rs, cv2
+
+
+def observe_once(emb: YAMEmbodiment) -> Any:
+    """Observe through builtin cameras, then release their lazy-opened devices."""
+    emb._driver = driver_factory(emb._cfg)
+    try:
+        return emb._observe("task")
+    finally:
+        emb._driver = None
+        emb.close()
+
+
 def embodiment(depth_reader: Any = None) -> YAMEmbodiment:
     """Build an embodiment with all hardware seams injected."""
     return YAMEmbodiment(
@@ -772,6 +875,151 @@ class Action:
     """A zero joint-position action."""
 
     data = np.zeros(14)
+
+
+def test_mixed_builtin_rig_merges_images_and_only_serial_depth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg_value = YamConfig(
+        cam_height=4,
+        cam_width=4,
+        top_cam_device="/dev/top",
+        left_depth_serial="S2",
+        right_depth_serial="S3",
+    )
+    emb, rs, cv2 = builtin_embodiment(cfg_value, monkeypatch)
+
+    observation = observe_once(emb)
+
+    assert set(observation.images) == {"top_cam", "left_cam", "right_cam"}
+    assert all(image.shape == (4, 4, 3) for image in observation.images.values())
+    assert observation.extra is not None
+    assert callable(observation.extra["left_cam_depth"])
+    assert callable(observation.extra["right_cam_depth"])
+    assert observation.extra["left_cam_intrinsics"].shape == (3, 3)
+    assert observation.extra["right_cam_intrinsics"].shape == (3, 3)
+    assert "top_cam_depth" not in observation.extra
+    assert "top_cam_intrinsics" not in observation.extra
+    assert cv2.captures["/dev/top"].released
+    assert all(pipeline.stopped for pipeline in rs.pipelines)
+
+
+def test_serial_only_rig_constructs_builtin_reader_and_observes_depth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg_value = YamConfig(
+        cam_height=4,
+        cam_width=4,
+        top_depth_serial="S1",
+        left_depth_serial="S2",
+        right_depth_serial="S3",
+    )
+    emb, _, _ = builtin_embodiment(cfg_value, monkeypatch)
+    assert isinstance(emb._builtin_realsense_reader, _RealsenseCameraReader)
+
+    observation = observe_once(emb)
+
+    assert set(observation.images) == {"top_cam", "left_cam", "right_cam"}
+    assert all(image.shape == (4, 4, 3) for image in observation.images.values())
+    assert observation.extra is not None
+    for name in ("top_cam", "left_cam", "right_cam"):
+        assert callable(observation.extra[f"{name}_depth"])
+        assert observation.extra[f"{name}_intrinsics"].shape == (3, 3)
+
+
+def test_serial_only_rig_includes_depth_docs(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg_value = YamConfig(
+        top_depth_serial="S1",
+        left_depth_serial="S2",
+        right_depth_serial="S3",
+    )
+    emb, _, _ = builtin_embodiment(cfg_value, monkeypatch)
+
+    assert "Depth:" in emb.info.docs
+    emb.close()
+
+
+def test_injected_camera_reader_conflicts_with_configured_serials() -> None:
+    cfg_value = YamConfig(
+        top_depth_serial="S1",
+        left_depth_serial="S2",
+        right_depth_serial="S3",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "configured depth serials drive the builtin capture path; with "
+            "a custom camera_reader, supply depth via depth_reader instead"
+        ),
+    ):
+        YAMEmbodiment(cfg_value, camera_reader=cameras)
+
+
+def test_injected_depth_reader_merges_with_device_only_builtin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg_value = YamConfig(
+        cam_height=4,
+        cam_width=4,
+        top_cam_device="/dev/top",
+        left_cam_device="/dev/left",
+        right_cam_device="/dev/right",
+    )
+    injected = {"custom_depth": "device path"}
+    emb, _, _ = builtin_embodiment(
+        cfg_value,
+        monkeypatch,
+        depth_reader=lambda _: injected,
+    )
+
+    observation = observe_once(emb)
+
+    assert observation.extra == injected
+
+
+def test_injected_depth_reader_overrides_serial_builtin_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg_value = YamConfig(
+        cam_height=4,
+        cam_width=4,
+        top_depth_serial="S1",
+        left_depth_serial="S2",
+        right_depth_serial="S3",
+    )
+    replacement = np.eye(3, dtype=np.float32) * 7
+    emb, _, _ = builtin_embodiment(
+        cfg_value,
+        monkeypatch,
+        depth_reader=lambda _: {
+            "top_cam_intrinsics": replacement,
+            "custom_depth": "serial path",
+        },
+    )
+
+    observation = observe_once(emb)
+
+    assert observation.extra is not None
+    assert observation.extra["top_cam_intrinsics"] is replacement
+    assert observation.extra["custom_depth"] == "serial path"
+    assert callable(observation.extra["top_cam_depth"])
+
+
+def test_composite_close_skips_reader_without_close() -> None:
+    closed: list[str] = []
+
+    class Closing:
+        def __call__(self, _config: YamConfig) -> dict[str, Any]:
+            return {}
+
+        def close(self) -> None:
+            closed.append("closed")
+
+    composite = _CompositeCameraReader(Closing(), lambda _config: {})
+    composite.close()
+
+    assert closed == ["closed"]
 
 
 def test_observe_no_depth_reader() -> None:
