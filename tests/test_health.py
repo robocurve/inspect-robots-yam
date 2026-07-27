@@ -507,6 +507,14 @@ def test_extra_camera_device_values_stay_strings() -> None:
         ["-E", "unknown_key=value"],
         ["-E", "missing-equals"],
         ["-E", "=empty-key"],
+        ["--watch", *CAMERA_ARGS, "--skip-cameras"],
+        ["--watch", *CAMERA_ARGS, "--skip-motors"],
+        ["--watch", *CAMERA_ARGS, "--json"],
+        ["--watch"],
+        ["--port", "8808"],
+        ["--bind", "127.0.0.1"],
+        ["--watch", *CAMERA_ARGS, "--port", "0"],
+        ["--port", "65536"],
     ],
     ids=[
         "both-skips",
@@ -523,6 +531,14 @@ def test_extra_camera_device_values_stay_strings() -> None:
         "unknown-extra",
         "malformed-extra",
         "empty-extra-key",
+        "watch-skip-cameras",
+        "watch-skip-motors",
+        "watch-json",
+        "watch-no-cameras",
+        "port-without-watch",
+        "bind-without-watch",
+        "port-zero",
+        "port-too-high",
     ],
 )
 def test_usage_and_config_errors_exit_two(argv: list[str]) -> None:
@@ -627,6 +643,77 @@ def test_cli_accepts_camera_devices_from_extras(capsys: pytest.CaptureFixture[st
 
     assert main(argv, run=lambda _cfg, **_kwargs: report) == 0
     assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def test_watch_dispatch_forwards_explicit_network_options_before_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Watch returns serve's code and bypasses all one-shot notices and warnings."""
+    seen: list[tuple[YamConfig, dict[str, Any]]] = []
+
+    def fake_serve(cfg: YamConfig, **kwargs: Any) -> int:
+        """Capture the resolved watch call."""
+        seen.append((cfg, kwargs))
+        return 7
+
+    monkeypatch.setattr("inspect_robots_yam.watch.serve", fake_serve)
+
+    code = main(["--watch", *CAMERA_ARGS, "--port", "8811", "--bind", "127.0.0.2"])
+
+    captured = capsys.readouterr()
+    assert code == 7
+    assert seen[0][1] == {
+        "port": 8811,
+        "bind": "127.0.0.2",
+        "bind_was_explicit": True,
+    }
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_size"),
+    [([], (640, 480)), (["-E", "cam_width=1280"], (1280, 480))],
+    ids=["native-defaults", "explicit-width"],
+)
+def test_watch_substitutes_only_unset_resolution_keys(
+    extra_args: list[str],
+    expected_size: tuple[int, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Watch uses native defaults per key while preserving explicit size extras."""
+    seen: list[tuple[YamConfig, dict[str, Any]]] = []
+
+    def fake_serve(cfg: YamConfig, **kwargs: Any) -> int:
+        """Capture the watch config and resolved network defaults."""
+        seen.append((cfg, kwargs))
+        return 0
+
+    monkeypatch.setattr("inspect_robots_yam.watch.serve", fake_serve)
+
+    assert main(["--watch", *CAMERA_ARGS, *extra_args]) == 0
+
+    cfg, kwargs = seen[0]
+    assert (cfg.cam_width, cfg.cam_height) == expected_size
+    assert kwargs == {
+        "port": 8807,
+        "bind": "0.0.0.0",
+        "bind_was_explicit": False,
+    }
+
+
+def test_one_shot_keeps_thumbnail_resolution() -> None:
+    """The watch-only native-size substitution never changes one-shot configs."""
+    seen: list[YamConfig] = []
+    report = HealthReport((), False, (), True, None)
+
+    def capture(cfg: YamConfig, **_kwargs: Any) -> HealthReport:
+        """Capture the config received by the unchanged one-shot path."""
+        seen.append(cfg)
+        return report
+
+    assert main([*CAMERA_ARGS, "--skip-motors"], run=capture) == 0
+    assert (seen[0].cam_width, seen[0].cam_height) == (224, 224)
 
 
 def test_explicit_camera_skip_does_not_print_the_auto_skip_note(

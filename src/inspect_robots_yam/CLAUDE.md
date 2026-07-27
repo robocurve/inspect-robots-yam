@@ -16,6 +16,7 @@ The package is `mypy --strict` clean, ships `py.typed`, and is 100%-covered.
 | `embodiment.py` | `YAMEmbodiment` — i2rt driver with joint and EEF control. Clamp backstop, optional delta→abs, lazy kinematics, gripper de-norm, `SELF_PACED` pacing, operator-keypress success, and joint-space homing/parking. Hardware seams are injected/pragma'd. |
 | `preflight.py` | `build` / `run_preflight` + the `inspect-robots-yam-preflight` CLI: run the compat check, print, exit non-zero on errors. |
 | `health.py` | One-shot camera freshness and packed motor-position health gate, with JSON/human reports, montage output, and injected hardware seams. |
+| `watch.py` | Cameras-only live browser view with per-camera recovery supervision, MJPEG streams, and injected HTTP, clock, and OpenCV seams. |
 | `__init__.py` | Public API fenced by `__all__` (guarded by `tests/test_api_snapshot.py`). |
 
 ## Key invariants

@@ -167,6 +167,24 @@ also be supplied with `-E top_cam_device=...`, `-E left_cam_device=...`, and
 > drops motor torque. Do not use the mid-workspace holdcheck setup, and do not
 > run this command concurrently with an eval.
 
+### Live view: aim the cameras
+
+Stream all three cameras while positioning them:
+
+```bash
+inspect-robots-yam-health --watch \
+  --top-cam /dev/v4l/by-id/...-top \
+  --left-cam /dev/v4l/by-id/...-left \
+  --right-cam /dev/v4l/by-id/...-right
+```
+
+Open `http://<host>:8807/` and press Ctrl-C to stop. Watch never touches the
+motors, so the torque warning above does not apply.
+
+The stream is unauthenticated, and the default `0.0.0.0` bind listens on all
+interfaces. Use `--bind <tailscale-ip>` to limit it to the rig's tailnet
+address.
+
 ## Run on hardware
 
 Write your defaults once. The interactive wizard interviews this plugin's
