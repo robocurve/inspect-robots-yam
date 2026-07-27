@@ -143,6 +143,30 @@ A green preflight means action dim (14), control mode (`joint_pos`), cameras, an
 state keys all line up. It does not prove the joint values are interpreted the
 same way. See *Safety* below.
 
+## Health check: verify the idle rig
+
+Check that all three cameras deliver fresh, non-uniform frames and that both
+arms report finite joint positions within the configured limits:
+
+```bash
+inspect-robots-yam-health \
+  --top-cam /dev/v4l/by-id/...-top \
+  --left-cam /dev/v4l/by-id/...-left \
+  --right-cam /dev/v4l/by-id/...-right
+```
+
+The command writes a labeled montage to `health.jpg`. Use `--out PATH` to
+change the destination, `--json` for a machine-readable report, or
+`--skip-cameras` and `--skip-motors` to run one section. Camera devices can
+also be supplied with `-E top_cam_device=...`, `-E left_cam_device=...`, and
+`-E right_cam_device=...`.
+
+> [!WARNING]
+> Run the health check only while the rig is idle, with both arms at rest or
+> supported and an e-stop in hand. Connecting and then closing the motor driver
+> drops motor torque. Do not use the mid-workspace holdcheck setup, and do not
+> run this command concurrently with an eval.
+
 ## Run on hardware
 
 Write your defaults once. The interactive wizard interviews this plugin's

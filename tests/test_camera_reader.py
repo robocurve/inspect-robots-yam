@@ -11,7 +11,6 @@ rather than left running for the session. Nothing sleeps on the wall clock:
 from __future__ import annotations
 
 import threading
-import time
 from collections.abc import Iterator
 from typing import Any
 
@@ -19,6 +18,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
+from conftest import FakeCapture, FakeCv2, frame
 from inspect_robots_yam.config import YamConfig
 from inspect_robots_yam.embodiment import YAMEmbodiment, _OpenCVCameraReader
 
@@ -36,113 +36,6 @@ def close_readers() -> Iterator[None]:
     yield
     while _OPENED:
         _OPENED.pop().close()
-
-
-def frame(fill: int = 7) -> npt.NDArray[np.uint8]:
-    """One BGR frame at capture resolution, filled with a recognizable value."""
-    return np.full((480, 640, 3), fill, dtype=np.uint8)
-
-
-class FakeCapture:
-    """A ``cv2.VideoCapture`` stand-in that records the calls made against it."""
-
-    def __init__(
-        self,
-        reads: list[tuple[bool, Any]] | None = None,
-        *,
-        opened: bool = True,
-        raise_at: int | None = None,
-        block: threading.Event | None = None,
-        idle_from: int | None = 2,
-    ) -> None:
-        self.calls: list[Any] = []
-        self.reads = list(reads if reads is not None else [(True, frame())])
-        self.count = 0
-        self.released = False
-        self._opened = opened
-        self._raise_at = raise_at
-        self._block = block
-        # A background drain thread reads flat out. Idling once the script is
-        # spent keeps it from burning a core for the length of the test, while
-        # still returning promptly enough for close() to join it.
-        self._idle_from = idle_from
-        self._stop: threading.Event | None = None
-        self._stop_after = 0
-
-    def stop_after(self, stop: threading.Event, reads: int) -> None:
-        """Have the Nth read set ``stop``, so a drain loop ends deterministically."""
-        self._stop, self._stop_after = stop, reads
-
-    def isOpened(self) -> bool:
-        """Whether the device opened, as cv2 reports it."""
-        return self._opened
-
-    def set(self, prop: int, value: float) -> bool:
-        """Record a property write in call order."""
-        self.calls.append(("set", prop, value))
-        return True
-
-    def read(self) -> tuple[bool, Any]:
-        """Return the next scripted result, repeating the last one forever."""
-        self.calls.append(("read",))
-        self.count += 1
-        if self._block is not None and self.count > 1:
-            self._block.wait(timeout=5.0)
-        if self._idle_from is not None and self.count >= self._idle_from:
-            time.sleep(0.01)
-        if self._raise_at is not None and self.count >= self._raise_at:
-            raise RuntimeError("device fell off the bus")
-        if self._stop is not None and self.count >= self._stop_after:
-            self._stop.set()
-        return self.reads[min(self.count, len(self.reads)) - 1]
-
-    def release(self) -> None:
-        """Mark the capture released."""
-        self.released = True
-
-
-class FakeCv2:
-    """The slice of the cv2 module surface the reader touches.
-
-    Only the constants actually used are defined, so a misspelled one raises
-    ``AttributeError`` here instead of passing silently, which is the checking
-    that injecting the module as ``Any`` gives up.
-    """
-
-    CAP_V4L2 = 200
-    CAP_PROP_BUFFERSIZE = 38
-    CAP_PROP_FOURCC = 6
-    CAP_PROP_FRAME_WIDTH = 3
-    CAP_PROP_FRAME_HEIGHT = 4
-    CAP_PROP_OPEN_TIMEOUT_MSEC = 53
-    CAP_PROP_READ_TIMEOUT_MSEC = 54
-    COLOR_BGR2RGB = 4
-
-    class VideoWriter:
-        """Namespace for the fourcc helper the reader calls."""
-
-        @staticmethod
-        def fourcc(*chars: str) -> float:
-            """Return a recognizable code so the recorded `set` is assertable."""
-            return 1448695129.0
-
-    def __init__(self, caps: dict[str, FakeCapture]) -> None:
-        self.caps = caps
-        self.opened: list[str] = []
-
-    def VideoCapture(self, device: str, api: int) -> FakeCapture:
-        """Hand back the scripted capture for a device path."""
-        self.opened.append(device)
-        return self.caps[device]
-
-    def cvtColor(self, src: Any, code: int) -> Any:
-        """Reverse the channel axis, standing in for a BGR to RGB conversion."""
-        return np.asarray(src)[..., ::-1]
-
-    def resize(self, src: Any, size: tuple[int, int]) -> Any:
-        """Return an array of the requested size carrying the source's values."""
-        width, height = size
-        return np.full((height, width, 3), np.asarray(src)[0, 0, :], dtype=np.uint8)
 
 
 class Clock:
