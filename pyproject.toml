@@ -20,7 +20,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "inspect-robots>=0.12",  # EmbodimentInfo.docs (plan 0016)
+    "inspect-robots>=0.25",  # operator_end grading contract (#79, inspect-robots#194)
     "numpy>=1.24",
     "requests>=2.31",
     "json-numpy>=2.1",

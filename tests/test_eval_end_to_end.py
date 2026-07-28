@@ -1,7 +1,8 @@
 """End-to-end: full eval() rollouts of a KitchenBench task on mocked YAM +
-MolmoAct2 — proving the termination_reason -> scorer wiring and chunk replay
-compose (the static compat test cannot show this), and that a trial ending at
-the task horizon still parks the arms at the captured init pose on close."""
+MolmoAct2 — proving the judgement-based wiring (before_scoring ->
+operator_judgement -> task_success fallback) and chunk replay compose (the
+static compat test cannot show this), and that a trial ending at the task
+horizon still parks the arms at the captured init pose on close."""
 
 from __future__ import annotations
 
@@ -42,8 +43,13 @@ def _post(url, payload, timeout_s):
     return {"actions": np.zeros((1, 14), dtype=np.float32), "dt_ms": 100.0}
 
 
-def _always_yes_operator() -> OperatorIO:
-    return OperatorIO(input_fn=lambda _p: "y", output_fn=lambda _m: None)
+def _grade_yes(record, scene) -> None:
+    del scene
+    # The real core hook grades only operator-ended trials; asserting the
+    # reason here makes this e2e observe it, so an embodiment regressing to a
+    # definitive reason fails loudly instead of scoring through task_success.
+    assert record.termination_reason == "operator_end"
+    record.operator_judgement = "y"
 
 
 def _post_away(url, payload, timeout_s):
@@ -82,13 +88,15 @@ def test_eval_scores_success_end_to_end() -> None:
         YamConfig(cam_height=4, cam_width=4),
         driver_factory=lambda _c: _FakeDriver(),
         camera_reader=_cameras,
-        operator=_always_yes_operator(),
+        operator=OperatorIO(input_fn=lambda _p: "", output_fn=lambda _m: None),
         poll_end=lambda: True,  # operator ends every episode immediately
         sleep_fn=lambda _d: None,
         clock=lambda: 0.0,
     )
 
-    logs = rl_eval("kitchenbench/stack", policy, embodiment, sinks=[], seed=0)
+    logs = rl_eval(
+        "kitchenbench/stack", policy, embodiment, sinks=[], seed=0, before_scoring=_grade_yes
+    )
 
     assert len(logs) == 1
     log = logs[0]

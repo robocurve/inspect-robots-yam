@@ -5,10 +5,11 @@ Wraps the i2rt joint-position driver. Designed for real-robot reality:
 * **Safety backstop** — every command is clamped to the configured joint limits
   inside :meth:`step`, *independently* of any Inspect Robots ``Approver`` (so unclamped
   model outputs can never reach the motors).
-* **Operator-in-the-loop success** — there is no privileged oracle; when the
-  operator signals end-of-episode the embodiment returns
-  ``StepResult(terminated=True, termination_reason="success"|"failure")``, which is
-  the only path that reaches the scorer.
+* **Operator-in-the-loop success** — there is no privileged success oracle; the
+  operator's end-of-episode keypress returns
+  ``StepResult(terminated=True, termination_reason="operator_end")`` and the
+  human verdict (with optional grader notes) is captured afterwards by the
+  framework's operator prompt and read by judgement-based scorers.
 * **Self-paced** — declares ``SELF_PACED`` and sleeps to the control rate inside
   :meth:`step` (the framework does not pace for us).
 
@@ -36,7 +37,7 @@ from inspect_robots.embodiment import SELF_PACED, EmbodimentInfo
 from inspect_robots.errors import ConfigError, EmbodimentFault
 from inspect_robots.scene import Scene
 from inspect_robots.spaces import Box
-from inspect_robots.types import Action, Observation, StepResult
+from inspect_robots.types import OPERATOR_END, Action, Observation, StepResult
 
 from inspect_robots_yam import packing
 from inspect_robots_yam._i2rt import (
@@ -1121,7 +1122,7 @@ class YAMEmbodiment:
             self._operator.wait_ready()
             horizon = self._horizon_secs()
             limit = f" Max {horizon:.0f}s." if horizon is not None else ""
-            self._status(f"Running: press any key to end the episode, then y/N to score.{limit}")
+            self._status(f"Running: press any key to end the episode and grade it.{limit}")
         self.num_steps = 0
         self._t_last = self._clock()
         return self._observe(scene.instruction)
@@ -1150,16 +1151,19 @@ class YAMEmbodiment:
         self._emit_status()
 
         obs = self._observe(self._instruction)
-        # Unattended runs have no operator: skip the end poll and its success
-        # prompt entirely; the episode runs to the framework's max_steps.
+        # Unattended runs have no operator: skip the end poll entirely; the
+        # episode runs to the framework's max_steps.
         if not self._cfg.unattended and self._poll_end():
-            self._status(None)  # close the status line before the y/N prompt
-            success = self._operator.confirm_success()
+            self._status(None)  # close the status line before control returns
+            # The operator only signals *that* the episode is over. The verdict,
+            # partial/skip, and grader notes belong to the framework's single
+            # operator prompt, which a definitive reason here would suppress —
+            # so the reason stays non-definitive (inspect-robots#194).
             return StepResult(
                 observation=obs,
                 terminated=True,
-                termination_reason="success" if success else "failure",
-                info={"operator_confirmed": success, **settle_info},
+                termination_reason=OPERATOR_END,
+                info=settle_info,
             )
         return StepResult(observation=obs, terminated=False, info=settle_info)
 
@@ -1490,9 +1494,9 @@ class YAMEmbodiment:
         if self.settle_timeouts >= self._cfg.settle_timeout_budget:
             self._settle_disabled = True
             joint = int(_ARM_SLOTS[int(np.argmax(error))])
-            # logging, not warnings.warn: the operator's y/N verdict is this
-            # embodiment's success signal and no human reads StepResult.info, so
-            # this is the practical notice that a trial's observations degraded.
+            # logging, not warnings.warn: success is graded by the operator at
+            # the framework prompt and no human reads StepResult.info, so this
+            # is the practical notice that a trial's observations degraded.
             # The warnings registry keys on the message text, and a joint parked
             # against a hard stop repeats its residual, so successive trials
             # would be deduped into silence exactly when the rig is worst.

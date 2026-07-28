@@ -349,7 +349,7 @@ def test_terminal_step_result_keeps_the_settle_keys(build_settle: Any) -> None:
     # The terminated step is the final state a scorer judges, which is exactly
     # where settle_disabled would matter most.
     assert result.terminated is True
-    assert result.info["operator_confirmed"] is False
+    assert result.termination_reason == "operator_end"
     assert result.info["settled"] is True
     assert result.info["settle_timeouts"] == 0
 

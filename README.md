@@ -206,7 +206,7 @@ mkdir -p ~/.config/inspect-robots && cat > ~/.config/inspect-robots/config.ini <
 [defaults]
 policy = molmoact2
 embodiment = yam_arms
-scorer = success_at_end    # scores the operator's y/N answer at episode end
+scorer = operator          # scores the verdict you type at the end-of-episode prompt
 max_steps = 1200           # 120 s at 10 Hz
 rerun = true               # live viewer of cams/state/actions (inspect-robots[rerun])
 store_frames = true        # keep the policy's camera frames per run
@@ -258,10 +258,10 @@ inspect-robots "place the fork on the plate"
 ```
 
 The attended flow: position the scene, press Enter to start, press any key to
-end the episode, answer y/N to score. The status line counts up against the
-run's real step limit (`t = 42s / 120s`) with no configuration needed
-(requires inspect-robots newer than 0.8.1; on older cores set
-`max_steps_hint`).
+end the episode, then grade it at the prompt that follows. The status line
+counts up against the run's real step limit (`t = 42s / 120s`) with no
+configuration needed (requires inspect-robots newer than 0.8.1; on older cores
+set `max_steps_hint`).
 
 For exotic camera stacks (or full programmatic control), the Python API takes
 a custom `camera_reader` returning
@@ -281,8 +281,17 @@ pol = MolmoAct2Policy(server_url="http://127.0.0.1:8202")
 print(log.status, log.results.metrics)
 ```
 
-At each episode end the embodiment asks the operator (y/N); a `yes` records
-`termination_reason="success"`, which KitchenBench's `task_success` scorer reads.
+Pressing the end-episode key terminates the episode with
+`termination_reason="operator_end"` — the embodiment itself asks nothing.
+On CLI runs (inspect-robots ≥ 0.25), the framework then asks once per trial:
+`did the robot succeed? [y/n/partial/skip]` plus an optional grader note.
+The bare `eval()` call above never prompts: pass
+`before_scoring=` a callable that sets `record.operator_judgement` (grade
+live, or from your own UI) when driving the Python API directly.
+Score attended runs with the `operator` scorer (reads the recorded judgement);
+KitchenBench's `task_success` reads it too. `success_at_end` only counts
+embodiment-detected success terminations, so it scores operator-graded runs as
+failures — don't pair it with attended yam runs.
 The operator prompts need an interactive terminal: a dead stdin raises
 `EmbodimentFault` (the framework's always-halt path). For runs with no operator,
 set `YamConfig(unattended=True)` (CLI: `-E unattended=true`): all operator

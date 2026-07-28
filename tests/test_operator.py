@@ -35,20 +35,6 @@ def test_wait_ready_dead_stdin_raises_embodiment_fault(exc_type: type[Exception]
         io.wait_ready()
 
 
-def test_confirm_success_affirmative() -> None:
-    for ans in ("y", "Yes", "1", "TRUE", "success", "pass"):
-        inp, _ = _scripted([ans])
-        io = OperatorIO(input_fn=inp)
-        assert io.confirm_success() is True
-
-
-def test_confirm_success_negative() -> None:
-    for ans in ("n", "no", "", "nope"):
-        inp, _ = _scripted([ans])
-        io = OperatorIO(input_fn=inp)
-        assert io.confirm_success() is False
-
-
 def test_default_poll_end_is_callable() -> None:
     # The body is TTY-bound (pragma: no cover); just assert it's wired and callable.
     assert callable(default_poll_end)

@@ -51,15 +51,11 @@ def _cameras(_cfg):
     return {"top_cam": img, "left_cam": img, "right_cam": img}
 
 
-def _operator(answers: list[str] | None = None, *, prompts: list[str] | None = None) -> OperatorIO:
-    seq = list(answers or [])
-
+def _operator(*, prompts: list[str] | None = None) -> OperatorIO:
     def _input(prompt: str) -> str:
         if prompts is not None:
             prompts.append(prompt)
-        if "succeed" not in prompt:
-            return ""
-        return seq.pop(0)
+        return ""
 
     return OperatorIO(input_fn=_input, output_fn=lambda _m: None)
 
@@ -291,24 +287,16 @@ def test_reset_twice_reuses_driver() -> None:
     assert calls["n"] == 1  # driver built once, reused on the second reset
 
 
-def test_step_terminates_success_on_operator_yes() -> None:
-    emb, _, _ = _build(poll_end_seq=[True], operator=_operator(["y"]))
-    emb.reset(Scene(id="s", instruction="x"))
-    result = emb.step(Action(data=np.zeros(14)))
-    assert result.terminated is True
-    assert result.termination_reason == "success"
-    assert result.info["operator_confirmed"] is True
-
-
-def test_step_terminates_failure_on_operator_no() -> None:
+def test_step_terminates_operator_end_without_prompting() -> None:
     prompts: list[str] = []
-    emb, _, _ = _build(poll_end_seq=[True], operator=_operator(["n"], prompts=prompts))
+    emb, _, _ = _build(poll_end_seq=[True], operator=_operator(prompts=prompts))
     emb.reset(Scene(id="s", instruction="x"))
     result = emb.step(Action(data=np.zeros(14)))
     assert result.terminated is True
-    assert result.termination_reason == "failure"
-    assert result.info["operator_confirmed"] is False
-    assert sum("succeed" in prompt for prompt in prompts) == 1
+    assert result.termination_reason == "operator_end"
+    assert "operator_confirmed" not in result.info
+    # Grading is the framework prompt's job; the embodiment asks nothing.
+    assert all("succeed" not in prompt for prompt in prompts)
 
 
 def test_step_continues_when_no_end_signal() -> None:
@@ -400,7 +388,7 @@ def test_unattended_skips_operator_prompts() -> None:
     emb, _, _ = _build(YamConfig(unattended=True), poll_end_seq=[True], operator=op)
     emb.reset(Scene(id="s", instruction="x"))
     result = emb.step(Action(data=np.zeros(14)))
-    assert prompts == []  # neither wait_ready nor confirm_success ran
+    assert prompts == []  # neither wait_ready nor the end poll ran
     assert result.terminated is False  # the end poll is skipped entirely
 
 
@@ -763,7 +751,7 @@ def _build_with_status(cfg: YamConfig | None = None, poll_end_seq: list[bool] | 
         cfg,
         driver_factory=lambda _c: drv,
         camera_reader=_cameras,
-        operator=_operator(["y"]),
+        operator=_operator(),
         poll_end=lambda: polls.pop(0) if polls else False,
         sleep_fn=lambda _s: None,
         clock=lambda: 0.0,
@@ -781,7 +769,7 @@ def test_reset_announces_run_instructions() -> None:
     assert status[:2] == ["homing: ramping arms to start pose", None]
     msg = status[-1]
     assert msg is not None
-    assert "any key" in msg and "y/N" in msg  # how to end + how scoring works
+    assert "any key" in msg and "grade" in msg  # how to end + how scoring works
     assert "120s" in msg  # horizon from max_steps_hint / control_hz
 
 
@@ -815,7 +803,7 @@ def test_status_finishes_with_none_when_operator_ends_episode() -> None:
     emb.reset(Scene(id="s", instruction="x"))
     result = emb.step(Action(data=np.zeros(14)))
     assert result.terminated is True
-    assert status[-1] is None  # line closed before the y/N prompt
+    assert status[-1] is None  # line closed before control returns for grading
 
 
 def test_unattended_runs_emit_no_status() -> None:
