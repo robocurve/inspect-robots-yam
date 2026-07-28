@@ -51,15 +51,11 @@ def _cameras(_cfg):
     return {"top_cam": img, "left_cam": img, "right_cam": img}
 
 
-def _operator(answers: list[str] | None = None, *, prompts: list[str] | None = None) -> OperatorIO:
-    seq = list(answers or [])
-
+def _operator(*, prompts: list[str] | None = None) -> OperatorIO:
     def _input(prompt: str) -> str:
         if prompts is not None:
             prompts.append(prompt)
-        if "succeed" not in prompt:
-            return ""
-        return seq.pop(0)
+        return ""
 
     return OperatorIO(input_fn=_input, output_fn=lambda _m: None)
 

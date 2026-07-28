@@ -45,6 +45,10 @@ def _post(url, payload, timeout_s):
 
 def _grade_yes(record, scene) -> None:
     del scene
+    # The real core hook grades only operator-ended trials; asserting the
+    # reason here makes this e2e observe it, so an embodiment regressing to a
+    # definitive reason fails loudly instead of scoring through task_success.
+    assert record.termination_reason == "operator_end"
     record.operator_judgement = "y"
 
 
