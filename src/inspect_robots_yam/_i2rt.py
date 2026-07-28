@@ -117,7 +117,12 @@ def start_arms_concurrently(
         except BaseException:
             # Main-thread Ctrl-C (or a worker-raised BaseException): wait out
             # both workers so nothing is mid-construction, close whatever was
-            # built, and let the interrupt propagate.
+            # built, and let the interrupt propagate. An init failure already
+            # collected would otherwise vanish with the interrupt — log it.
+            for side, error in errors:
+                logger.error(
+                    "%s arm bring-up failed before the interrupt: %s", side, error, exc_info=error
+                )
             wait(futures)
             for side, future in zip(sides, futures, strict=True):
                 if future.exception() is None:

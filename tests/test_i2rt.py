@@ -471,6 +471,24 @@ def test_worker_base_exception_closes_built_arm_and_propagates() -> None:
     assert right.close_calls == 1
 
 
+def test_interrupt_after_one_failure_logs_the_collected_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def left_factory() -> object:
+        raise RuntimeError("left init failed")
+
+    def right_factory() -> object:
+        raise KeyboardInterrupt
+
+    with (
+        caplog.at_level(logging.ERROR, logger=i2rt_module.__name__),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        start_arms_concurrently(left_factory, right_factory)
+
+    assert "left init failed" in caplog.text
+
+
 def test_bring_up_logs_side_markers(caplog: pytest.LogCaptureFixture) -> None:
     left_sentinel = object()
     right_sentinel = object()
