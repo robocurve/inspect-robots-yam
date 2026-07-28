@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 # The build constraint is required while every published ruckig (i2rt's pinned
@@ -76,6 +78,43 @@ def close_robot_safely(robot: Any) -> None:
 
     chain.motor_interface.close = close_motor_interface_safely
     robot.close()
+
+
+def start_arms_concurrently(
+    left_factory: Callable[[], Any],
+    right_factory: Callable[[], Any],
+) -> tuple[Any, Any]:
+    """Bring up both arms concurrently, tearing down the survivor on failure.
+
+    Each arm's driver init includes a mandatory gripper hard-stop calibration
+    (multiple seconds), and the arms are fully independent hardware (own CAN
+    channel, own control thread), so running the two factories on worker
+    threads cuts bring-up wall-clock to max(left, right). If either factory
+    raises, any arm that did come up is closed via ``close_robot_safely`` —
+    the sequential code leaked it (robocurve/inspect-robots-yam#83) — and the
+    init error is re-raised (left's first when both fail).
+    """
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="yam-arm-init") as pool:
+        futures = [pool.submit(left_factory), pool.submit(right_factory)]
+        results: list[Any] = []
+        errors: list[tuple[str, BaseException]] = []
+        for side, future in zip(("left", "right"), futures, strict=True):
+            try:
+                results.append(future.result())
+            except BaseException as exc:  # re-raised below
+                errors.append((side, exc))
+
+    if not errors:
+        return results[0], results[1]
+
+    for robot in results:
+        try:
+            close_robot_safely(robot)
+        except Exception:
+            logger.warning("closing the surviving arm after an init failure failed", exc_info=True)
+    for side, error in errors[1:]:
+        logger.error("%s arm bring-up also failed: %s", side, error, exc_info=error)
+    raise errors[0][1]
 
 
 def _load_i2rt() -> tuple[Any, Any]:
