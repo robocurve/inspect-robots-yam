@@ -15,3 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   channels through the wizard config.
 - Depth-configured camera slots are outside health-check and `--watch` scope and
   are reported as unchecked.
+- Arm drivers now initialize concurrently, reducing driver initialization
+  wall-clock to approximately the slower arm's time instead of their sum.
+
+### Fixed
+
+- An initialization failure on one arm no longer leaks the other arm's control
+  thread, CAN socket, and torque-enabled motors.
