@@ -283,7 +283,7 @@ print(log.status, log.results.metrics)
 
 Pressing the end-episode key terminates the episode with
 `termination_reason="operator_end"` — the embodiment itself asks nothing.
-On CLI runs (inspect-robots ≥ 0.24), the framework then asks once per trial:
+On CLI runs (inspect-robots ≥ 0.25), the framework then asks once per trial:
 `did the robot succeed? [y/n/partial/skip]` plus an optional grader note.
 The bare `eval()` call above never prompts: pass
 `before_scoring=` a callable that sets `record.operator_judgement` (grade

@@ -37,7 +37,7 @@ from inspect_robots.embodiment import SELF_PACED, EmbodimentInfo
 from inspect_robots.errors import ConfigError, EmbodimentFault
 from inspect_robots.scene import Scene
 from inspect_robots.spaces import Box
-from inspect_robots.types import Action, Observation, StepResult
+from inspect_robots.types import OPERATOR_END, Action, Observation, StepResult
 
 from inspect_robots_yam import packing
 from inspect_robots_yam._i2rt import (
@@ -1162,7 +1162,7 @@ class YAMEmbodiment:
             return StepResult(
                 observation=obs,
                 terminated=True,
-                termination_reason="operator_end",
+                termination_reason=OPERATOR_END,
                 info=settle_info,
             )
         return StepResult(observation=obs, terminated=False, info=settle_info)
