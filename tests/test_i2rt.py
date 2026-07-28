@@ -457,3 +457,32 @@ def test_survivor_close_failure_does_not_mask_init_error(
 
     assert right.close_calls == 1
     assert "close boom" in caplog.text
+
+
+def test_worker_base_exception_closes_built_arm_and_propagates() -> None:
+    right = CloseRecordingRobot()
+
+    def left_factory() -> object:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        start_arms_concurrently(left_factory, lambda: right)
+
+    assert right.close_calls == 1
+
+
+def test_bring_up_logs_side_markers(caplog: pytest.LogCaptureFixture) -> None:
+    left_sentinel = object()
+    right_sentinel = object()
+
+    with caplog.at_level(logging.INFO, logger=i2rt_module.__name__):
+        result = start_arms_concurrently(
+            lambda: left_sentinel,
+            lambda: right_sentinel,
+        )
+
+    assert result == (left_sentinel, right_sentinel)
+    assert "left arm bring-up starting" in caplog.text
+    assert "left arm bring-up complete" in caplog.text
+    assert "right arm bring-up starting" in caplog.text
+    assert "right arm bring-up complete" in caplog.text
