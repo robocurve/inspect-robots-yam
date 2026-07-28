@@ -150,6 +150,10 @@ Check that all three cameras deliver fresh, non-uniform frames and that both
 arms report finite joint positions within the configured limits:
 
 ```bash
+# Uses the devices and CAN channels saved by `inspect-robots setup`.
+inspect-robots-yam-health
+
+# Or override the configured camera slots explicitly.
 inspect-robots-yam-health \
   --top-cam /dev/v4l/by-id/...-top \
   --left-cam /dev/v4l/by-id/...-left \
@@ -160,7 +164,18 @@ The command writes a labeled montage to `health.jpg`. Use `--out PATH` to
 change the destination, `--json` for a machine-readable report, or
 `--skip-cameras` and `--skip-motors` to run one section. Camera devices can
 also be supplied with `-E top_cam_device=...`, `-E left_cam_device=...`, and
-`-E right_cam_device=...`.
+`-E right_cam_device=...`. Explicit flags and `-E` values override the wizard
+config one camera slot at a time. Use `--no-config` to bypass the wizard file
+entirely, including when it is malformed, and recover the previous flag-only
+behavior.
+
+> [!NOTE]
+> The health tool can check and watch only V4L2 `*_cam_device` sources. It
+> reports configured `*_depth_serial` slots as unchecked; they do not pass or
+> fail camera health. On an all-depth rig, camera checks are skipped while
+> motors are still checked, and `--watch` errors because there are no streams
+> this tool can serve. On a mixed rig, the montage and watch page contain only
+> the V4L2 slots.
 
 > [!WARNING]
 > Run the health check only while the rig is idle, with both arms at rest or
@@ -170,10 +185,13 @@ also be supplied with `-E top_cam_device=...`, `-E left_cam_device=...`, and
 
 ### Live view: aim the cameras
 
-Stream all three cameras while positioning them:
+Stream the configured V4L2 cameras while positioning them:
 
 ```bash
-inspect-robots-yam-health --watch \
+inspect-robots-yam-health --watch
+
+# Flags remain available when no wizard config should be used.
+inspect-robots-yam-health --watch --no-config \
   --top-cam /dev/v4l/by-id/...-top \
   --left-cam /dev/v4l/by-id/...-left \
   --right-cam /dev/v4l/by-id/...-right
@@ -409,12 +427,13 @@ after homing.
 > bundled check per arm and per mode, arms mid-workspace, e-stop in hand:
 >
 > ```bash
-> inspect-robots-yam-holdcheck can_left --zero-gravity true
-> inspect-robots-yam-holdcheck can_right --zero-gravity true
+> inspect-robots-yam-holdcheck left --zero-gravity true
+> inspect-robots-yam-holdcheck right --zero-gravity true
 > ```
 >
-> (Channel names match your rig's CAN interfaces; `can0`/`can1` on default
-> setups.) PASS in the mode you run agents in closes the verification. The
+> (`left` and `right` resolve through the wizard config; a raw interface such
+> as `can0` or `can_left` still passes through unchanged.) PASS in the mode you
+> run agents in closes the verification. The
 > default `zero_gravity_mode=true` puts the i2rt driver in a
 > gravity-compensated, compliant mode; if it drifts but `--zero-gravity
 > false` holds, run agents with `-E zero_gravity_mode=false`. If both drift,
