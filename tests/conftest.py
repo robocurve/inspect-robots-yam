@@ -27,6 +27,7 @@ from __future__ import annotations
 import dataclasses
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -40,6 +41,12 @@ from inspect_robots_yam.operator import OperatorIO
 #: Comfortably above _SETTLE_POLL_S (0.01), so the elapsed bound trips at 20
 #: polls while the count bound would need 100.
 READ_ADVANCE_S = 0.05
+
+
+@pytest.fixture(autouse=True)
+def isolate_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Keep tests that do not opt into a config isolated from the developer's rig."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
 
 def frame(fill: int = 7) -> npt.NDArray[np.uint8]:

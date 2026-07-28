@@ -5,15 +5,24 @@ Connecting and then closing the driver drops motor torque. This is not the
 mid-workspace setup used by holdcheck.
 
 The one-shot CLI exits 0 when every executed check passes and 1 when any
-hardware check reports a fault. It exits 2 for bad flags, a partial camera set,
-an unknown ``-E`` key, a camera device set by both a flag and ``-E``,
-``--skip-cameras`` with a configured camera device, an invocation that would
-execute zero checks, ``--settle-s`` non-finite or below the 0.2-second floor,
-``--joint-epsilon`` non-finite or negative, ``--watch`` combined with a skip or
-``--json``, ``--watch`` without configured cameras, ``--port`` or ``--bind``
-without ``--watch``, or a provided port outside 1 through 65535. Those usage
-errors are routed through ``parser.error``. A watch bind failure also returns
-2 directly from ``watch.serve``.
+hardware check reports a fault. A bare invocation checks the wizard-configured
+rig; ``--no-config`` restores flag-only behavior and bypasses even malformed
+config files. Depth-configured slots are reported as unchecked because this
+tool checks only V4L2 colour devices; an all-depth rig still checks motors but
+skips cameras, and cannot use ``--watch`` because it has no servable devices.
+
+The CLI exits 2 for bad flags, a partial camera set, an unknown ``-E`` key, a
+camera device set by both a flag and ``-E``, ``--skip-cameras`` with an explicit
+camera-device or depth-serial key (wizard-configured camera keys are stripped
+instead), an invocation that would execute zero checks, ``--settle-s``
+non-finite or below the 0.2-second floor, ``--joint-epsilon`` non-finite or
+negative, ``--watch`` combined with a skip or ``--json``, ``--watch`` without
+at least one configured V4L2 device (including an all-depth rig), ``--port`` or
+``--bind`` without ``--watch``, or a provided port outside 1 through 65535.
+Those usage errors are routed through ``parser.error``. A watch bind failure
+also returns 2 directly from ``watch.serve``. A malformed wizard config exits
+via the core reader's guided ``SystemExit`` naming the file (bypass with
+``--no-config``).
 """
 
 from __future__ import annotations
@@ -22,6 +31,7 @@ import argparse
 import dataclasses
 import json
 import math
+import os
 import sys
 import time
 from collections.abc import Callable, Mapping
@@ -32,15 +42,24 @@ import numpy as np
 import numpy.typing as npt
 
 from inspect_robots_yam import embodiment, packing
+from inspect_robots_yam._user_config import YamDefaults, load_yam_defaults
 from inspect_robots_yam.config import DEFAULT_CAMERAS, YamConfig
 
 UNIFORM_STD_MAX = 1.0
 MIN_SETTLE_S = 0.2
 
-#: Config keys naming V4L2 device paths. Their ``-E`` values stay raw strings:
-#: scalar coercion would turn ``-E top_cam_device=0`` into an int that only
-#: reaches a camera by cv2's index fallback, on whatever enumerates as 0.
-_CAMERA_DEVICE_KEYS = frozenset({"top_cam_device", "left_cam_device", "right_cam_device"})
+#: Argparse dests for --top-cam/--left-cam/--right-cam; also the flag-vs-``-E``
+#: conflict domain (depth serials have no flags).
+_CAMERA_FLAG_KEYS = frozenset({"top_cam_device", "left_cam_device", "right_cam_device"})
+_DEPTH_SERIAL_KEYS = frozenset({"top_depth_serial", "left_depth_serial", "right_depth_serial"})
+#: ``-E`` values that must never be scalar-coerced: a numeric device index or
+#: RealSense serial would otherwise arrive as int and traceback in validation.
+_RAW_STRING_KEYS = _CAMERA_FLAG_KEYS | _DEPTH_SERIAL_KEYS
+#: Every camera-slot key: the skip-conflict and slot-supersession domain.
+_CAMERA_SLOT_KEYS = _RAW_STRING_KEYS
+_CHANNEL_KEYS = frozenset({"left_channel", "right_channel"})
+_CAMERA_SLOTS = ("top", "left", "right")
+_DEPTH_UNCHECKED_REASON = "depth-configured; not checked by this tool"
 
 Image = npt.NDArray[np.uint8]
 
@@ -72,6 +91,14 @@ class CheckResult:
 
 
 @dataclass(frozen=True)
+class UncheckedCamera:
+    """A configured camera slot outside this tool's V4L2 checking scope."""
+
+    name: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class HealthReport:
     """The immutable results of the requested camera and motor sections."""
 
@@ -80,6 +107,7 @@ class HealthReport:
     joints: tuple[CheckResult, ...]
     joints_skipped: bool
     montage_path: str | None
+    unchecked_cameras: tuple[UncheckedCamera, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -103,7 +131,8 @@ def _default_write_montage(
     reference = next(frames[name] for name in DEFAULT_CAMERAS if name in frames)
     height, width = reference.shape[:2]
     tiles: list[Image] = []
-    for name in DEFAULT_CAMERAS:
+    checked_names = tuple(name for name in DEFAULT_CAMERAS if name in frames or name in faulted)
+    for name in checked_names:
         tile: Image
         if name in faulted:
             tile = np.zeros((height, width, 3), dtype=np.uint8)
@@ -130,7 +159,19 @@ def _default_write_montage(
 def _camera_devices(cfg: YamConfig) -> tuple[tuple[str, str], ...]:
     devices = (cfg.top_cam_device, cfg.left_cam_device, cfg.right_cam_device)
     return tuple(
-        (name, cast(str, device)) for name, device in zip(DEFAULT_CAMERAS, devices, strict=True)
+        (name, device)
+        for name, device in zip(DEFAULT_CAMERAS, devices, strict=True)
+        if device is not None
+    )
+
+
+def _unchecked_depth_cameras(cfg: YamConfig) -> tuple[UncheckedCamera, ...]:
+    """Return configured RealSense slots that this V4L2-only tool cannot check."""
+    serials = (cfg.top_depth_serial, cfg.left_depth_serial, cfg.right_depth_serial)
+    return tuple(
+        UncheckedCamera(name=name, reason=_DEPTH_UNCHECKED_REASON)
+        for name, serial in zip(DEFAULT_CAMERAS, serials, strict=True)
+        if serial is not None
     )
 
 
@@ -212,8 +253,9 @@ def run_health(
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> HealthReport:
     """Run the requested checks once and release every constructed hardware handle."""
-    cameras_configured = cfg.top_cam_device is not None
+    cameras_configured = bool(_camera_devices(cfg))
     cameras_skipped = skip_cameras or not cameras_configured
+    unchecked_cameras = _unchecked_depth_cameras(cfg)
     camera_results: tuple[CheckResult, ...] = ()
     captured: dict[str, Image] = {}
     montage_path: str | None = None
@@ -252,6 +294,7 @@ def run_health(
         joints=joint_results,
         joints_skipped=skip_motors,
         montage_path=montage_path,
+        unchecked_cameras=unchecked_cameras,
     )
 
 
@@ -272,7 +315,12 @@ def _parse_scalar(text: str) -> bool | int | float | str:
 def _format_human(report: HealthReport) -> str:
     lines = ["name                  status   detail"]
     if report.cameras_skipped:
-        lines.append("cameras               SKIPPED")
+        detail = (
+            " configured slots are depth-configured; not checked by this tool"
+            if report.unchecked_cameras
+            else ""
+        )
+        lines.append(f"cameras               SKIPPED {detail}".rstrip())
     else:
         lines.extend(
             f"{result.name:<21} {'OK' if result.ok else 'FAULT':<8} {result.detail}"
@@ -297,11 +345,16 @@ def _parse_extras(parser: argparse.ArgumentParser, values: list[str]) -> dict[st
         key, value = assignment.split("=", 1)
         if not key:
             parser.error("-E config key cannot be empty")
-        extras[key] = value if key in _CAMERA_DEVICE_KEYS else _parse_scalar(value)
+        extras[key] = value if key in _RAW_STRING_KEYS else _parse_scalar(value)
     return extras
 
 
-def main(argv: list[str] | None = None, *, run: RunHealth = run_health) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    run: RunHealth = run_health,
+) -> int:
     """Run the CLI, returning 0 for healthy, 1 for faults, or exiting 2 on usage errors."""
     parser = argparse.ArgumentParser(
         prog="inspect-robots-yam-health",
@@ -314,6 +367,11 @@ def main(argv: list[str] | None = None, *, run: RunHealth = run_health) -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--skip-cameras", action="store_true")
     parser.add_argument("--skip-motors", action="store_true")
+    parser.add_argument(
+        "--no-config",
+        action="store_true",
+        help="ignore wizard-configured devices and use only flags and builtins",
+    )
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--bind", default=None)
@@ -328,9 +386,10 @@ def main(argv: list[str] | None = None, *, run: RunHealth = run_health) -> int:
         parser.error("--joint-epsilon must be finite and non-negative")
 
     extras = _parse_extras(parser, args.extras)
-    camera_keys = _CAMERA_DEVICE_KEYS
-    flag_values = {key: getattr(args, key) for key in camera_keys if getattr(args, key) is not None}
-    conflicts = camera_keys & extras.keys() & flag_values.keys()
+    flag_values = {
+        key: getattr(args, key) for key in _CAMERA_FLAG_KEYS if getattr(args, key) is not None
+    }
+    conflicts = _CAMERA_FLAG_KEYS & extras.keys() & flag_values.keys()
     if conflicts:
         parser.error(f"camera device set by both flag and -E: {sorted(conflicts)}")
     if args.watch and (args.skip_cameras or args.skip_motors or args.json):
@@ -339,17 +398,51 @@ def main(argv: list[str] | None = None, *, run: RunHealth = run_health) -> int:
         parser.error("--port must be between 1 and 65535")
     if not args.watch and (args.port is not None or args.bind is not None):
         parser.error("--port and --bind require --watch")
-    if args.skip_cameras and (camera_keys & (extras.keys() | flag_values.keys())):
-        parser.error("--skip-cameras cannot be combined with configured camera devices")
+    if args.skip_cameras and (_CAMERA_SLOT_KEYS & (extras.keys() | flag_values.keys())):
+        parser.error(
+            "--skip-cameras cannot be combined with explicit camera devices or depth serials"
+        )
 
-    config_values = {**extras, **flag_values}
+    yam_defaults = (
+        YamDefaults(args={}, source=None, owner=None)
+        if args.no_config
+        else load_yam_defaults(os.environ if env is None else env)
+    )
+    config_args = dict(yam_defaults.args)
+    if args.skip_cameras:
+        for key in _CAMERA_SLOT_KEYS:
+            config_args.pop(key, None)
+    if args.skip_motors:
+        for key in _CHANNEL_KEYS:
+            config_args.pop(key, None)
+
+    explicit_keys = extras.keys() | flag_values.keys()
+    explicit_camera_keys = _CAMERA_SLOT_KEYS & explicit_keys
+    for slot in _CAMERA_SLOTS:
+        slot_keys = {f"{slot}_cam_device", f"{slot}_depth_serial"}
+        if slot_keys & explicit_camera_keys:
+            for key in slot_keys:
+                config_args.pop(key, None)
+
+    contributed_keys = config_args.keys() - explicit_keys
+    config_values = {**config_args, **extras, **flag_values}
+    if contributed_keys:
+        print(
+            f"devices: from {yam_defaults.source} (embodiment {yam_defaults.owner})",
+            file=sys.stderr,
+        )
     try:
         cfg = YamConfig.from_kwargs(**config_values)
     except (ValueError, TypeError) as exc:
         parser.error(str(exc))
 
-    cameras_configured = cfg.top_cam_device is not None
+    cameras_configured = bool(_camera_devices(cfg))
     if args.watch and not cameras_configured:
+        if _unchecked_depth_cameras(cfg):
+            parser.error(
+                "--watch requires configured V4L2 camera devices; configured slots "
+                "are depth-configured and not served by this tool"
+            )
         parser.error("--watch requires configured camera devices")
     if args.watch:
         for key, value in (("cam_width", 640), ("cam_height", 480)):
@@ -372,8 +465,25 @@ def main(argv: list[str] | None = None, *, run: RunHealth = run_health) -> int:
     if not cameras_will_run and not motors_will_run:
         parser.error("invocation would execute zero checks")
 
-    if not cameras_configured and not args.skip_cameras:
-        print("note: no camera devices configured; camera checks are skipped", file=sys.stderr)
+    unchecked_cameras = _unchecked_depth_cameras(cfg)
+    if not args.skip_cameras:
+        for unchecked in unchecked_cameras:
+            print(
+                f"{unchecked.name}: skipped ({unchecked.reason})",
+                file=sys.stderr,
+            )
+        if not cameras_configured:
+            if unchecked_cameras:
+                print(
+                    "note: camera checks are skipped because configured slots "
+                    "are depth-configured; not checked by this tool",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "note: no camera devices configured; camera checks are skipped",
+                    file=sys.stderr,
+                )
     if motors_will_run:
         print(
             "warning: arms must be at rest or supported; closing the driver drops motor torque",

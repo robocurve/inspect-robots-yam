@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -15,6 +16,8 @@ from inspect_robots_yam.config import DEFAULT_CAMERAS, YamConfig
 from inspect_robots_yam.health import (
     CheckResult,
     HealthReport,
+    UncheckedCamera,
+    _camera_devices,
     _default_reader_factory,
     _default_write_montage,
     _format_human,
@@ -36,6 +39,23 @@ CAMERA_ARGS = [
     "--right-cam",
     "/dev/right",
 ]
+
+
+def write_config(
+    tmp_path: Path,
+    values: Mapping[str, str],
+    *,
+    owner: str = "yam_arms",
+) -> tuple[dict[str, str], Path]:
+    """Write one wizard-style embodiment config and return its isolated env and path."""
+    path = tmp_path / "inspect-robots" / "config.ini"
+    path.parent.mkdir()
+    args = "\n".join(f"{key} = {value}" for key, value in values.items())
+    path.write_text(
+        f"[defaults]\nembodiment = {owner}\n[embodiment.args]\n{args}\n",
+        encoding="utf-8",
+    )
+    return {"XDG_CONFIG_HOME": str(tmp_path)}, path
 
 
 def image(seed: int = 0, shape: tuple[int, int, int] = (3, 4, 3)) -> np.ndarray:
@@ -488,6 +508,369 @@ def test_extra_camera_device_values_stay_strings() -> None:
         "1",
         "2",
     )
+
+
+def test_bare_invocation_uses_rgb_wizard_devices_and_attributes_them(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env, path = write_config(
+        tmp_path,
+        {
+            **CAMERA_KWARGS,
+            "left_channel": "can_left",
+            "right_channel": "can_right",
+        },
+    )
+    seen: list[tuple[YamConfig, dict[str, object]]] = []
+
+    def capture(cfg: YamConfig, **kwargs: object) -> HealthReport:
+        seen.append((cfg, kwargs))
+        return HealthReport((), False, (), False, None)
+
+    assert main([], env=env, run=capture) == 0
+
+    cfg, kwargs = seen[0]
+    assert _camera_devices(cfg) == (
+        ("top_cam", "/dev/top"),
+        ("left_cam", "/dev/left"),
+        ("right_cam", "/dev/right"),
+    )
+    assert (cfg.left_channel, cfg.right_channel) == ("can_left", "can_right")
+    assert kwargs["skip_cameras"] is False
+    assert capsys.readouterr().err.startswith(f"devices: from {path} (embodiment yam_arms)\n")
+
+
+@pytest.mark.parametrize(
+    ("override", "expected"),
+    [
+        (["--top-cam", "/dev/flag-top"], "/dev/flag-top"),
+        (["-E", "top_cam_device=/dev/extra-top"], "/dev/extra-top"),
+    ],
+    ids=["flag", "extra"],
+)
+def test_explicit_camera_values_override_wizard_config(
+    override: list[str],
+    expected: str,
+    tmp_path: Path,
+) -> None:
+    env, _ = write_config(tmp_path, CAMERA_KWARGS)
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return HealthReport((), False, (), True, None)
+
+    assert main([*override, "--skip-motors"], env=env, run=capture) == 0
+    assert seen[0].top_cam_device == expected
+
+
+def test_explicit_depth_serial_supersedes_both_config_keys_for_its_slot(
+    tmp_path: Path,
+) -> None:
+    env, _ = write_config(tmp_path, CAMERA_KWARGS)
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return HealthReport((), False, (), True, None)
+
+    assert (
+        main(
+            [
+                "-E",
+                "top_depth_serial=838212071234",
+                "--skip-motors",
+            ],
+            env=env,
+            run=capture,
+        )
+        == 0
+    )
+    cfg = seen[0]
+    assert cfg.top_cam_device is None
+    assert cfg.top_depth_serial == "838212071234"
+    assert isinstance(cfg.top_depth_serial, str)
+
+
+def test_mixed_camera_config_checks_only_rgb_slots_and_writes_their_montage() -> None:
+    cfg = YamConfig(
+        top_cam_device="/dev/top",
+        left_depth_serial="left-depth",
+        right_cam_device="/dev/right",
+    )
+    readers = ReaderFactory()
+    written: list[tuple[str, set[str], set[str]]] = []
+
+    report = run(
+        cfg=cfg,
+        readers=readers,
+        montage=lambda path, frames, faulted: written.append((path, set(frames), set(faulted))),
+    )
+
+    assert report.ok
+    assert [result.name for result in report.cameras] == ["top_cam", "right_cam"]
+    assert report.unchecked_cameras == (
+        UncheckedCamera("left_cam", "depth-configured; not checked by this tool"),
+    )
+    assert readers.devices == [("top_cam", "/dev/top"), ("right_cam", "/dev/right")]
+    assert written == [("health.jpg", {"top_cam", "right_cam"}, set())]
+
+
+def test_default_montage_accepts_a_mixed_rig_camera_subset() -> None:
+    cv2 = FakeCv2()
+
+    _default_write_montage(
+        "mixed.jpg",
+        {"top_cam": image(1), "right_cam": image(2)},
+        frozenset(),
+        cv2_module=cv2,
+    )
+
+    assert cv2.put_text_calls == [("top_cam", True), ("right_cam", True)]
+    assert cv2.writes[0][1].shape == (3, 8, 3)
+
+
+def test_json_lists_unchecked_depth_cameras(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = HealthReport(
+        cameras=(CheckResult("top_cam", True, ""),),
+        cameras_skipped=False,
+        joints=(),
+        joints_skipped=True,
+        montage_path=None,
+        unchecked_cameras=(
+            UncheckedCamera("left_cam", "depth-configured; not checked by this tool"),
+        ),
+    )
+
+    assert (
+        main(
+            [*CAMERA_ARGS, "--skip-motors", "--json"],
+            run=lambda _cfg, **_kwargs: report,
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["unchecked_cameras"] == [
+        {
+            "name": "left_cam",
+            "reason": "depth-configured; not checked by this tool",
+        }
+    ]
+
+
+def test_all_depth_config_skips_cameras_but_checks_motors(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env, _ = write_config(
+        tmp_path,
+        {
+            "top_depth_serial": "top-depth",
+            "left_depth_serial": "left-depth",
+            "right_depth_serial": "right-depth",
+        },
+    )
+    reports: list[HealthReport] = []
+
+    def capture(cfg: YamConfig, **kwargs: object) -> HealthReport:
+        report = run_health(
+            cfg,
+            out_path=None,
+            settle_s=0.2,
+            joint_epsilon=0.02,
+            skip_cameras=bool(kwargs["skip_cameras"]),
+            skip_motors=bool(kwargs["skip_motors"]),
+            reader_factory=lambda _name, _device: pytest.fail(
+                "depth slot constructed a V4L2 reader"
+            ),
+            driver_factory=lambda _cfg: FakeDriver(good_positions()),
+        )
+        reports.append(report)
+        return report
+
+    assert main([], env=env, run=capture) == 0
+
+    report = reports[0]
+    assert report.cameras_skipped
+    assert report.cameras == ()
+    assert len(report.unchecked_cameras) == 3
+    assert len(report.joints) == packing.TOTAL_DIM
+    captured = capsys.readouterr()
+    assert "top_cam: skipped (depth-configured; not checked by this tool)" in captured.err
+    assert "camera checks are skipped because configured slots are depth-configured" in captured.err
+    assert "cameras               SKIPPED" in captured.out
+    assert "configured slots are depth-configured" in captured.out
+
+
+def test_cross_layer_duplicate_device_attributes_config_before_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env, path = write_config(tmp_path, CAMERA_KWARGS)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--top-cam", "/dev/left"], env=env)
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    attribution = f"devices: from {path} (embodiment yam_arms)"
+    assert attribution in captured.err
+    assert captured.err.index(attribution) < captured.err.index("duplicate camera device")
+
+
+def test_skip_cameras_strips_config_only_camera_keys(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env, _ = write_config(tmp_path, CAMERA_KWARGS)
+    report = HealthReport((), True, (), False, None)
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return report
+
+    assert main(["--skip-cameras"], env=env, run=capture) == 0
+    # The strip is observable: no config camera keys reach the config, and a
+    # camera-only contribution earns no attribution line.
+    assert seen[0].top_cam_device is None
+    assert seen[0].left_cam_device is None
+    assert seen[0].right_cam_device is None
+    assert "devices: from" not in capsys.readouterr().err
+
+
+def test_skip_cameras_survives_stale_duplicate_device_config(tmp_path: Path) -> None:
+    env, _ = write_config(
+        tmp_path,
+        {
+            "top_cam_device": "/dev/same",
+            "left_cam_device": "/dev/same",
+            "right_cam_device": "/dev/same",
+        },
+    )
+    report = HealthReport((), True, (), False, None)
+
+    assert main(["--skip-cameras"], env=env, run=lambda _cfg, **_kwargs: report) == 0
+
+
+def test_skip_cameras_keeps_config_depth_slots_out_of_the_report(tmp_path: Path) -> None:
+    env, _ = write_config(
+        tmp_path,
+        {
+            "top_depth_serial": "s-top",
+            "left_depth_serial": "s-left",
+            "right_depth_serial": "s-right",
+        },
+    )
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return HealthReport((), True, (), False, None)
+
+    assert main(["--skip-cameras"], env=env, run=capture) == 0
+    assert seen[0].top_depth_serial is None
+
+
+def test_skip_motors_strips_config_channel_keys(tmp_path: Path) -> None:
+    env, _ = write_config(
+        tmp_path,
+        {**CAMERA_KWARGS, "left_channel": "can_left", "right_channel": "can_right"},
+    )
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return HealthReport((), False, (), True, None)
+
+    # Cameras keep the run alive; the channel strip must leave the builtin
+    # channel names, not the wizard's.
+    assert main(["--skip-motors"], env=env, run=capture) == 0
+    assert seen[0].left_channel == "can0"
+    assert seen[0].right_channel == "can1"
+    assert seen[0].top_cam_device == CAMERA_KWARGS["top_cam_device"]
+
+
+def test_skip_cameras_rejects_an_explicit_depth_serial() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--skip-cameras", "-E", "top_depth_serial=123"])
+
+    assert exc_info.value.code == 2
+
+
+def test_watch_uses_mixed_config_and_dispatches_only_rgb_devices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env, _ = write_config(
+        tmp_path,
+        {
+            "top_cam_device": "/dev/top",
+            "left_depth_serial": "left-depth",
+            "right_cam_device": "/dev/right",
+        },
+    )
+    seen: list[YamConfig] = []
+
+    def fake_serve(cfg: YamConfig, **_kwargs: object) -> int:
+        seen.append(cfg)
+        return 0
+
+    monkeypatch.setattr("inspect_robots_yam.watch.serve", fake_serve)
+
+    assert main(["--watch"], env=env) == 0
+    assert _camera_devices(seen[0]) == (
+        ("top_cam", "/dev/top"),
+        ("right_cam", "/dev/right"),
+    )
+
+
+def test_all_depth_watch_error_is_depth_aware(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env, _ = write_config(
+        tmp_path,
+        {
+            "top_depth_serial": "top-depth",
+            "left_depth_serial": "left-depth",
+            "right_depth_serial": "right-depth",
+        },
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--watch"], env=env)
+
+    assert exc_info.value.code == 2
+    assert "configured slots are depth-configured" in capsys.readouterr().err
+
+
+def test_no_config_restores_watch_without_devices_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env, _ = write_config(tmp_path, CAMERA_KWARGS)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--watch", "--no-config"], env=env)
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "--watch requires configured camera devices" in captured.err
+    assert "devices: from" not in captured.err
+
+
+def test_attribution_is_omitted_when_every_config_key_is_superseded(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env, _ = write_config(tmp_path, CAMERA_KWARGS)
+    report = HealthReport((), False, (), True, None)
+
+    assert main([*CAMERA_ARGS, "--skip-motors"], env=env, run=lambda _c, **_k: report) == 0
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.parametrize(
