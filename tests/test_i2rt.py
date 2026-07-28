@@ -17,6 +17,7 @@ from inspect_robots_yam._i2rt import (
     _load_i2rt,
     _load_i2rt_kinematics,
     close_robot_safely,
+    start_arms_concurrently,
 )
 from inspect_robots_yam.config import YamConfig
 from inspect_robots_yam.embodiment import YAMEmbodiment
@@ -347,3 +348,159 @@ def test_device_slots_cover_channels_and_cameras_with_valid_config_args() -> Non
         "left_cam_device",
         "right_cam_device",
     }
+
+
+class CloseRecordingRobot:
+    def __init__(self, close_error: Exception | None = None) -> None:
+        self.close_calls = 0
+        self.close_error = close_error
+
+    def close(self) -> None:
+        self.close_calls += 1
+        if self.close_error is not None:
+            raise self.close_error
+
+
+def test_start_arms_concurrently_returns_left_right_in_order() -> None:
+    left_sentinel = object()
+    right_sentinel = object()
+
+    assert start_arms_concurrently(
+        lambda: left_sentinel,
+        lambda: right_sentinel,
+    ) == (left_sentinel, right_sentinel)
+
+
+def test_start_arms_concurrently_actually_overlaps() -> None:
+    barrier = threading.Barrier(2, timeout=5)
+    left_sentinel = object()
+    right_sentinel = object()
+
+    def left_factory() -> object:
+        barrier.wait()
+        return left_sentinel
+
+    def right_factory() -> object:
+        barrier.wait()
+        return right_sentinel
+
+    assert start_arms_concurrently(left_factory, right_factory) == (
+        left_sentinel,
+        right_sentinel,
+    )
+
+
+def test_left_failure_closes_right_and_reraises() -> None:
+    right = CloseRecordingRobot()
+
+    def left_factory() -> object:
+        raise RuntimeError("left CAN down")
+
+    with pytest.raises(RuntimeError, match="left CAN down"):
+        start_arms_concurrently(left_factory, lambda: right)
+
+    assert right.close_calls == 1
+
+
+def test_right_failure_closes_left_and_reraises() -> None:
+    left = CloseRecordingRobot()
+
+    def right_factory() -> object:
+        raise RuntimeError("right CAN down")
+
+    with pytest.raises(RuntimeError, match="right CAN down"):
+        start_arms_concurrently(lambda: left, right_factory)
+
+    assert left.close_calls == 1
+
+
+def test_both_failures_raise_left_and_log_right(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    left_robots: list[CloseRecordingRobot] = []
+    right_robots: list[CloseRecordingRobot] = []
+
+    def left_factory() -> CloseRecordingRobot:
+        left_robots.append(CloseRecordingRobot())
+        raise RuntimeError("left init failed")
+
+    def right_factory() -> CloseRecordingRobot:
+        right_robots.append(CloseRecordingRobot())
+        raise ValueError("right init failed")
+
+    with (
+        caplog.at_level(logging.ERROR, logger=i2rt_module.__name__),
+        pytest.raises(RuntimeError, match="left init failed"),
+    ):
+        start_arms_concurrently(left_factory, right_factory)
+
+    assert "right init failed" in caplog.text
+    assert len(left_robots) == 1
+    assert len(right_robots) == 1
+    assert left_robots[0].close_calls == 0
+    assert right_robots[0].close_calls == 0
+
+
+def test_survivor_close_failure_does_not_mask_init_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    right = CloseRecordingRobot(ValueError("close boom"))
+
+    def left_factory() -> object:
+        raise RuntimeError("init boom")
+
+    with (
+        caplog.at_level(logging.WARNING, logger=i2rt_module.__name__),
+        pytest.raises(RuntimeError, match="init boom"),
+    ):
+        start_arms_concurrently(left_factory, lambda: right)
+
+    assert right.close_calls == 1
+    assert "close boom" in caplog.text
+
+
+def test_worker_base_exception_closes_built_arm_and_propagates() -> None:
+    right = CloseRecordingRobot()
+
+    def left_factory() -> object:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        start_arms_concurrently(left_factory, lambda: right)
+
+    assert right.close_calls == 1
+
+
+def test_interrupt_after_one_failure_logs_the_collected_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def left_factory() -> object:
+        raise RuntimeError("left init failed")
+
+    def right_factory() -> object:
+        raise KeyboardInterrupt
+
+    with (
+        caplog.at_level(logging.ERROR, logger=i2rt_module.__name__),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        start_arms_concurrently(left_factory, right_factory)
+
+    assert "left init failed" in caplog.text
+
+
+def test_bring_up_logs_side_markers(caplog: pytest.LogCaptureFixture) -> None:
+    left_sentinel = object()
+    right_sentinel = object()
+
+    with caplog.at_level(logging.INFO, logger=i2rt_module.__name__):
+        result = start_arms_concurrently(
+            lambda: left_sentinel,
+            lambda: right_sentinel,
+        )
+
+    assert result == (left_sentinel, right_sentinel)
+    assert "left arm bring-up starting" in caplog.text
+    assert "left arm bring-up complete" in caplog.text
+    assert "right arm bring-up starting" in caplog.text
+    assert "right arm bring-up complete" in caplog.text

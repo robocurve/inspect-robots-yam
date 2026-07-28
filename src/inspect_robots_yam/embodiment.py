@@ -45,6 +45,7 @@ from inspect_robots_yam._i2rt import (
     _load_i2rt,
     _load_i2rt_kinematics,
     close_robot_safely,
+    start_arms_concurrently,
 )
 from inspect_robots_yam.config import (
     DEFAULT_CAMERAS,
@@ -182,15 +183,20 @@ def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cov
     # strings, so GripperType(...)/from_string_name would reject the config names.
     # YamConfig.__post_init__ already validated the name against the supported set.
     gripper = GripperType[cfg.gripper_type]
-    left = get_yam_robot(
-        channel=cfg.left_channel,
-        gripper_type=gripper,
-        zero_gravity_mode=cfg.zero_gravity_mode,
-    )
-    right = get_yam_robot(
-        channel=cfg.right_channel,
-        gripper_type=gripper,
-        zero_gravity_mode=cfg.zero_gravity_mode,
+
+    def _make_arm(channel: str) -> Any:
+        return get_yam_robot(
+            channel=channel,
+            gripper_type=gripper,
+            zero_gravity_mode=cfg.zero_gravity_mode,
+        )
+
+    # Both arms are independent hardware (own CAN channel, own control
+    # thread) and each pays a multi-second gripper calibration on every
+    # boot (encoder frame resets at power-off), so bring them up together.
+    left, right = start_arms_concurrently(
+        lambda: _make_arm(cfg.left_channel),
+        lambda: _make_arm(cfg.right_channel),
     )
 
     class _Real:
