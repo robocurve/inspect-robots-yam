@@ -122,7 +122,8 @@ def request(
 
 def test_index_lists_canonical_labeled_streams() -> None:
     """The index contains the rig title and all three ordered stream URLs."""
-    handler, sock = request("/", HandlerServer({}, FakeCv2()))
+    supervisors = {name: StubSupervisor([image()]) for name in DEFAULT_CAMERAS}
+    handler, sock = request("/", HandlerServer(supervisors, FakeCv2()))
 
     response = bytes(sock.sent)
     assert b"200 OK" in response
@@ -133,6 +134,22 @@ def test_index_lists_canonical_labeled_streams() -> None:
         assert f"<figcaption>{name}</figcaption>".encode() in response
     assert b"border:3px solid #00e676" in response
     assert handler.close_connection
+
+
+def test_mixed_rig_index_lists_only_served_camera_slots() -> None:
+    """The index never advertises depth slots that have no stream supervisor."""
+    supervisors = {
+        "top_cam": StubSupervisor([image()]),
+        "right_cam": StubSupervisor([image()]),
+    }
+
+    _, sock = request("/", HandlerServer(supervisors, FakeCv2()))
+
+    response = bytes(sock.sent)
+    assert b"/stream/top_cam" in response
+    assert b"/stream/right_cam" in response
+    assert b"/stream/left_cam" not in response
+    assert response.index(b"/stream/top_cam") < response.index(b"/stream/right_cam")
 
 
 def test_index_client_disconnect_is_swallowed_and_closes_connection() -> None:

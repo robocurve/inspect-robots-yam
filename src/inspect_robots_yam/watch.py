@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 
 from inspect_robots_yam import embodiment, health
-from inspect_robots_yam.config import DEFAULT_CAMERAS, YamConfig
+from inspect_robots_yam.config import YamConfig
 from inspect_robots_yam.health import (
     HealthCameraReader,
     Image,
@@ -139,7 +139,7 @@ class _WatchRequestHandler(BaseHTTPRequestHandler):
         cameras = "".join(
             f"<figure><figcaption>{name}</figcaption>"
             f'<img src="/stream/{name}" alt="{name}"></figure>'
-            for name in DEFAULT_CAMERAS
+            for name in self.server.supervisors
         )
         body = (
             "<!doctype html><html><head>"
