@@ -20,7 +20,9 @@ negative, ``--watch`` combined with a skip or ``--json``, ``--watch`` without
 at least one configured V4L2 device (including an all-depth rig), ``--port`` or
 ``--bind`` without ``--watch``, or a provided port outside 1 through 65535.
 Those usage errors are routed through ``parser.error``. A watch bind failure
-also returns 2 directly from ``watch.serve``.
+also returns 2 directly from ``watch.serve``. A malformed wizard config exits
+via the core reader's guided ``SystemExit`` naming the file (bypass with
+``--no-config``).
 """
 
 from __future__ import annotations
@@ -46,27 +48,15 @@ from inspect_robots_yam.config import DEFAULT_CAMERAS, YamConfig
 UNIFORM_STD_MAX = 1.0
 MIN_SETTLE_S = 0.2
 
+#: Argparse dests for --top-cam/--left-cam/--right-cam; also the flag-vs-``-E``
+#: conflict domain (depth serials have no flags).
 _CAMERA_FLAG_KEYS = frozenset({"top_cam_device", "left_cam_device", "right_cam_device"})
-_RAW_STRING_KEYS = frozenset(
-    {
-        "top_cam_device",
-        "left_cam_device",
-        "right_cam_device",
-        "top_depth_serial",
-        "left_depth_serial",
-        "right_depth_serial",
-    }
-)
-_CAMERA_SLOT_KEYS = frozenset(
-    {
-        "top_cam_device",
-        "left_cam_device",
-        "right_cam_device",
-        "top_depth_serial",
-        "left_depth_serial",
-        "right_depth_serial",
-    }
-)
+_DEPTH_SERIAL_KEYS = frozenset({"top_depth_serial", "left_depth_serial", "right_depth_serial"})
+#: ``-E`` values that must never be scalar-coerced: a numeric device index or
+#: RealSense serial would otherwise arrive as int and traceback in validation.
+_RAW_STRING_KEYS = _CAMERA_FLAG_KEYS | _DEPTH_SERIAL_KEYS
+#: Every camera-slot key: the skip-conflict and slot-supersession domain.
+_CAMERA_SLOT_KEYS = _RAW_STRING_KEYS
 _CHANNEL_KEYS = frozenset({"left_channel", "right_channel"})
 _CAMERA_SLOTS = ("top", "left", "right")
 _DEPTH_UNCHECKED_REASON = "depth-configured; not checked by this tool"

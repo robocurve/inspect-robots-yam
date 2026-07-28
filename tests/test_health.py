@@ -720,11 +720,77 @@ def test_cross_layer_duplicate_device_attributes_config_before_error(
     assert captured.err.index(attribution) < captured.err.index("duplicate camera device")
 
 
-def test_skip_cameras_strips_config_only_camera_keys(tmp_path: Path) -> None:
+def test_skip_cameras_strips_config_only_camera_keys(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     env, _ = write_config(tmp_path, CAMERA_KWARGS)
+    report = HealthReport((), True, (), False, None)
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return report
+
+    assert main(["--skip-cameras"], env=env, run=capture) == 0
+    # The strip is observable: no config camera keys reach the config, and a
+    # camera-only contribution earns no attribution line.
+    assert seen[0].top_cam_device is None
+    assert seen[0].left_cam_device is None
+    assert seen[0].right_cam_device is None
+    assert "devices: from" not in capsys.readouterr().err
+
+
+def test_skip_cameras_survives_stale_duplicate_device_config(tmp_path: Path) -> None:
+    env, _ = write_config(
+        tmp_path,
+        {
+            "top_cam_device": "/dev/same",
+            "left_cam_device": "/dev/same",
+            "right_cam_device": "/dev/same",
+        },
+    )
     report = HealthReport((), True, (), False, None)
 
     assert main(["--skip-cameras"], env=env, run=lambda _cfg, **_kwargs: report) == 0
+
+
+def test_skip_cameras_keeps_config_depth_slots_out_of_the_report(tmp_path: Path) -> None:
+    env, _ = write_config(
+        tmp_path,
+        {
+            "top_depth_serial": "s-top",
+            "left_depth_serial": "s-left",
+            "right_depth_serial": "s-right",
+        },
+    )
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return HealthReport((), True, (), False, None)
+
+    assert main(["--skip-cameras"], env=env, run=capture) == 0
+    assert seen[0].top_depth_serial is None
+
+
+def test_skip_motors_strips_config_channel_keys(tmp_path: Path) -> None:
+    env, _ = write_config(
+        tmp_path,
+        {**CAMERA_KWARGS, "left_channel": "can_left", "right_channel": "can_right"},
+    )
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return HealthReport((), False, (), True, None)
+
+    # Cameras keep the run alive; the channel strip must leave the builtin
+    # channel names, not the wizard's.
+    assert main(["--skip-motors"], env=env, run=capture) == 0
+    assert seen[0].left_channel == "can0"
+    assert seen[0].right_channel == "can1"
+    assert seen[0].top_cam_device == CAMERA_KWARGS["top_cam_device"]
 
 
 def test_skip_cameras_rejects_an_explicit_depth_serial() -> None:
