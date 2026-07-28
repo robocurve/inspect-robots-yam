@@ -61,8 +61,11 @@ gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
   converted to absolute *inside* `step()` (`joints_are_delta=True`) so the
   declared semantics stay honest. There is no `joint_delta` control mode in
   Inspect Robots, so compat cannot verify abs-vs-delta — that's a hardware check.
-- Success reaches the scorer **only** via `StepResult.termination_reason="success"`
-  (stock `rollout` never sets `operator_judgement`).
+- The end-episode keypress terminates with `termination_reason="operator_end"`;
+  the framework prompt then records `operator_judgement`, which is what
+  judgement-reading scorers (`operator`, KitchenBench `task_success`) score.
+  `success_at_end` counts only embodiment-detected `"success"` terminations,
+  which stock yam never emits.
 - `control_hz` is the step rate only while `settle_tolerance` is `None`, which
   is the default. Setting it makes `step()` and `reset()` wait for the arm to
   reach the commanded pose, so `control_hz` becomes a floor on step duration and
