@@ -462,6 +462,74 @@ summed command inside the embodiment as a backstop. A delta-configured rig
 must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
 `molmoact2`); a mismatch fails the compatibility check before any motion.
 
+## Collision guardrail
+
+Install the optional MuJoCo dependency and attach the guardrail through the
+programmatic API:
+
+```bash
+uv pip install 'inspect-robots-yam[collision]'
+```
+
+```python
+from inspect_robots import eval
+from inspect_robots_yam import MolmoAct2Policy, YAMEmbodiment, YamConfig
+from inspect_robots_yam.collision import CollisionConfig, build_yam_guardrails
+
+yam_config = YamConfig(left_channel="can0", right_channel="can1")
+embodiment = YAMEmbodiment(yam_config, camera_reader=my_camera_reader)
+policy = MolmoAct2Policy(server_url="http://127.0.0.1:8202")
+guardrails = build_yam_guardrails(
+    embodiment.info.action_space,
+    yam_config,
+    CollisionConfig(
+        left_base_pos=(0.0, 0.3, 0.0),
+        right_base_pos=(0.0, -0.3, 0.0),
+        table_height=0.0,
+    ),
+)
+
+(log,) = eval(
+    "kitchenbench/pour_pasta",
+    policy,
+    embodiment,
+    approver=guardrails,
+)
+```
+
+The factory runs the framework clamp and delta limiter before a predictive
+MuJoCo check. A blocked target becomes a hold at the last safe commanded pose
+and is marked in the recorded action metadata. The checker sweeps commanded
+joint targets. With settling disabled, physical motion can lag behind that
+commanded path.
+
+> [!WARNING]
+> The default base offsets, `(0.0, 0.3, 0.0)` and `(0.0, -0.3, 0.0)`, are
+> unverified placeholders. Measure the mounting position and yaw of both bases
+> on every rig, then override them. Incorrect offsets can silently miss real
+> cross-arm collisions or block safe motions.
+
+The default table plane sits at the arm-base height. A valid tabletop grasp can
+put a fingertip within millimeters of that plane, and a demonstration-derived
+target can press slightly through it. If grasp-moment holds occur, first raise
+`penetration_threshold`, then lower `table_height` by a few millimeters of
+margin. Selective fingertip exclusions are future work.
+
+Both finger joints are always posed at their open extremes, which gives the
+checker their maximum footprint. This can block a valid close bimanual
+handover. Command-derived finger geometry is the intended remedy, but
+`gripper_qpos="command"` is not supported in v1.
+
+The guardrail supports only 14-D absolute `joint_pos` actions. It refuses EEF
+and `joint_delta` spaces because an approver sees Cartesian targets or deltas
+before the embodiment converts them. Inspect Robots cannot attach custom
+approvers from the CLI today, so collision checking requires the programmatic
+`eval()` path.
+
+This guardrail reduces collision risk. It does not model props, certify a
+continuous path, observe the measured arm trajectory, check reset or park
+motions, or replace the operator and physical e-stop.
+
 ## Safety
 
 - **Hard clamp backstop.** Every command is clipped to `YamConfig.joint_low/high`
@@ -508,10 +576,10 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
   command.
 - **Absolute vs. delta joints: verify first.** MolmoAct2's YAM `actions` are
   treated as *absolute* joint targets by default. If your checkpoint emits
-  deltas, set `YamConfig(joints_are_delta=True)` (the embodiment converts to
-  absolute internally so the declared `joint_pos` stays honest). Inspect Robots's
-  compat check *cannot* tell these apart: confirm with `--dry-run` and a single
-  slow jog before running a task.
+  deltas, set `joints_are_delta=True` on both the policy and embodiment. They
+  then declare `joint_delta`, so compatibility checking rejects a mode
+  mismatch before motion. Confirm a new checkpoint's value scale and joint
+  mapping with `--dry-run` and a single slow jog before running a task.
 - **Gripper polarity/trim.** The wire convention is normalized 0–1, with 1 open
   and 0 closed. The defaults (`gripper_open=1.0`, `gripper_closed=0.0`) preserve
   an identity map for the standard i2rt driver. These fields are the measured

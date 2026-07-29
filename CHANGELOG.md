@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- Collision guardrail (plan 0011, #85): `inspect_robots_yam.collision` with
+  `CollisionChecker` (bimanual MuJoCo scene composed from a vendored
+  collision-only Menagerie model), `CollisionApprover` (predictive sweep;
+  blocked targets hold at the last safe pose instead of aborting the eval,
+  strict mode raises `SafetyAbort`), and `build_yam_guardrails` (clamp,
+  delta limit, collision chain). New optional `collision` extra pulling in
+  `mujoco>=3.3.1`; absolute 14-D `joint_pos` mode only.
+
 ### Changed
 
 - Bare `inspect-robots-yam-health` now checks the wizard-configured rig and
