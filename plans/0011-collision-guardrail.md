@@ -1,8 +1,8 @@
 # Plan 0011: Collision guardrail (MuJoCo CollisionChecker + CollisionApprover)
 
 Issue: [#85](https://github.com/robocurve/inspect-robots-yam/issues/85)
-Status: revised after adversarial critique round 1 (14 findings, all addressed
-below); pending round 2.
+Status: revised after adversarial critique rounds 1 (14 findings) and 2
+(9 findings), all addressed below.
 
 ## 1. Problem
 
@@ -45,8 +45,13 @@ the e-stop.
   delta (a violent jump). `CollisionApprover` and `build_yam_guardrails`
   therefore refuse at construction unless
   `action_space.semantics.control_mode == "joint_pos"` and the space is
-  14-D, with a `ValueError` naming this plan. EEF support means checking
-  post-IK joint paths inside the embodiment and is future work.
+  14-D, with a `ValueError` naming this plan. This guard is sound because
+  the embodiment declares `joint_delta` when `joints_are_delta=True` and
+  `eef_abs_pose` in EEF mode; the CLAUDE.md safety-invariants paragraph
+  still claiming "there is no `joint_delta` control mode in Inspect
+  Robots" predates the framework adding it and is updated in this PR. EEF
+  support means checking post-IK joint paths inside the embodiment and is
+  future work.
 - No motion planning, no collision-aware IK (mink's
   `CollisionAvoidanceLimit` in EEF mode is future work; noted in 0006).
 - No feedback path into LLM policies. Surfacing "that would collide" as a
@@ -86,7 +91,10 @@ the operator's e-stop.
 - `scripts/gen_collision_model.py` (dev-time only, not shipped): takes a path
   to a `mujoco_menagerie` checkout, loads `i2rt_yam/yam.xml` with `MjSpec`,
   deletes visual-class geoms, meshes, textures, materials, lights, cameras,
-  actuators, keyframes, and the finger equality constraint (inert under
+  actuators, keyframes, `<option>` and compiler settings (the source model
+  sets `integrator="implicitfast"`, which otherwise triggers an MjSpec
+  attach-conflict warning twice per composition at user runtime), and the
+  finger equality constraint (inert under
   `mj_kinematics` + `mj_collision`, which run no constraint solve; both
   fingers are posed explicitly instead, see §7), keeps joints, inertials,
   and collision geoms, and writes
@@ -120,7 +128,14 @@ not by the embodiment):
   both directions. The README documents this with the same weight as the
   CLAUDE.md safety invariants: measure the rig, set the offsets.
 - `table_height`: float or `None` (None removes the table plane), default
-  `0.0` (arm bases sit on the table surface).
+  `0.0` (arm bases sit on the table surface). Known tradeoff, stated like
+  the fingers-open one below: a legitimate tabletop grasp commands
+  fingertips within millimeters of the plane, and demo-derived VLA targets
+  often press slightly into it, so grasp-moment holds are possible. The
+  remedies, in preference order, are raising `penetration_threshold`,
+  lowering `table_height` by a few millimeters of margin, or (future work)
+  excluding fingertip geoms from plane checks. The README documents this
+  next to the cross-arm tradeoff.
 - `penetration_threshold`: float, default `1e-3` m. A contact counts as a
   collision only when `contact.dist < -penetration_threshold`. Same
   filtering recipe i2rt uses in
@@ -129,9 +144,13 @@ not by the embodiment):
 - `sweep_resolution`: float, default `0.05` rad. The sweep between the last
   safe pose and the target samples
   `ceil(max_abs_joint_delta / sweep_resolution)` interior points, clamped to
-  [1, 64], endpoint always included. Resolution-based sampling (rather than
-  a fixed count) keeps fine geoms (millimeter fingertip spheres) covered
-  even when the approver is used without a delta limiter upstream.
+  [1, 64], endpoint always included. `max_abs_joint_delta` is computed over
+  the 12 arm-joint dims only: the gripper dims (6 and 13) are ignored by
+  the qpos mapping (§7), and letting a normalized gripper toggle (delta
+  1.0) force 20 geometrically identical substeps would be pure waste.
+  Resolution-based sampling (rather than a fixed count) keeps fine geoms
+  (millimeter fingertip spheres) covered even when the approver is used
+  without a delta limiter upstream.
 - `gripper_qpos`: `"open"` (default) or `"command"`. `"open"` poses both
   finger joints at their open extremes for every query: conservative
   (maximal footprint). Note the sign trap: after stripping, `left_finger`
@@ -149,20 +168,30 @@ Composition at `CollisionChecker.__init__`:
 - `MjSpec` parent with a table plane geom (unless `table_height is None`),
   two `MjSpec.from_string(vendored_xml)` children attached at frames built
   from the configured base poses, prefixes `left_` and `right_`.
-- Contact excludes between each arm's base link and the table plane. The
-  Menagerie base collision capsule extends 17 mm below the base frame
-  origin (`geom size="0.033 0.01" pos="0 0 0.026"`, a z capsule whose
-  bottom is at -0.017), so with bases mounted at table height every
-  configuration would otherwise report a base-table penetration and the
-  guardrail would block everything. The excludes are added at composition
-  time for whichever bodies own geoms that overlap the plane at q=home;
-  concretely: `left_base_link`/table and `right_base_link`/table.
+- No contact excludes are needed for the base-vs-table case, and none are
+  added. The Menagerie base collision capsule does extend 17 mm below the
+  base frame origin (`geom size="0.033 0.01" pos="0 0 0.026"`, a z capsule
+  whose bottom is at -0.017), but the arm's root body (named `arm`, so
+  `left_arm`/`right_arm` after prefixed attach) is jointless: frame-attach
+  welds it to the world, and MuJoCo's default parent/weld contact filtering
+  already suppresses base-vs-plane pairs. Verified empirically on the
+  composed scene: at qpos=0 with the plane present, the only contacts are
+  finger-vs-finger at -0.0004 m (under the 1e-3 threshold), and no
+  base-table contact is generated, while reach-down poses still produce
+  link/finger-vs-plane contacts as desired. The §10 sanity tests pin this
+  behavior (home and folded poses collision-free with the plane present)
+  so a future MuJoCo filtering change fails loudly here.
 - Compile once; allocate one scratch `MjData`. The checker is not
   thread-safe and documents it (rollout is single-threaded).
 - Fail fast at init with actionable errors: mujoco missing (guided install
   message, mirroring the `_i2rt.py` style), malformed vendored XML, or a
   compiled model whose joint names do not match the expected
   `{left,right}_joint1..6` + `{left,right}_{left,right}_finger` set.
+- Testability seam: `CollisionChecker` accepts an optional `model_xml`
+  string overriding the packaged asset (default `None` loads it via
+  `importlib.resources`). This is how the malformed-XML and
+  missing-joint-name failure paths are covered without shipping a second
+  bad asset (§10).
 
 ## 7. Action-to-qpos mapping
 
@@ -190,8 +219,15 @@ CollisionApprover(checker, start_pose, *, on_violation="hold")  # or "abort"
 ```
 
 `start_pose` is the 14-D pose the trial physically starts from (the
-embodiment's home/reset pose). `build_yam_guardrails` sources it from
-`YamConfig`'s home pose so callers cannot forget it.
+embodiment's home/reset pose). `build_yam_guardrails` derives it from
+`YamConfig` the same way the embodiment's reset path does:
+`home_pose or DEFAULT_JOINT_HOME_POSE` (the config field defaults to
+`None`; the factory default lives in `config.py`), then clamped to
+`joint_low/high`, because reset commands the clamped home and the seed must
+equal what was actually commanded. `build_yam_guardrails` also cross-checks
+its two inputs: `yam_config.joints_are_delta=True` raises `ValueError` even
+if the caller hands it a hand-built `joint_pos` box, so an inconsistent
+pairing cannot slip past the §3 guard.
 
 `review(action, store)`:
 
@@ -208,8 +244,12 @@ embodiment's home/reset pose). `build_yam_guardrails` sources it from
    object (identity preserved: the rollout logs no approval event).
 4. Hit with `on_violation="hold"`: return a new `Action` whose values are
    `last_safe` and whose meta merges the original meta with
-   `{"collision_blocked": True, "collision_detail": "<geom1>:<geom2>@<k>/<n>"}`.
-   Additionally re-anchor `store["delta_limit:last"] = last_safe` if that
+   `{"collision_blocked": True, "collision_detail": "<geom1>:<geom2>@<k>/<n>"}`,
+   minus the core clamp flags (`clamped`, `delta_clamped`) if upstream
+   approvers set them. The rollout builds the approval event's `detail`
+   from those core flags; carrying them through would mislabel a collision
+   block as a mere clamp, and their referent (the clamped values) is being
+   discarded anyway. Additionally re-anchor `store["delta_limit:last"] = last_safe` if that
    key exists. Without this, `DeltaLimitApprover`'s reference keeps walking
    toward the blocked region during a run of holds, and the first target
    that clears the collision check could then be executed as one unbounded
@@ -225,9 +265,10 @@ embodiment's home/reset pose). `build_yam_guardrails` sources it from
 Transcript visibility, stated precisely: the rollout's identity check logs
 `approval_event(modified=True)` for every hold, so blocks are visible and
 countable in the transcript. The event's `detail` field only understands
-the core clamp flags, so it stays empty; the geom-pair string travels in
-the recorded action's `meta` (`StepRecord.action.meta`), which scorers and
-the operator report can read. No core changes.
+the core clamp flags, which the hold strips (§8.4), so it stays empty; the
+geom-pair string travels in the recorded action's `meta`
+(`StepRecord.action.meta`), which scorers and the operator report can
+read. No core changes.
 
 Notes:
 
@@ -277,20 +318,24 @@ CI has mujoco (dev extra), so tests run the real physics; no physics mocks.
   `left_left_finger`, `left_right_finger`, right-side mirrors), all geoms
   are primitives (no mesh geoms), resolvable via `importlib.resources`.
 - Default scene sanity (the round-1 blocker class): the configured home
-  pose is collision-free in the default scene; the all-zero folded rest
-  pose (a physically legal pose where the wrist doubles back near the
-  upper arm) is collision-free; the base-link/table excludes exist. If the
-  primitive model reports penetration at a known-legal pose, that is a
-  modeling bug to fix in the generator (adjust excludes or threshold), and
-  these tests are what catch it.
+  pose is collision-free in the default scene with the table plane
+  present; the all-zero folded rest pose (a physically legal pose where
+  the wrist doubles back near the upper arm) likewise; base-vs-plane
+  contacts are absent (weld filtering, §6) while a reach-down pose does
+  produce link-vs-plane contacts. If the primitive model reports
+  penetration at a known-legal pose, that is a modeling bug to fix in the
+  generator or thresholds, and these tests are what catch it.
 - Checker: a fold-into-table pose and a cross-arm pose report collisions
   with the offending geom pair named; `penetration_threshold` boundary
   behavior; `table_height=None` removes table contacts; finger open
   extremes are sign-correct per side; init failures (bad XML, missing
   joint names, colliding start pose) raise the documented errors.
 - Approver: construction guard rejects EEF (10-D) and `joint_delta`
-  semantics; pass-through preserves object identity; hold returns
-  last-safe values with merged meta and detail string; hold re-anchors
+  semantics; `build_yam_guardrails` rejects `joints_are_delta=True` and
+  resolves the clamped home-pose fallback when `home_pose` is `None`;
+  pass-through preserves object identity; hold returns last-safe values
+  with merged meta (core clamp flags stripped) and detail string; hold
+  re-anchors
   `delta_limit:last` when present (and a companion test asserts the
   framework still uses that key name); strict mode aborts; non-finite
   action aborts; first action sweeps from `start_pose`; sweep catches a
@@ -322,15 +367,19 @@ inspect-robots-yam/
 │                                             CollisionReport, CollisionApprover,
 │                                             build_yam_guardrails)
 ├── tests/test_collision.py                  (new)
+├── CLAUDE.md                                (safety-invariants paragraph: joint_delta
+│                                             is now a declared control mode)
 └── README.md                                (new "Collision guardrail" section)
 ```
 
 ## 12. Delivery
 
 One PR closing #85: this plan, the generator script, the vendored asset, the
-module, tests, packaging changes, README section. Plan lands first as a
-draft-PR commit; implementation follows on the same branch after critique
-rounds converge.
+module, tests, packaging changes, README section, and the CLAUDE.md
+correction. The README section follows the repo's public writing-style
+rules (no em dashes in prose, bold discipline, headers with colons). Plan
+lands first as a draft-PR commit; implementation follows on the same branch
+after critique rounds converge.
 
 ## 13. Resolved questions
 
