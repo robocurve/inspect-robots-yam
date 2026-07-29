@@ -150,7 +150,12 @@ not by the embodiment):
   1.0) force 20 geometrically identical substeps would be pure waste.
   Resolution-based sampling (rather than a fixed count) keeps fine geoms
   (millimeter fingertip spheres) covered even when the approver is used
-  without a delta limiter upstream.
+  without a delta limiter upstream. Honesty note: the 64-substep cap means
+  a full-range standalone swing (~2 pi) is sampled at ~0.1 rad, coarse
+  enough to hop past millimeter geoms; in the documented
+  `build_yam_guardrails` chain the delta limiter bounds each sweep well
+  under the cap, so the cap never binds there. The guardrail reduces risk;
+  it does not certify paths.
 - `gripper_qpos`: `"open"` (default) or `"command"`. `"open"` poses both
   finger joints at their open extremes for every query: conservative
   (maximal footprint). Note the sign trap: after stripping, `left_finger`
@@ -209,8 +214,10 @@ Composition at `CollisionChecker.__init__`:
 - Finger joints: posed from the `gripper_qpos` policy (v1: open extremes,
   per-joint sign-aware as in §6). The action's gripper dims are ignored in
   v1 and this is documented.
-- Non-finite values in the incoming action: raise `SafetyAbort`, consistent
-  with the core approvers' NaN policy.
+- Non-finite values in the incoming action: raise `SafetyAbort`. This is
+  deliberately stricter than core (`ClampApprover` aborts on NaN but clamps
+  inf): a qpos query with inf is meaningless, and in the documented chain
+  Clamp runs first so inf never reaches this approver anyway.
 
 ## 8. CollisionApprover semantics
 
@@ -235,9 +242,11 @@ pairing cannot slip past the §3 guard.
    action of the trial), seed `last = start_pose`. There is no special
    first-action abort: the first sweep runs from the physical start pose to
    the first target, exactly like every later step. (If `start_pose` itself
-   is in collision under the model, `CollisionChecker` refuses at
-   *approver construction* time with a clear error: that is a rig or config
-   modeling error and should fail before any trial runs, not during one.)
+   is in collision under the model, the `CollisionApprover` constructor
+   queries the checker and refuses with a clear error: that is a rig or
+   config modeling error and should fail before any trial runs, not during
+   one. The check lives in the approver because the checker never sees
+   `start_pose`.)
 2. Sweep from `last` to the target at `sweep_resolution` (§6), stop at the
    first hit.
 3. All safe: update `yam_collision:last_safe`, return the original action
@@ -329,7 +338,8 @@ CI has mujoco (dev extra), so tests run the real physics; no physics mocks.
   with the offending geom pair named; `penetration_threshold` boundary
   behavior; `table_height=None` removes table contacts; finger open
   extremes are sign-correct per side; init failures (bad XML, missing
-  joint names, colliding start pose) raise the documented errors.
+  joint names) raise the documented errors; the colliding-start-pose
+  refusal is an approver-constructor test.
 - Approver: construction guard rejects EEF (10-D) and `joint_delta`
   semantics; `build_yam_guardrails` rejects `joints_are_delta=True` and
   resolves the clamped home-pose fallback when `home_pose` is `None`;
