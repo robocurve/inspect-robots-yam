@@ -34,6 +34,9 @@ cameras = ["opencv-python-headless>=4.8"]
 # Install pyrealsense2 to enable the RealSense depth reader.
 # Configure with top/left/right_depth_serial in YamConfig or -E flags.
 depth = ["pyrealsense2>=2.50"]
+# MuJoCo 3.3.1 added unified MjSpec attach with prefix namespacing:
+# https://mujoco.readthedocs.io/en/stable/changelog.html#version-3-3-1-7-april-2025
+collision = ["mujoco>=3.3.1"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -45,6 +48,7 @@ dev = [
     # numpy 2.5.0's type stubs use 3.12-only syntax that mypy (python_version 3.10)
     # rejects; pin the 2.4.x line for a deterministic dev/CI gate (runtime is free).
     "numpy<2.5",
+    "mujoco>=3.3.1",
 ]
 
 [project.urls]
@@ -104,7 +108,7 @@ files = ["src/inspect_robots_yam"]
 # Runtime integrations are lazily imported behind seams; ignore missing type
 # information from their third-party modules.
 [[tool.mypy.overrides]]
-module = ["requests.*", "json_numpy.*", "i2rt.*", "mink.*", "cv2.*"]
+module = ["requests.*", "json_numpy.*", "i2rt.*", "mink.*", "cv2.*", "mujoco.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
