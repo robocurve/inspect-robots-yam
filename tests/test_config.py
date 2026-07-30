@@ -261,6 +261,23 @@ def test_absolute_action_spaces_declare_gripper_max_step_only_at_grippers() -> N
     )
 
 
+def test_pinned_gripper_bounds_decline_the_declaration_per_dim() -> None:
+    # A gripper pinned via custom bounds (low == high) constructs today; the
+    # declaration must decline on exactly that dim instead of tripping core's
+    # pinned-dim rejection at Box construction.
+    low = np.array(YamConfig().low)
+    high = np.array(YamConfig().high)
+    high[6] = low[6]  # pin the left gripper only
+    space = action_box(low, high, gripper_max_step=0.25)
+    assert space.semantics is not None
+    assert space.semantics.max_step == tuple(0.25 if index == 13 else None for index in range(14))
+
+    high[13] = low[13]  # pin both grippers: nothing left to declare
+    space = action_box(low, high, gripper_max_step=0.25)
+    assert space.semantics is not None
+    assert space.semantics.max_step is None
+
+
 def test_delta_and_unspecified_action_spaces_declare_no_max_step() -> None:
     delta_space = action_box(joints_are_delta=True, gripper_max_step=0.25)
     assert delta_space.semantics is not None

@@ -539,17 +539,32 @@ def action_box(
 
     The embodiment supplies bounds while the policy may leave them unset. Joint
     delta mode uses per-step displacement limits; all other modes use absolute
-    limits.
+    limits. A gripper dimension pinned by its bounds (``low == high``) declines
+    its ``max_step`` declaration — core rejects declarations on pinned
+    dimensions, and a config that constructs without the declaration must keep
+    constructing with it.
     """
+    semantics = action_semantics(
+        joints_are_delta,
+        control_interface=control_interface,
+        gripper_max_step=gripper_max_step,
+    )
+    if semantics.max_step is not None and low is not None and high is not None:
+        pinned = np.asarray(low).reshape(-1) == np.asarray(high).reshape(-1)
+        masked = tuple(
+            None if (entry is not None and bool(pinned[index])) else entry
+            for index, entry in enumerate(semantics.max_step)
+        )
+        if masked != semantics.max_step:
+            semantics = dataclasses.replace(
+                semantics,
+                max_step=None if all(entry is None for entry in masked) else masked,
+            )
     return Box(
         shape=((len(EEF_DIM_LABELS),) if control_interface == "eef_pos" else (TOTAL_DIM,)),
         low=low,
         high=high,
-        semantics=action_semantics(
-            joints_are_delta,
-            control_interface=control_interface,
-            gripper_max_step=gripper_max_step,
-        ),
+        semantics=semantics,
     )
 
 
