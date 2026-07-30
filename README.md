@@ -281,6 +281,14 @@ counts up against the run's real step limit (`t = 42s / 120s`) with no
 configuration needed (requires inspect-robots newer than 0.8.1; on older cores
 set `max_steps_hint`).
 
+To skip both Enter gates, set `auto_start=true` (CLI: `-E auto_start=true`, or
+persistently via `[embodiment.args]` in config.ini). The arms home immediately
+after a one-line stand-clear notice and the episode starts as soon as they
+settle, so stage the scene before launching the run. Everything else about the
+attended flow stays: the status line, the press-any-key end, and operator
+grading, which is also why `auto_start` refuses to run without an interactive
+terminal.
+
 For exotic camera stacks (or full programmatic control), the Python API takes
 a custom `camera_reader` returning
 `{"top_cam", "left_cam", "right_cam": HxWx3 uint8}`:
@@ -314,6 +322,8 @@ The operator prompts need an interactive terminal: a dead stdin raises
 `EmbodimentFault` (the framework's always-halt path). For runs with no operator,
 set `YamConfig(unattended=True)` (CLI: `-E unattended=true`): all operator
 prompts are skipped and every episode runs to `max_steps`, scoring as a failure.
+For attended runs that only want to drop the Enter gates, use `auto_start=true`
+instead; `unattended` wins when both are set.
 
 ## Drive the arms with an LLM (agent mode)
 
@@ -642,6 +652,8 @@ at the first reset before torque is released),
 `rest_secs` (ramp duration, default 3.0), `gripper_open/closed`,
 `joints_are_delta`, `zero_gravity_mode` (default `True`; see *Safety*),
 `unattended` (default `False`; skip operator prompts),
+`auto_start` (default `False`; skip both operator Enter gates but keep the
+attended episode flow; needs a TTY; `unattended` takes precedence),
 `settle_tolerance` (radians; `none` by default, which disables settling; see
 *Settling before observing*), `settle_timeout_s` (default `1.0`),
 `settle_timeout_budget` (default `20`),

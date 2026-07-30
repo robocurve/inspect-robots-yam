@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `YamConfig.auto_start` (plan 0015, #87): opt-in zero-touch attended starts.
+  Skips both operator Enter gates in `reset()` (a printed stand-clear notice
+  replaces the home gate; the scene-ready gate is dropped and stdin is drained
+  in its place) while keeping status lines, the end-episode keypress, and
+  operator grading. Faults before any motion when stdin is not an interactive
+  TTY; `unattended=True` takes precedence.
 - Collision guardrail (plan 0011, #85): `inspect_robots_yam.collision` with
   `CollisionChecker` (bimanual MuJoCo scene composed from a vendored
   collision-only Menagerie model), `CollisionApprover` (predictive sweep;
