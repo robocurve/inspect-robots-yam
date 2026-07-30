@@ -419,3 +419,8 @@ def test_pose_string_parse_errors_are_guided() -> None:
 def test_pose_fields_still_accept_real_tuples() -> None:
     cfg = YamConfig.from_kwargs(rest_pose=(0.0,) * 14)
     assert cfg.rest_pose == (0.0,) * 14
+
+
+def test_auto_start_defaults_off_and_binds_via_kwargs() -> None:
+    assert YamConfig().auto_start is False
+    assert YamConfig.from_kwargs(auto_start=True).auto_start is True
