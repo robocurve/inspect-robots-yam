@@ -74,10 +74,9 @@ library default. The contribution stays active regardless — same-arm
 self-collision checking is geometry-independent (the arm model is the
 packaged system-identified one) and is real protection even unmeasured; the
 warning exists so the banner never claims measured *cross-arm* protection
-that does not exist. Core 0034's `GuardrailContribution.warnings` docstring
-phrases warnings as contributions "declined"; ask core (same PR pair) to
-widen the phrasing to "declined or degraded" so a warning alongside an
-active approver is within the documented contract.
+that does not exist. Core 0034's `GuardrailContribution.warnings` contract
+explicitly covers degraded contributions and allows warnings alongside
+active approvers, so this warning is within the documented contract.
 
 ### 2. `YAMEmbodiment.contribute_guardrails(action_space)`
 
