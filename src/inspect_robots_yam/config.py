@@ -129,6 +129,7 @@ class YamConfig(_FromKwargs):
     right_channel: str = "can1"
     gripper_type: str = "LINEAR_4310"
     control_hz: float = 10.0
+    gripper_stroke_s: float = 1.0
     cam_height: int = 224
     cam_width: int = 224
     joint_low: tuple[float, ...] = _DEFAULT_LOW
@@ -221,6 +222,8 @@ class YamConfig(_FromKwargs):
                 f"gripper_type {self.gripper_type!r} is not supported; expected one of "
                 f"{sorted(SUPPORTED_GRIPPER_TYPES)} (i2rt GripperType enum names)"
             )
+        if not np.isfinite(self.gripper_stroke_s) or self.gripper_stroke_s <= 0:
+            raise ValueError("gripper_stroke_s must be finite and > 0")
         valid_interfaces = {"eef_pos", "joints"}
         if self.control_interface not in valid_interfaces:
             raise ValueError(
@@ -400,6 +403,20 @@ class YamConfig(_FromKwargs):
         return np.asarray(self.joint_high, dtype=np.float64)
 
     @property
+    def gripper_max_step(self) -> float | None:
+        """Return the normalized gripper change allowed per control step."""
+        if not np.isfinite(self.control_hz):
+            return None
+        hz = self.control_hz if self.control_hz > 0 else 10.0
+        stroke_steps = self.gripper_stroke_s * hz
+        if not np.isfinite(stroke_steps) or stroke_steps <= 0:
+            return None
+        max_step = 1.0 / stroke_steps
+        if not np.isfinite(max_step):
+            return None
+        return min(1.0, max_step)
+
+    @property
     def delta_low(self) -> npt.NDArray[np.float64]:
         """Return negative per-step limits in radians and normalized gripper units."""
         return -np.asarray(self.step_limits, dtype=np.float64)
@@ -459,32 +476,49 @@ DEFAULT_CAMERAS: tuple[str, ...] = ("top_cam", "left_cam", "right_cam")
 
 
 def action_semantics(
-    joints_are_delta: bool = False, *, control_interface: str = "joints"
+    joints_are_delta: bool = False,
+    *,
+    control_interface: str = "joints",
+    gripper_max_step: float | None = None,
 ) -> ActionSemantics:
     """The action *semantics* both the policy and the embodiment declare.
 
     Compatibility checking compares control_mode + rotation_repr (errors) and
-    gripper + frame (warnings); building both sides from this one function,
-    with the same ``joints_are_delta``, guarantees a clean check — and a loud
-    one when a delta-configured rig is paired with an absolute-declaring
-    policy (or vice versa). ``dim_labels`` names the 14 dims so
-    label-addressed tooling (e.g. the LLM agent policy) can move joints by
-    name.
+    gripper + frame (warnings). Building both sides here keeps those fields
+    aligned and makes a delta/absolute mismatch loud. ``max_step`` may differ
+    between the embodiment and policy because compatibility deliberately
+    excludes it. ``dim_labels`` names the action dimensions so label-addressed
+    tooling (e.g. the LLM agent policy) can move joints by name.
     """
     if control_interface == "eef_pos":
+        max_step = (
+            tuple(
+                gripper_max_step if index in (4, 9) else None
+                for index in range(len(EEF_DIM_LABELS))
+            )
+            if gripper_max_step is not None
+            else None
+        )
         return ActionSemantics(
             control_mode="eef_abs_pose",
             rotation_repr="none",
             gripper="continuous",
             frame="base",
             dim_labels=EEF_DIM_LABELS,
+            max_step=max_step,
         )
+    max_step = (
+        tuple(gripper_max_step if index in (6, 13) else None for index in range(TOTAL_DIM))
+        if gripper_max_step is not None and not joints_are_delta
+        else None
+    )
     return ActionSemantics(
         control_mode="joint_delta" if joints_are_delta else "joint_pos",
         rotation_repr="none",
         gripper="continuous",
         frame="base",
         dim_labels=DIM_LABELS,
+        max_step=max_step,
     )
 
 
@@ -499,18 +533,38 @@ def action_box(
     *,
     joints_are_delta: bool = False,
     control_interface: str = "joints",
+    gripper_max_step: float | None = None,
 ) -> Box:
     """Build the selected joint or Cartesian action space with optional limits.
 
     The embodiment supplies bounds while the policy may leave them unset. Joint
     delta mode uses per-step displacement limits; all other modes use absolute
-    limits.
+    limits. A gripper dimension pinned by its bounds (``low == high``) declines
+    its ``max_step`` declaration — core rejects declarations on pinned
+    dimensions, and a config that constructs without the declaration must keep
+    constructing with it.
     """
+    semantics = action_semantics(
+        joints_are_delta,
+        control_interface=control_interface,
+        gripper_max_step=gripper_max_step,
+    )
+    if semantics.max_step is not None and low is not None and high is not None:
+        pinned = np.asarray(low).reshape(-1) == np.asarray(high).reshape(-1)
+        masked = tuple(
+            None if (entry is not None and bool(pinned[index])) else entry
+            for index, entry in enumerate(semantics.max_step)
+        )
+        if masked != semantics.max_step:
+            semantics = dataclasses.replace(
+                semantics,
+                max_step=None if all(entry is None for entry in masked) else masked,
+            )
     return Box(
         shape=((len(EEF_DIM_LABELS),) if control_interface == "eef_pos" else (TOTAL_DIM,)),
         low=low,
         high=high,
-        semantics=action_semantics(joints_are_delta, control_interface=control_interface),
+        semantics=semantics,
     )
 
 

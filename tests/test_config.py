@@ -75,6 +75,38 @@ def test_yam_from_kwargs() -> None:
     assert cfg.control_hz == 25.0
 
 
+def test_gripper_stroke_defaults_to_one_second_and_point_one_step() -> None:
+    cfg = YamConfig()
+    assert cfg.gripper_stroke_s == 1.0
+    assert cfg.gripper_max_step == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("gripper_stroke_s", [0.0, -1.0, np.nan, np.inf, -np.inf])
+def test_gripper_stroke_validation(gripper_stroke_s: float) -> None:
+    with pytest.raises(ValueError, match="gripper_stroke_s must be finite and > 0"):
+        YamConfig(gripper_stroke_s=gripper_stroke_s)
+
+
+def test_gripper_max_step_caps_at_one_step() -> None:
+    assert YamConfig(gripper_stroke_s=0.01).gripper_max_step == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("control_hz", [0.0, -5.0])
+def test_gripper_max_step_nonpositive_hz_falls_back(control_hz: float) -> None:
+    assert YamConfig(control_hz=control_hz).gripper_max_step == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("control_hz", [np.nan, np.inf, -np.inf])
+def test_gripper_max_step_nonfinite_hz_declines_to_declare(control_hz: float) -> None:
+    assert YamConfig(control_hz=control_hz).gripper_max_step is None
+
+
+def test_gripper_max_step_nonfinite_product_or_result_declines_to_declare() -> None:
+    assert YamConfig(gripper_stroke_s=1e308, control_hz=1e308).gripper_max_step is None
+    smallest_positive = float.fromhex("0x0.0000000000001p-1022")
+    assert YamConfig(gripper_stroke_s=smallest_positive, control_hz=1.0).gripper_max_step is None
+
+
 def test_from_kwargs_rejects_unknown() -> None:
     with pytest.raises(TypeError, match="unexpected config keys"):
         MolmoActConfig.from_kwargs(nope=1)
@@ -213,6 +245,47 @@ def test_eef_action_space_shape_labels_bounds_and_semantics() -> None:
     assert space.semantics.gripper == "continuous"
     assert space.semantics.frame == "base"
     assert space.semantics.dim_labels == EEF_DIM_LABELS
+
+
+def test_absolute_action_spaces_declare_gripper_max_step_only_at_grippers() -> None:
+    joint_space = action_box(gripper_max_step=0.25)
+    assert joint_space.semantics is not None
+    assert joint_space.semantics.max_step == tuple(
+        0.25 if index in (6, 13) else None for index in range(14)
+    )
+
+    eef_space = action_box(control_interface="eef_pos", gripper_max_step=0.25)
+    assert eef_space.semantics is not None
+    assert eef_space.semantics.max_step == tuple(
+        0.25 if index in (4, 9) else None for index in range(len(EEF_DIM_LABELS))
+    )
+
+
+def test_pinned_gripper_bounds_decline_the_declaration_per_dim() -> None:
+    # A gripper pinned via custom bounds (low == high) constructs today; the
+    # declaration must decline on exactly that dim instead of tripping core's
+    # pinned-dim rejection at Box construction.
+    low = np.array(YamConfig().low)
+    high = np.array(YamConfig().high)
+    high[6] = low[6]  # pin the left gripper only
+    space = action_box(low, high, gripper_max_step=0.25)
+    assert space.semantics is not None
+    assert space.semantics.max_step == tuple(0.25 if index == 13 else None for index in range(14))
+
+    high[13] = low[13]  # pin both grippers: nothing left to declare
+    space = action_box(low, high, gripper_max_step=0.25)
+    assert space.semantics is not None
+    assert space.semantics.max_step is None
+
+
+def test_delta_and_unspecified_action_spaces_declare_no_max_step() -> None:
+    delta_space = action_box(joints_are_delta=True, gripper_max_step=0.25)
+    assert delta_space.semantics is not None
+    assert delta_space.semantics.max_step is None
+
+    unspecified_space = action_box()
+    assert unspecified_space.semantics is not None
+    assert unspecified_space.semantics.max_step is None
 
 
 def test_eef_observation_space_declares_joint_and_eef_state_once() -> None:

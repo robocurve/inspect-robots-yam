@@ -1032,6 +1032,33 @@ def test_absolute_mode_declares_joint_pos_with_labels() -> None:
     assert sem.dim_labels == DIM_LABELS
 
 
+@pytest.mark.parametrize(
+    ("cfg", "gripper_indices"),
+    [
+        (YamConfig(), (6, 13)),
+        (YamConfig(control_interface="eef_pos"), (4, 9)),
+    ],
+    ids=["joint-pos", "eef-abs-pose"],
+)
+def test_absolute_action_spaces_wire_derived_gripper_max_step(
+    cfg: YamConfig, gripper_indices: tuple[int, int]
+) -> None:
+    emb, _, _ = _build(cfg)
+    sem = emb.info.action_space.semantics
+    assert sem is not None and sem.max_step is not None
+    assert len(sem.max_step) == emb.info.action_space.dim
+    assert all(
+        step == pytest.approx(0.1) if index in gripper_indices else step is None
+        for index, step in enumerate(sem.max_step)
+    )
+
+
+def test_delta_action_space_ignores_derived_gripper_max_step() -> None:
+    emb, _, _ = _build(YamConfig(joints_are_delta=True))
+    sem = emb.info.action_space.semantics
+    assert sem is not None and sem.max_step is None
+
+
 def test_observe_validates_camera_shape() -> None:
     def _bad_cameras(_cfg):
         img = np.zeros((2, 2, 3), dtype=np.uint8)

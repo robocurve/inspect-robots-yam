@@ -8,9 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `YamConfig.gripper_stroke_s` and per-gripper `max_step` declarations for
+  absolute joint and Cartesian action spaces, pacing a full normalized gripper
+  stroke at approximately one second by default. Requires inspect-robots 0.30
+  (the new dependency floor) (#90).
 - `OPTION_SLOTS` declaration on `YAMEmbodiment` (#87): `inspect-robots setup`
   now offers `auto_start` as a yes/no question and writes the answer to
-  config.ini. Requires inspect-robots 0.29 (the new dependency floor).
+  config.ini. This feature requires inspect-robots 0.29.
 - `YamConfig.auto_start` (plan 0015, #87): opt-in zero-touch attended starts.
   Skips both operator Enter gates in `reset()` (a printed stand-clear notice
   replaces the home gate; the scene-ready gate is dropped and stdin is drained

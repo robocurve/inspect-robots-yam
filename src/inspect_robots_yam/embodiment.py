@@ -1332,14 +1332,20 @@ class YAMEmbodiment:
                 low=self._cfg.eef_low_array,
                 high=self._cfg.eef_high_array,
                 control_interface="eef_pos",
+                gripper_max_step=self._cfg.gripper_max_step,
             )
         if self._cfg.joints_are_delta:
             return action_box(
                 low=self._cfg.delta_low,
                 high=self._cfg.delta_high,
                 joints_are_delta=True,
+                gripper_max_step=self._cfg.gripper_max_step,
             )
-        return action_box(low=self._cfg.low, high=self._cfg.high)
+        return action_box(
+            low=self._cfg.low,
+            high=self._cfg.high,
+            gripper_max_step=self._cfg.gripper_max_step,
+        )
 
     def _home_pose(self) -> Vec:
         """Select the configured joint home, defaulting per control interface."""

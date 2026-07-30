@@ -46,6 +46,11 @@ def test_info_and_config_zero_arg() -> None:
     assert pol.config.action_horizon == 30
 
 
+def test_policy_action_space_declares_no_gripper_max_step() -> None:
+    sem = MolmoAct2Policy().info.action_space.semantics
+    assert sem is not None and sem.max_step is None
+
+
 def test_gr00t_info_and_config_zero_arg() -> None:
     pol = gr00t_policy()
     assert pol.info.name == "gr00t"
