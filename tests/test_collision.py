@@ -16,6 +16,7 @@ from inspect_robots.spaces import ActionSemantics, Box
 from inspect_robots.types import Action
 
 from inspect_robots_yam import collision
+from inspect_robots_yam import embodiment as embodiment_module
 from inspect_robots_yam.collision import (
     CollisionApprover,
     CollisionChecker,
@@ -23,6 +24,7 @@ from inspect_robots_yam.collision import (
     build_yam_guardrails,
 )
 from inspect_robots_yam.config import DEFAULT_JOINT_HOME_POSE, YamConfig, action_box
+from inspect_robots_yam.embodiment import YAMEmbodiment
 from inspect_robots_yam.packing import DIM_LABELS, TOTAL_DIM
 
 
@@ -323,7 +325,10 @@ def test_approver_rejects_bad_mode_start_shape_nonfinite_and_collision(
     bad[0] = np.nan
     with pytest.raises(ValueError, match="finite"):
         CollisionApprover(checker, bad, action_space=joint_space)
-    with pytest.raises(ValueError, match="already in collision"):
+    with pytest.raises(
+        ValueError,
+        match=r"already in collision.*collision_guardrail=false.*collision_\* geometry",
+    ):
         CollisionApprover(checker, REACH_DOWN, action_space=joint_space)
 
 
@@ -346,12 +351,23 @@ def test_safe_pass_through_preserves_identity_and_updates_last_safe(
 def test_hold_uses_last_safe_meta_and_reanchors_delta_limiter(
     checker: CollisionChecker,
     joint_space: Box,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     approver = CollisionApprover(checker, HOME, action_space=joint_space)
-    store: dict[str, Any] = {
-        "yam_collision:last_safe": HOME.copy(),
-        "delta_limit:last": REACH_DOWN.copy(),
-    }
+    store: dict[str, Any] = {"yam_collision:last_safe": HOME.copy()}
+    DeltaLimitApprover(joint_space).review(Action(REACH_DOWN), store)
+    rewinds: list[np.ndarray] = []
+    rewind_reference = DeltaLimitApprover.rewind_reference
+
+    def record_rewind(target_store: dict[str, Any], pose: np.ndarray) -> None:
+        rewinds.append(pose.copy())
+        rewind_reference(target_store, pose)
+
+    monkeypatch.setattr(
+        DeltaLimitApprover,
+        "rewind_reference",
+        staticmethod(record_rewind),
+    )
     action = Action(
         REACH_DOWN,
         meta={
@@ -369,12 +385,14 @@ def test_hold_uses_last_safe_meta_and_reanchors_delta_limiter(
     assert ":" in held.meta["collision_detail"]
     assert "clamped" not in held.meta
     assert "delta_clamped" not in held.meta
-    assert store["delta_limit:last"] == pytest.approx(HOME)
+    assert len(rewinds) == 1
+    assert rewinds[0] == pytest.approx(HOME)
     assert store["yam_collision:last_safe"] == pytest.approx(HOME)
 
     no_delta_store: dict[str, Any] = {"yam_collision:last_safe": HOME.copy()}
     approver.review(Action(REACH_DOWN), no_delta_store)
-    assert "delta_limit:last" not in no_delta_store
+    assert len(rewinds) == 2
+    assert rewinds[1] == pytest.approx(HOME)
 
 
 def test_strict_mode_and_nonfinite_action_abort(
@@ -409,9 +427,7 @@ def test_resolution_derived_substeps_clamp_at_one_and_sixty_four(
     assert approver._substep_count(HOME, far) == 64
 
 
-def test_first_action_sweep_blocks_cross_arm_collision_between_safe_endpoints(
-    joint_space: Box,
-) -> None:
+def test_first_action_sweep_blocks_cross_arm_collision_between_safe_endpoints() -> None:
     config = CollisionConfig(table_height=None, sweep_resolution=0.1)
     checker = CollisionChecker(config)
     rng = np.random.default_rng(11)
@@ -451,20 +467,28 @@ def test_first_action_sweep_blocks_cross_arm_collision_between_safe_endpoints(
     assert not checker.check(start).collided
     assert not checker.check(target).collided
 
-    approver = CollisionApprover(checker, start, action_space=joint_space)
+    configured_low = np.asarray(YamConfig().joint_low)
+    configured_high = np.asarray(YamConfig().joint_high)
+    for side in ("left", "right"):
+        for index, (low, high) in enumerate(zip(arm_low, arm_high, strict=True)):
+            configured_low[DIM_LABELS.index(f"{side}_j{index}")] = low
+            configured_high[DIM_LABELS.index(f"{side}_j{index}")] = high
+    yam_config = YamConfig(
+        joint_low=tuple(configured_low),
+        joint_high=tuple(configured_high),
+        home_pose=tuple(start),
+        collision_table=False,
+    )
+    embodiment = YAMEmbodiment(yam_config)
+    contribution = embodiment.contribute_guardrails(embodiment.info.action_space)
+    name, approver = contribution.approvers[0]
+    assert name == "yam-collision"
     held = approver.review(Action(target), {})
     assert held.data == pytest.approx(start)
     assert held.meta["collision_blocked"] is True
     detail = held.meta["collision_detail"]
     pair = detail.split("@", 1)[0]
     assert {name.split("_", 1)[0] for name in pair.split(":")} == {"left", "right"}
-
-
-def test_framework_delta_limiter_still_uses_pinned_store_key(joint_space: Box) -> None:
-    limiter = DeltaLimitApprover(joint_space)
-    store: dict[str, Any] = {}
-    limiter.review(Action(HOME), store)
-    assert "delta_limit:last" in store
 
 
 def test_build_guardrails_rejects_inconsistent_yam_modes(joint_space: Box) -> None:
@@ -492,11 +516,216 @@ def test_build_guardrails_order_and_clamped_default_home(joint_space: Box) -> No
 def test_build_guardrails_uses_custom_home_and_integrates_chain(joint_space: Box) -> None:
     home = tuple(_pose(left_j0=0.01))
     config = YamConfig(home_pose=home)
-    chain = build_yam_guardrails(joint_space, config, on_violation="hold")
+    collision_config = CollisionConfig(table_height=None)
+    chain = build_yam_guardrails(
+        joint_space,
+        config,
+        collision_config,
+        on_violation="hold",
+    )
     collision_approver = chain._approvers[-1]
     assert collision_approver._start_pose == pytest.approx(home)
+    assert collision_approver._checker.config is collision_config
     action = Action(_pose(left_j0=0.02))
     assert chain.review(action, {}) is action
+
+
+def test_contribution_ladder_off_is_empty_without_warning(joint_space: Box) -> None:
+    embodiment = YAMEmbodiment(YamConfig(collision_guardrail=False))
+
+    contribution = embodiment.contribute_guardrails(joint_space)
+
+    assert contribution.approvers == ()
+    assert contribution.warnings == ()
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        YamConfig(control_interface="eef_pos"),
+        YamConfig(joints_are_delta=True),
+    ],
+    ids=["eef", "delta-joints"],
+)
+def test_contribution_ladder_skips_non_absolute_joint_modes(config: YamConfig) -> None:
+    embodiment = YAMEmbodiment(config)
+
+    contribution = embodiment.contribute_guardrails(embodiment.info.action_space)
+
+    assert contribution.approvers == ()
+    assert contribution.warnings == (
+        "collision guardrail skipped: absolute joints mode only (plan 0011 v1)",
+    )
+
+
+def test_contribution_ladder_reports_missing_mujoco_before_construction(
+    joint_space: Box,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructed = False
+
+    def fail_if_constructed(*args: Any, **kwargs: Any) -> None:
+        nonlocal constructed
+        constructed = True
+        raise AssertionError("collision construction must not run")
+
+    monkeypatch.setattr(embodiment_module.importlib.util, "find_spec", lambda _name: None)
+    monkeypatch.setattr(collision, "_collision_approver", fail_if_constructed)
+
+    contribution = YAMEmbodiment().contribute_guardrails(joint_space)
+
+    assert not constructed
+    assert contribution.approvers == ()
+    assert contribution.warnings == (
+        "collision guardrail skipped: MuJoCo is unavailable; install it with: "
+        'pip install "inspect-robots-yam[collision]"',
+    )
+
+
+def test_contribution_happy_path_is_named_hold_with_default_geometry_warning(
+    joint_space: Box,
+) -> None:
+    contribution = YAMEmbodiment().contribute_guardrails(joint_space)
+
+    assert len(contribution.approvers) == 1
+    name, approver = contribution.approvers[0]
+    assert name == "yam-collision"
+    assert isinstance(approver, CollisionApprover)
+    assert approver._on_violation == "hold"
+    assert contribution.warnings == (
+        "collision guardrail uses library-default geometry fields: "
+        "collision_left_base_pos, collision_right_base_pos, "
+        "collision_left_base_yaw, collision_right_base_yaw, "
+        "collision_table_height, collision_penetration_threshold",
+    )
+
+
+def test_contribution_propagates_malformed_model(
+    joint_space: Box,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        CollisionChecker,
+        "_read_model_xml",
+        staticmethod(lambda: "<mujoco><broken>"),
+    )
+
+    with pytest.raises(ValueError, match="malformed or incompatible"):
+        YAMEmbodiment().contribute_guardrails(joint_space)
+
+
+def test_contribution_propagates_colliding_home_with_remedies(joint_space: Box) -> None:
+    embodiment = YAMEmbodiment(
+        YamConfig(
+            collision_left_base_pos=(0.0, 0.0, 0.0),
+            collision_right_base_pos=(0.0, 0.0, 0.0),
+            collision_table=False,
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"start_pose is already in collision.*collision_guardrail=false.*collision_\*",
+    ):
+        embodiment.contribute_guardrails(joint_space)
+
+
+def test_contribution_maps_configured_geometry_to_checker(joint_space: Box) -> None:
+    config = YamConfig(
+        collision_left_base_pos=(0.0, 0.31, 0.02),
+        collision_right_base_pos=(0.0, -0.32, 0.03),
+        collision_left_base_yaw=0.1,
+        collision_right_base_yaw=-0.2,
+        collision_table_height=-0.01,
+        collision_penetration_threshold=0.004,
+    )
+
+    contribution = YAMEmbodiment(config).contribute_guardrails(joint_space)
+    _, approver = contribution.approvers[0]
+    assert isinstance(approver, CollisionApprover)
+    assert approver._checker.config == CollisionConfig(
+        left_base_pos=(0.0, 0.31, 0.02),
+        right_base_pos=(0.0, -0.32, 0.03),
+        left_base_yaw=0.1,
+        right_base_yaw=-0.2,
+        table_height=-0.01,
+        penetration_threshold=0.004,
+    )
+    assert contribution.warnings == ()
+
+
+@pytest.mark.parametrize("position", ["0.0,0.3", "0.0,nan,0.0"])
+def test_contribution_delegates_geometry_validation_to_collision_config(
+    joint_space: Box,
+    position: str,
+) -> None:
+    config = YamConfig.from_kwargs(collision_left_base_pos=position)
+
+    with pytest.raises(ValueError, match="left_base_pos must contain three finite coordinates"):
+        YAMEmbodiment(config).contribute_guardrails(joint_space)
+
+
+def test_collision_table_false_removes_table_from_contributed_checker(
+    joint_space: Box,
+) -> None:
+    contribution = YAMEmbodiment(YamConfig(collision_table=False)).contribute_guardrails(
+        joint_space
+    )
+    _, approver = contribution.approvers[0]
+    assert isinstance(approver, CollisionApprover)
+    assert approver._checker.config.table_height is None
+    geom_names = {
+        approver._checker._mujoco.mj_id2name(
+            approver._checker._model,
+            approver._checker._mujoco.mjtObj.mjOBJ_GEOM,
+            index,
+        )
+        for index in range(approver._checker._model.ngeom)
+    }
+    assert "table" not in geom_names
+    assert "collision_table_height" not in contribution.warnings[0]
+
+
+def test_geometry_warning_stands_with_one_base_position_and_lifts_with_both(
+    joint_space: Box,
+) -> None:
+    one_position = YAMEmbodiment(
+        YamConfig(
+            collision_left_base_pos=(0.0, 0.3, 0.0),
+            collision_table_height=0.0,
+        )
+    ).contribute_guardrails(joint_space)
+    assert one_position.warnings == (
+        "collision guardrail uses library-default geometry fields: "
+        "collision_right_base_pos, collision_left_base_yaw, "
+        "collision_right_base_yaw, collision_penetration_threshold",
+    )
+
+    both_positions = YAMEmbodiment(
+        YamConfig(
+            collision_left_base_pos=(0.0, 0.3, 0.0),
+            collision_right_base_pos=(0.0, -0.3, 0.0),
+        )
+    ).contribute_guardrails(joint_space)
+    assert both_positions.warnings == ()
+
+
+def test_build_and_contribution_collision_approvers_are_equivalent(joint_space: Box) -> None:
+    config = YamConfig(
+        home_pose=tuple(_pose(left_j0=0.01)),
+        collision_left_base_pos=(0.0, 0.3, 0.0),
+        collision_right_base_pos=(0.0, -0.3, 0.0),
+        collision_table=False,
+    )
+
+    built = build_yam_guardrails(joint_space, config)._approvers[-1]
+    _, contributed = YAMEmbodiment(config).contribute_guardrails(joint_space).approvers[0]
+
+    assert isinstance(built, CollisionApprover)
+    assert isinstance(contributed, CollisionApprover)
+    assert built._start_pose == pytest.approx(contributed._start_pose)
+    assert built._checker.config == contributed._checker.config
+    assert built._on_violation == contributed._on_violation == "hold"
 
 
 @pytest.mark.perf

@@ -122,6 +122,8 @@ class YamConfig(_FromKwargs):
             "home_pose",
             "rest_pose",
             "step_limits",
+            "collision_left_base_pos",
+            "collision_right_base_pos",
         }
     )
 
@@ -173,6 +175,16 @@ class YamConfig(_FromKwargs):
     # faults before any motion otherwise (headless runs want unattended).
     # unattended=True takes precedence and makes this a no-op.
     auto_start: bool = False
+    # Predictive MuJoCo checking is opt-out. Geometry overrides stay optional:
+    # None selects CollisionConfig's library default at contribution time.
+    collision_guardrail: bool = True
+    collision_left_base_pos: tuple[float, ...] | None = None
+    collision_right_base_pos: tuple[float, ...] | None = None
+    collision_left_base_yaw: float | None = None
+    collision_right_base_yaw: float | None = None
+    collision_table: bool = True
+    collision_table_height: float | None = None
+    collision_penetration_threshold: float | None = None
     # Wait for the arm to reach each commanded pose before observing, so a
     # chunked policy plans from a converged view. None disables the wait; a
     # tolerance must exceed the rig's steady-state offset (run
@@ -209,6 +221,21 @@ class YamConfig(_FromKwargs):
     top_depth_serial: str | None = None
     left_depth_serial: str | None = None
     right_depth_serial: str | None = None
+
+    @classmethod
+    def from_kwargs(cls, **flat: Any) -> YamConfig:
+        """Build CLI configuration while keeping the table off-state explicit."""
+        if "collision_table_height" in flat and flat["collision_table_height"] is None:
+            raise ValueError(
+                "collision_table_height cannot be none; use collision_table=false "
+                "to remove the table"
+            )
+        if flat.get("collision_table") is False and flat.get("collision_table_height") is not None:
+            raise ValueError(
+                "collision_table_height contradicts collision_table=false; remove the "
+                "height or set collision_table=true"
+            )
+        return super().from_kwargs(**flat)
 
     def __post_init__(self) -> None:
         """Reject values that violate the 14-D packing and hardware invariants.

@@ -22,6 +22,7 @@ are pragma'd defaults that only execute on hardware.
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import logging
 import math
 import threading
@@ -32,6 +33,7 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
+from inspect_robots.approver import GuardrailContribution
 from inspect_robots.conformance import DeviceSlot, OptionSlot
 from inspect_robots.embodiment import SELF_PACED, EmbodimentInfo
 from inspect_robots.errors import ConfigError, EmbodimentFault
@@ -916,6 +918,11 @@ class YAMEmbodiment:
             label="Skip the operator start prompts (auto_start)",
             default=True,
         ),
+        OptionSlot(
+            arg="collision_guardrail",
+            label="Block predicted arm collisions before they happen (collision_guardrail)",
+            default=True,
+        ),
     )
 
     def __init__(
@@ -1053,6 +1060,50 @@ class YAMEmbodiment:
             is_simulated=False,
             capabilities=frozenset({SELF_PACED}),
             docs=docs,
+        )
+
+    def contribute_guardrails(self, action_space: Box) -> GuardrailContribution:
+        """Contribute collision holds when absolute joint checking is available."""
+        if not self._cfg.collision_guardrail:
+            return GuardrailContribution()
+        if self._cfg.control_interface != "joints" or self._cfg.joints_are_delta:
+            return GuardrailContribution(
+                warnings=("collision guardrail skipped: absolute joints mode only (plan 0011 v1)",)
+            )
+
+        from inspect_robots_yam.collision import _INSTALL_COMMAND, _collision_approver
+
+        if importlib.util.find_spec("mujoco") is None:
+            return GuardrailContribution(
+                warnings=(
+                    "collision guardrail skipped: MuJoCo is unavailable; "
+                    f"install it with: {_INSTALL_COMMAND}",
+                )
+            )
+
+        approver = _collision_approver(self._cfg, action_space)
+        warnings: tuple[str, ...] = ()
+        if self._cfg.collision_left_base_pos is None or self._cfg.collision_right_base_pos is None:
+            default_fields = [
+                name
+                for name in (
+                    "collision_left_base_pos",
+                    "collision_right_base_pos",
+                    "collision_left_base_yaw",
+                    "collision_right_base_yaw",
+                    "collision_penetration_threshold",
+                )
+                if getattr(self._cfg, name) is None
+            ]
+            if self._cfg.collision_table and self._cfg.collision_table_height is None:
+                default_fields.insert(4, "collision_table_height")
+            warnings = (
+                "collision guardrail uses library-default geometry fields: "
+                + ", ".join(default_fields),
+            )
+        return GuardrailContribution(
+            approvers=(("yam-collision", approver),),
+            warnings=warnings,
         )
 
     # -- lifecycle ---------------------------------------------------------

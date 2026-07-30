@@ -15,6 +15,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The predictive MuJoCo collision guardrail is now contributed by
+  `YAMEmbodiment` for absolute joint control and defaults on. This is a
+  results-affecting upgrade: table-press grasps can hold when demonstration
+  targets penetrate the modeled table, while bimanual close-quarters work can
+  livelock when the open-finger model blocks a repeatedly commanded target.
+  Raise `collision_penetration_threshold` or lower `collision_table_height` for
+  table presses, set `collision_table=false` on tableless rigs, configure
+  measured `collision_left_base_pos` and `collision_right_base_pos` for
+  cross-arm work, or set `collision_guardrail=false` for a per-rig opt-out. A
+  home pose that collides under the effective geometry now refuses to start;
+  correct the `collision_*` geometry or use the opt-out. EEF and delta-joints
+  modes keep running with a skip warning, and installs without MuJoCo get the
+  collision-extra install command instead of a construction failure. Requires
+  inspect-robots 0.31.
 - `YamConfig.gripper_stroke_s` and per-gripper `max_step` declarations for
   absolute joint and Cartesian action spaces, pacing a full normalized gripper
   stroke at approximately one second by default. Requires inspect-robots 0.30

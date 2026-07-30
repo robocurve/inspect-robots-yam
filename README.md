@@ -477,44 +477,26 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
 
 ## Collision guardrail
 
-Install the optional MuJoCo dependency and attach the guardrail through the
-programmatic API:
+`YamConfig.collision_guardrail` defaults to `True`. In absolute joint mode,
+`YAMEmbodiment` contributes a predictive MuJoCo guardrail automatically. A
+blocked target becomes a hold at the last safe commanded pose and is marked in
+the recorded action metadata. If MuJoCo is unavailable, the run continues with
+a warning that includes this install command:
 
 ```bash
 uv pip install 'inspect-robots-yam[collision]'
 ```
 
-```python
-from inspect_robots import eval
-from inspect_robots_yam import MolmoAct2Policy, YAMEmbodiment, YamConfig
-from inspect_robots_yam.collision import CollisionConfig, build_yam_guardrails
+Configure measured rig geometry in `config.ini` or with `-E` arguments:
 
-yam_config = YamConfig(left_channel="can0", right_channel="can1")
-embodiment = YAMEmbodiment(yam_config, camera_reader=my_camera_reader)
-policy = MolmoAct2Policy(server_url="http://127.0.0.1:8202")
-guardrails = build_yam_guardrails(
-    embodiment.info.action_space,
-    yam_config,
-    CollisionConfig(
-        left_base_pos=(0.0, 0.3, 0.0),
-        right_base_pos=(0.0, -0.3, 0.0),
-        table_height=0.0,
-    ),
-)
-
-(log,) = eval(
-    "kitchenbench/pour_pasta",
-    policy,
-    embodiment,
-    approver=guardrails,
-)
+```ini
+[embodiment.args]
+collision_left_base_pos = 0.0,0.3,0.0
+collision_right_base_pos = 0.0,-0.3,0.0
+collision_left_base_yaw = 0.0
+collision_right_base_yaw = 0.0
+collision_table_height = 0.0
 ```
-
-The factory runs the framework clamp and delta limiter before a predictive
-MuJoCo check. A blocked target becomes a hold at the last safe commanded pose
-and is marked in the recorded action metadata. The checker sweeps commanded
-joint targets. With settling disabled, physical motion can lag behind that
-commanded path.
 
 > [!WARNING]
 > The default base offsets, `(0.0, 0.3, 0.0)` and `(0.0, -0.3, 0.0)`, are
@@ -522,22 +504,30 @@ commanded path.
 > on every rig, then override them. Incorrect offsets can silently miss real
 > cross-arm collisions or block safe motions.
 
-The default table plane sits at the arm-base height. A valid tabletop grasp can
-put a fingertip within millimeters of that plane, and a demonstration-derived
-target can press slightly through it. If grasp-moment holds occur, first raise
-`penetration_threshold`, then lower `table_height` by a few millimeters of
-margin. Selective fingertip exclusions are future work.
+Two known false-positive classes can change eval results:
 
-Both finger joints are always posed at their open extremes, which gives the
-checker their maximum footprint. This can block a valid close bimanual
-handover. Command-derived finger geometry is the intended remedy, but
-`gripper_qpos="command"` is not supported in v1.
+- Table-press grasps can hold when demonstration-derived targets press slightly
+  through the modeled table. Raise `collision_penetration_threshold` or lower
+  `collision_table_height`. On a tableless rig, set `collision_table=false`.
+- Bimanual close-quarters work such as handovers or clapping can hold because
+  both finger joints are modeled at their open extremes. A policy that repeats
+  the blocked target can livelock until `max_steps`. Configure both measured
+  base positions to reduce cross-arm geometry error, or set
+  `collision_guardrail=false` for that rig.
+
+The run refuses to start when the configured home pose is already in collision
+under the effective geometry. Correct the `collision_*` geometry fields or set
+`collision_guardrail=false` after verifying that an opt-out is appropriate.
 
 The guardrail supports only 14-D absolute `joint_pos` actions. It refuses EEF
 and `joint_delta` spaces because an approver sees Cartesian targets or deltas
-before the embodiment converts them. Inspect Robots cannot attach custom
-approvers from the CLI today, so collision checking requires the programmatic
-`eval()` path.
+before the embodiment converts them. Those modes continue with a skip warning.
+
+The checker models commanded poses, not measured arm motion. Physical motion can
+lag or sag away from checked waypoints, including with the default
+`zero_gravity_mode=true`, so do not reduce clearance margins to zero.
+`build_yam_guardrails` remains available for programmatic chains and strict
+abort behavior.
 
 This guardrail reduces collision risk. It does not model props, certify a
 continuous path, observe the measured arm trajectory, check reset or park
@@ -657,6 +647,12 @@ at the first reset before torque is released),
 `unattended` (default `False`; skip operator prompts),
 `auto_start` (default `False`; skip both operator Enter gates but keep the
 attended episode flow; needs a TTY; `unattended` takes precedence),
+`collision_guardrail` (default `True`; predictive holds in absolute joint mode),
+`collision_left_base_pos`, `collision_right_base_pos`,
+`collision_left_base_yaw`, `collision_right_base_yaw` (optional measured rig
+geometry), `collision_table` (default `True`; set `False` for no table plane),
+`collision_table_height`, `collision_penetration_threshold` (optional collision
+model overrides),
 `settle_tolerance` (radians; `none` by default, which disables settling; see
 *Settling before observing*), `settle_timeout_s` (default `1.0`),
 `settle_timeout_budget` (default `20`),

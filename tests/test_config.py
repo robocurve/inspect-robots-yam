@@ -497,3 +497,48 @@ def test_pose_fields_still_accept_real_tuples() -> None:
 def test_auto_start_defaults_off_and_binds_via_kwargs() -> None:
     assert YamConfig().auto_start is False
     assert YamConfig.from_kwargs(auto_start=True).auto_start is True
+
+
+def test_collision_guardrail_defaults_on_and_binds_via_kwargs() -> None:
+    assert YamConfig().collision_guardrail is True
+    assert YamConfig.from_kwargs(collision_guardrail=False).collision_guardrail is False
+    assert YamConfig.from_kwargs(collision_table=False).collision_table is False
+
+
+def test_collision_geometry_parses_comma_strings_and_scalars() -> None:
+    cfg = YamConfig.from_kwargs(
+        collision_left_base_pos="0.1, 0.2, 0.3",
+        collision_right_base_pos="-0.1,-0.2,-0.3",
+        collision_left_base_yaw=0.25,
+        collision_right_base_yaw=-0.25,
+        collision_table_height=0.02,
+        collision_penetration_threshold=0.004,
+    )
+
+    assert cfg.collision_left_base_pos == pytest.approx((0.1, 0.2, 0.3))
+    assert cfg.collision_right_base_pos == pytest.approx((-0.1, -0.2, -0.3))
+    assert cfg.collision_left_base_yaw == pytest.approx(0.25)
+    assert cfg.collision_right_base_yaw == pytest.approx(-0.25)
+    assert cfg.collision_table is True
+    assert cfg.collision_table_height == pytest.approx(0.02)
+    assert cfg.collision_penetration_threshold == pytest.approx(0.004)
+
+
+def test_collision_geometry_string_parse_errors_are_guided() -> None:
+    with pytest.raises(ValueError, match="collision_left_base_pos"):
+        YamConfig.from_kwargs(collision_left_base_pos="0.1,sideways,0.3")
+
+
+def test_collision_table_height_none_names_explicit_table_switch() -> None:
+    with pytest.raises(ValueError, match="collision_table=false"):
+        YamConfig.from_kwargs(collision_table_height=None)
+
+
+def test_collision_table_height_rejects_disabled_table_contradiction() -> None:
+    with pytest.raises(ValueError, match="contradicts collision_table=false"):
+        YamConfig.from_kwargs(collision_table=False, collision_table_height=0.1)
+
+
+def test_default_collision_flag_does_not_reject_unsupported_contribution_modes() -> None:
+    assert YamConfig(control_interface="eef_pos").collision_guardrail is True
+    assert YamConfig(joints_are_delta=True).collision_guardrail is True
