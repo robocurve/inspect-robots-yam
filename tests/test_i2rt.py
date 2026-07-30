@@ -351,7 +351,7 @@ def test_device_slots_cover_channels_and_cameras_with_valid_config_args() -> Non
 
 
 def test_option_slots_declare_auto_start_with_valid_config_arg() -> None:
-    """Every declared option toggles a real YamConfig bool, defaulting alike."""
+    """Every declared option toggles a real YamConfig bool."""
     from dataclasses import fields
 
     from inspect_robots.conformance import OptionSlot, option_slots
@@ -363,10 +363,21 @@ def test_option_slots_declare_auto_start_with_valid_config_arg() -> None:
     assert all(isinstance(option, OptionSlot) for option in options)
     assert all(option.arg in config_fields for option in options)
     assert {option.arg for option in options} == {"auto_start"}
-    # The wizard's suggested answer must match the config default, or a bare
-    # Enter through setup would silently flip the behavior.
-    for option in options:
-        assert option.default is getattr(YamConfig(), option.arg)
+
+
+def test_auto_start_wizard_default_diverges_from_config_default() -> None:
+    """The wizard suggests yes while the config default stays off.
+
+    Deliberate divergence: runs configured outside setup keep the
+    conservative prompt-gated flow, but the interactive wizard nudges
+    operators toward zero-touch starts. The wizard always writes an
+    explicit true/false, so the suggestion never leaks into configs it
+    did not write.
+    """
+    (auto_start_slot,) = YAMEmbodiment.OPTION_SLOTS
+
+    assert auto_start_slot.default is True
+    assert YamConfig().auto_start is False
 
 
 class CloseRecordingRobot:

@@ -906,11 +906,15 @@ class YAMEmbodiment:
 
     # The setup wizard offers these as yes/no questions (core OPTION_SLOTS
     # protocol, inspect-robots#222) and writes the answers to config.ini.
-    # The behavior contract lives on the matching YamConfig field.
+    # The behavior contract lives on the matching YamConfig field. The wizard
+    # suggestion may diverge from the YamConfig default: the config default
+    # stays conservative for runs configured outside setup, while the wizard
+    # nudges interactive operators toward the zero-touch flow.
     OPTION_SLOTS: ClassVar[tuple[OptionSlot, ...]] = (
         OptionSlot(
             arg="auto_start",
             label="Skip the operator start prompts (auto_start)",
+            default=True,
         ),
     )
 
