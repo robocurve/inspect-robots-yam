@@ -35,7 +35,6 @@ ViolationMode = Literal["hold", "abort"]
 
 _INSTALL_COMMAND = 'pip install "inspect-robots-yam[collision]"'
 _LAST_SAFE_KEY = "yam_collision:last_safe"
-_DELTA_LIMIT_KEY = "delta_limit:last"
 _SIDES = ("left", "right")
 _ACTION_TO_MODEL_JOINT: tuple[tuple[str, str], ...] = tuple(
     (f"{side}_j{index}", f"{side}_joint{index + 1}") for side in _SIDES for index in range(ARM_DOF)
@@ -274,7 +273,8 @@ class CollisionApprover:
         if start_report.collided:
             raise ValueError(
                 "CollisionApprover start_pose is already in collision under the configured "
-                f"rig model: {self._report_pair(start_report)}"
+                f"rig model: {self._report_pair(start_report)}. Set collision_guardrail=false "
+                "to opt out, or correct the collision_* geometry fields."
             )
         self._on_violation = on_violation
 
@@ -301,8 +301,7 @@ class CollisionApprover:
                         "collision_detail": detail,
                     }
                 )
-                if _DELTA_LIMIT_KEY in store:
-                    store[_DELTA_LIMIT_KEY] = last.copy()
+                DeltaLimitApprover.rewind_reference(store, last)
                 return replace(action, data=last.copy(), meta=meta)
         store[_LAST_SAFE_KEY] = target.copy()
         return action
@@ -317,10 +316,55 @@ class CollisionApprover:
         return f"{report.geom1}:{report.geom2}"
 
 
+def _config_from_yam(yam_config: YamConfig) -> CollisionConfig:
+    set_fields: dict[str, Any] = {}
+    for yam_name, collision_name in (
+        ("collision_left_base_pos", "left_base_pos"),
+        ("collision_right_base_pos", "right_base_pos"),
+        ("collision_left_base_yaw", "left_base_yaw"),
+        ("collision_right_base_yaw", "right_base_yaw"),
+        ("collision_penetration_threshold", "penetration_threshold"),
+    ):
+        value = getattr(yam_config, yam_name)
+        if value is not None:
+            set_fields[collision_name] = value
+    if not yam_config.collision_table:
+        set_fields["table_height"] = None
+    elif yam_config.collision_table_height is not None:
+        set_fields["table_height"] = yam_config.collision_table_height
+    return replace(_DEFAULT_COLLISION_CONFIG, **set_fields)
+
+
+def _collision_approver(
+    yam_config: YamConfig,
+    action_space: Box,
+    *,
+    collision_config: CollisionConfig | None = None,
+    on_violation: ViolationMode = "hold",
+) -> CollisionApprover:
+    configured_home = (
+        DEFAULT_JOINT_HOME_POSE if yam_config.home_pose is None else yam_config.home_pose
+    )
+    start_pose = np.clip(
+        np.asarray(configured_home, dtype=np.float64),
+        yam_config.low,
+        yam_config.high,
+    )
+    checker = CollisionChecker(
+        _config_from_yam(yam_config) if collision_config is None else collision_config
+    )
+    return CollisionApprover(
+        checker,
+        start_pose,
+        action_space=action_space,
+        on_violation=on_violation,
+    )
+
+
 def build_yam_guardrails(
     action_space: Box,
     yam_config: YamConfig,
-    collision_config: CollisionConfig = _DEFAULT_COLLISION_CONFIG,
+    collision_config: CollisionConfig | None = None,
     *,
     on_violation: ViolationMode = "hold",
 ) -> ChainApprover:
@@ -332,22 +376,13 @@ def build_yam_guardrails(
         raise ValueError(
             "Plan 0011 collision guardrails do not support YamConfig(joints_are_delta=True)"
         )
-    configured_home = (
-        DEFAULT_JOINT_HOME_POSE if yam_config.home_pose is None else yam_config.home_pose
-    )
-    start_pose = np.clip(
-        np.asarray(configured_home, dtype=np.float64),
-        yam_config.low,
-        yam_config.high,
-    )
-    checker = CollisionChecker(collision_config)
     return ChainApprover(
         ClampApprover(action_space),
         DeltaLimitApprover(action_space),
-        CollisionApprover(
-            checker,
-            start_pose,
-            action_space=action_space,
+        _collision_approver(
+            yam_config,
+            action_space,
+            collision_config=collision_config,
             on_violation=on_violation,
         ),
     )

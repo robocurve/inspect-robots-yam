@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import io
 import logging
 import sys
 import threading
@@ -350,7 +351,7 @@ def test_device_slots_cover_channels_and_cameras_with_valid_config_args() -> Non
     }
 
 
-def test_option_slots_declare_auto_start_with_valid_config_arg() -> None:
+def test_option_slots_declare_boolean_config_args() -> None:
     """Every declared option toggles a real YamConfig bool."""
     from dataclasses import fields
 
@@ -362,7 +363,7 @@ def test_option_slots_declare_auto_start_with_valid_config_arg() -> None:
     config_fields = {f.name for f in fields(YamConfig)}
     assert all(isinstance(option, OptionSlot) for option in options)
     assert all(option.arg in config_fields for option in options)
-    assert {option.arg for option in options} == {"auto_start"}
+    assert {option.arg for option in options} == {"auto_start", "collision_guardrail"}
 
 
 def test_auto_start_wizard_default_diverges_from_config_default() -> None:
@@ -374,10 +375,52 @@ def test_auto_start_wizard_default_diverges_from_config_default() -> None:
     explicit true/false, so the suggestion never leaks into configs it
     did not write.
     """
-    (auto_start_slot,) = YAMEmbodiment.OPTION_SLOTS
+    auto_start_slot = next(
+        option for option in YAMEmbodiment.OPTION_SLOTS if option.arg == "auto_start"
+    )
 
     assert auto_start_slot.default is True
     assert YamConfig().auto_start is False
+
+
+def test_collision_guardrail_option_matches_default_on_config() -> None:
+    collision_slot = next(
+        option for option in YAMEmbodiment.OPTION_SLOTS if option.arg == "collision_guardrail"
+    )
+
+    assert collision_slot.label == (
+        "Block predicted arm collisions before they happen (collision_guardrail)"
+    )
+    assert collision_slot.default is True
+    assert YamConfig().collision_guardrail is True
+
+
+def test_collision_guardrail_wizard_writer_round_trips_false(tmp_path) -> None:
+    from inspect_robots._setup import _options_section, _render_config
+    from inspect_robots.defaults import load_defaults
+
+    collision_slot = next(
+        option for option in YAMEmbodiment.OPTION_SLOTS if option.arg == "collision_guardrail"
+    )
+    answers = _options_section(
+        (collision_slot,),
+        {},
+        input_fn=lambda _prompt: "n",
+        out=io.StringIO(),
+    )
+    rendered = _render_config(
+        {"embodiment": "yam_arms"},
+        answers,
+        {},
+        managed_args=("collision_guardrail",),
+    )
+    path = tmp_path / "inspect-robots" / "config.ini"
+    path.parent.mkdir()
+    path.write_text(rendered, encoding="utf-8")
+
+    defaults = load_defaults({"XDG_CONFIG_HOME": str(tmp_path)})
+    assert defaults.embodiment_args == {"collision_guardrail": False}
+    assert YamConfig.from_kwargs(**defaults.embodiment_args).collision_guardrail is False
 
 
 class CloseRecordingRobot:

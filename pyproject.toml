@@ -20,7 +20,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "inspect-robots>=0.30",  # max_step (per-dimension speed semantics, core #224)
+    "inspect-robots>=0.31",  # embodiment guardrail contributions and public delta rewind
     "numpy>=1.24",
     "requests>=2.31",
     "json-numpy>=2.1",
