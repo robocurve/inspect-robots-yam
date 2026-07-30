@@ -109,9 +109,9 @@ git commit -m "config: add YamConfig.auto_start flag (#87)"
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/test_embodiment.py` (near `test_unattended_skips_operator_prompts`, line ~380). `pytest`, `Scene`, `Action`, `np`, `OperatorIO`, `YamConfig`, `EmbodimentFault`, `_build`, and `_build_with_status` are already in scope; add `import inspect_robots_yam.embodiment as embodiment_module` next to the existing `from inspect_robots_yam.embodiment import YAMEmbodiment` import at the top of the file.
+Append to `tests/test_embodiment.py` (near `test_unattended_skips_operator_prompts`, line ~380). `pytest`, `Scene`, `Action`, `np`, `OperatorIO`, `YamConfig`, `EmbodimentFault`, `_build`, and `_build_with_status` are already in scope; add `import inspect_robots_yam.embodiment as embodiment_module` at the top of the first-party import block (straight imports sort before from-imports under ruff isort, so it goes above the `from inspect_robots.embodiment import SELF_PACED` group's first-party section, not beside the `YAMEmbodiment` from-import).
 
-Note on the monkeypatching: pytest runs with a non-TTY stdin, so the real `stdin_interactive()` returns `False` and every auto-start success path must patch it to `True` (patch `embodiment_module.stdin_interactive` — `embodiment.py` binds the name at import via `from ... import`, and the call site looks it up as a module global).
+Note on the monkeypatching: under default pytest capture stdin is not a TTY, so the real `stdin_interactive()` returns `False` and every auto-start success path must patch it to `True` (patch `embodiment_module.stdin_interactive` — `embodiment.py` binds the name at import via `from ... import`, and the call site looks it up as a module global). The fault test patches it to `False` rather than relying on that ambient state, so the suite stays deterministic under `pytest -s` from a real terminal.
 
 ```python
 def test_auto_start_skips_gates_but_keeps_attended_flow(
@@ -174,8 +174,8 @@ def test_auto_start_drains_stdin_before_episode(monkeypatch: pytest.MonkeyPatch)
     assert prompts == []
 
 
-def test_auto_start_requires_interactive_stdin() -> None:
-    # No monkeypatch: pytest's stdin is not a TTY, so the real check fires.
+def test_auto_start_requires_interactive_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: False)
     emb, drv, _ = _build(YamConfig(auto_start=True))
     with pytest.raises(EmbodimentFault, match="auto_start"):
         emb.reset(Scene(id="s", instruction="x"))
@@ -201,17 +201,29 @@ def test_unattended_precedes_auto_start() -> None:
     assert result.terminated is False  # unattended still disables the end poll
 ```
 
-Append to `tests/test_operator.py` (extend its `from inspect_robots_yam.operator import ...` line with `stdin_interactive` and add `import sys` to the imports), so the real function body stays covered even though the embodiment tests patch it out:
+Append to `tests/test_operator.py` (extend its `from inspect_robots_yam.operator import ...` line with `stdin_interactive` and add `import sys` to the imports), so the real function body stays covered — and its contract pinned in both directions — even though the embodiment tests patch it out:
 
 ```python
-def test_stdin_interactive_mirrors_isatty() -> None:
-    assert stdin_interactive() == sys.stdin.isatty()
+def test_stdin_interactive_reports_tty_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Stub:
+        def __init__(self, tty: bool) -> None:
+            self._tty = tty
+
+        def isatty(self) -> bool:
+            return self._tty
+
+    monkeypatch.setattr(sys, "stdin", _Stub(True))
+    assert stdin_interactive() is True
+    monkeypatch.setattr(sys, "stdin", _Stub(False))
+    assert stdin_interactive() is False
 ```
+
+(`stdin_interactive` resolves `sys.stdin` at call time, so patching the `stdin` attribute of the shared `sys` module is what the implementation observes.)
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `uv run pytest tests/test_embodiment.py tests/test_operator.py -k "auto_start or stdin_interactive" -v`
-Expected: every new test FAILS except `test_unattended_precedes_auto_start`, which already passes today (unattended short-circuits both gates; keep it, it pins the precedence contract against regressions). Failure modes: `TypeError: unexpected keyword 'auto_start'` if Task 1 is not merged yet, otherwise `AttributeError` from `monkeypatch.setattr` / the import line (no `stdin_interactive` yet), prompts still captured, and no fault raised in the TTY test.
+Expected: every new test FAILS except `test_unattended_precedes_auto_start`, which already passes today (unattended short-circuits both gates; keep it, it pins the precedence contract against regressions). Failure modes: `TypeError: unexpected keyword 'auto_start'` if Task 1 is not merged yet, otherwise `AttributeError` from `monkeypatch.setattr` (no `stdin_interactive` on the embodiment module yet) in the patched tests, and `ImportError` in `tests/test_operator.py`.
 
 - [ ] **Step 3: Implement**
 
@@ -342,7 +354,7 @@ Expected: all PASS, including the six new embodiment tests, the operator unit te
 - [ ] **Step 5: Run the full gate set**
 
 Run: `uv run ruff check . && uv run ruff format --check . && uv run mypy && uv run pytest --cov -q`
-Expected: clean, coverage 100%. The guard's both branches, both gate branches, and the real `stdin_interactive` body are all exercised by the tests above. If coverage still flags something, a test is not exercising it — fix the test, do not add pragmas (none of this code is hardware-bound).
+Expected: clean, coverage 100%. Both guard exits (fault and fall-through), both arms of each gate branch, and both return paths of the real `stdin_interactive` body (via the operator unit test's stubs) are exercised by the tests above. If coverage still flags something, a test is not exercising it — fix the test, do not add pragmas (none of this code is hardware-bound).
 
 - [ ] **Step 6: Commit**
 
@@ -357,6 +369,7 @@ git commit -m "embodiment: auto_start skips both operator Enter gates (#87)"
 
 **Files:**
 - Modify: `README.md` (attended-flow paragraph around line 278, unattended paragraph around line 315, config reference around line 644)
+- Modify: `CHANGELOG.md` (`## Unreleased` → `### Added`)
 - Modify: `src/inspect_robots_yam/CLAUDE.md` (module-map rows for `operator.py` and `embodiment.py`)
 
 **Interfaces:**
@@ -398,18 +411,31 @@ attended episode flow; needs a TTY; `unattended` takes precedence),
 
 Match the exact formatting of the neighboring entries (backticks, semicolons, trailing comma).
 
-- [ ] **Step 4: Module map (`src/inspect_robots_yam/CLAUDE.md`)**
+- [ ] **Step 4: CHANGELOG entry**
+
+Add a bullet to the `### Added` list under `## Unreleased` in `CHANGELOG.md`, matching the existing entry style:
+
+```markdown
+- `YamConfig.auto_start` (plan 0015, #87): opt-in zero-touch attended starts.
+  Skips both operator Enter gates in `reset()` (a printed stand-clear notice
+  replaces the home gate; the scene-ready gate is dropped and stdin is drained
+  in its place) while keeping status lines, the end-episode keypress, and
+  operator grading. Faults before any motion when stdin is not an interactive
+  TTY; `unattended=True` takes precedence.
+```
+
+- [ ] **Step 5: Module map (`src/inspect_robots_yam/CLAUDE.md`)**
 
 In the Modules table, extend the `operator.py` row to mention the new helper, e.g. append to the row text: "; `stdin_interactive`, the TTY probe behind `auto_start`'s pre-motion fail-fast". Leave the `embodiment.py` row unless its wording now misleads (it names the operator-keypress episode end, which is unchanged).
 
-- [ ] **Step 5: Verify docs style and gates**
+- [ ] **Step 6: Verify docs style and gates**
 
-Re-read the edits against the repo writing rules: no em dashes in prose, no bold mid-sentence, headers unchanged. Run `uv run pytest -q` once more (docs edits cannot break tests, but the commit gate below expects a green tree).
+Re-read the edits against the repo writing rules: no em dashes in prose, no bold mid-sentence, headers unchanged (the CHANGELOG and module map are not README prose, but keep them tell-free too). Run `uv run pytest -q` once more (docs edits cannot break tests, but the commit gate below expects a green tree).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add README.md src/inspect_robots_yam/CLAUDE.md
+git add README.md CHANGELOG.md src/inspect_robots_yam/CLAUDE.md
 git commit -m "docs: document auto_start zero-touch starts (#87)"
 ```
 
