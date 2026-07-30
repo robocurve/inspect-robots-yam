@@ -1084,22 +1084,23 @@ class YAMEmbodiment:
         approver = _collision_approver(self._cfg, action_space)
         warnings: tuple[str, ...] = ()
         if self._cfg.collision_left_base_pos is None or self._cfg.collision_right_base_pos is None:
-            default_fields = [
-                name
-                for name in (
-                    "collision_left_base_pos",
-                    "collision_right_base_pos",
-                    "collision_left_base_yaw",
-                    "collision_right_base_yaw",
+            defaulted = (
+                ("collision_left_base_pos", self._cfg.collision_left_base_pos is None),
+                ("collision_right_base_pos", self._cfg.collision_right_base_pos is None),
+                ("collision_left_base_yaw", self._cfg.collision_left_base_yaw is None),
+                ("collision_right_base_yaw", self._cfg.collision_right_base_yaw is None),
+                (
+                    "collision_table_height",
+                    self._cfg.collision_table and self._cfg.collision_table_height is None,
+                ),
+                (
                     "collision_penetration_threshold",
-                )
-                if getattr(self._cfg, name) is None
-            ]
-            if self._cfg.collision_table and self._cfg.collision_table_height is None:
-                default_fields.insert(4, "collision_table_height")
+                    self._cfg.collision_penetration_threshold is None,
+                ),
+            )
             warnings = (
                 "collision guardrail uses library-default geometry fields: "
-                + ", ".join(default_fields),
+                + ", ".join(name for name, is_default in defaulted if is_default),
             )
         return GuardrailContribution(
             approvers=(("yam-collision", approver),),

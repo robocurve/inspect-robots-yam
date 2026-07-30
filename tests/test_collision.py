@@ -701,6 +701,16 @@ def test_geometry_warning_stands_with_one_base_position_and_lifts_with_both(
         "collision_right_base_yaw, collision_penetration_threshold",
     )
 
+    one_position_default_table = YAMEmbodiment(
+        YamConfig(collision_left_base_pos=(0.0, 0.3, 0.0))
+    ).contribute_guardrails(joint_space)
+    assert one_position_default_table.warnings == (
+        "collision guardrail uses library-default geometry fields: "
+        "collision_right_base_pos, collision_left_base_yaw, "
+        "collision_right_base_yaw, collision_table_height, "
+        "collision_penetration_threshold",
+    )
+
     both_positions = YAMEmbodiment(
         YamConfig(
             collision_left_base_pos=(0.0, 0.3, 0.0),

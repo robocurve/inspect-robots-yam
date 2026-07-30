@@ -8,13 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- The `inspect-robots setup` wizard now suggests yes for the `auto_start`
-  question (`[Y/n]`). The `YamConfig.auto_start` default is unchanged
-  (`False`): runs configured outside the wizard keep the prompt-gated flow,
-  and the wizard still writes an explicit true/false answer.
-
-### Added
-
 - The predictive MuJoCo collision guardrail is now contributed by
   `YAMEmbodiment` for absolute joint control and defaults on. This is a
   results-affecting upgrade: table-press grasps can hold when demonstration
@@ -29,6 +22,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   modes keep running with a skip warning, and installs without MuJoCo get the
   collision-extra install command instead of a construction failure. Requires
   inspect-robots 0.31.
+
+- The `inspect-robots setup` wizard now suggests yes for the `auto_start`
+  question (`[Y/n]`). The `YamConfig.auto_start` default is unchanged
+  (`False`): runs configured outside the wizard keep the prompt-gated flow,
+  and the wizard still writes an explicit true/false answer.
+
+### Added
 - `YamConfig.gripper_stroke_s` and per-gripper `max_step` declarations for
   absolute joint and Cartesian action spaces, pacing a full normalized gripper
   stroke at approximately one second by default. Requires inspect-robots 0.30

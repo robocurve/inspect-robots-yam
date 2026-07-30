@@ -484,7 +484,7 @@ the recorded action metadata. If MuJoCo is unavailable, the run continues with
 a warning that includes this install command:
 
 ```bash
-uv pip install 'inspect-robots-yam[collision]'
+pip install "inspect-robots-yam[collision]"
 ```
 
 Configure measured rig geometry in `config.ini` or with `-E` arguments:

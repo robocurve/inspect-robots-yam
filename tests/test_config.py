@@ -539,6 +539,16 @@ def test_collision_table_height_rejects_disabled_table_contradiction() -> None:
         YamConfig.from_kwargs(collision_table=False, collision_table_height=0.1)
 
 
+@pytest.mark.parametrize("flag", ["collision_guardrail", "collision_table"])
+@pytest.mark.parametrize("value", [None, "yes", 1])
+def test_collision_bool_flags_reject_non_bool_values(flag: str, value: object) -> None:
+    # The CLI parses the literal `none` to Python None; unvalidated it would
+    # falsy-disable a safety gate (or drop the table plane) instead of meaning
+    # "library default" as it does for every other collision_* field.
+    with pytest.raises(ValueError, match=f"{flag} must be true or false"):
+        YamConfig.from_kwargs(**{flag: value})
+
+
 def test_default_collision_flag_does_not_reject_unsupported_contribution_modes() -> None:
     assert YamConfig(control_interface="eef_pos").collision_guardrail is True
     assert YamConfig(joints_are_delta=True).collision_guardrail is True
