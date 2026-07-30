@@ -57,7 +57,12 @@ from inspect_robots_yam.config import (
     observation_space,
 )
 from inspect_robots_yam.kinematics import RawKinematics, _ArmKinematics
-from inspect_robots_yam.operator import OperatorIO, default_poll_end
+from inspect_robots_yam.operator import (
+    OperatorIO,
+    _drain_stdin,
+    default_poll_end,
+    stdin_interactive,
+)
 
 ImageMap = Mapping[str, npt.NDArray[np.uint8]]
 Vec = npt.NDArray[np.float64]
@@ -974,9 +979,10 @@ class YAMEmbodiment:
         self._right_kinematics: _ArmKinematics | None = None
         self._eef_home_validated = False
         self._init_pose: Vec | None = None
-        # Set only after the stand-clear prompt returns, so a gate fault
-        # (dead stdin) re-prompts on a retried reset instead of ramping
-        # unconfirmed; cleared on close() so every connection re-confirms.
+        # Set only after the stand-clear gate resolves (prompt returned, or
+        # the auto_start notice printed), so a gate fault (dead stdin)
+        # re-prompts on a retried reset instead of ramping unconfirmed;
+        # cleared on close() so every connection re-confirms.
         self._home_gate_confirmed = False
         self._instruction: str | None = None
         self._t_last = 0.0
@@ -1052,7 +1058,14 @@ class YAMEmbodiment:
         self._bound_max_steps = int(envelope.max_steps)
 
     def reset(self, scene: Scene, *, seed: int | None = None) -> Observation:
-        """Connect (if needed), drive to home, and block on operator readiness."""
+        """Connect (if needed), drive to home, and block on operator readiness.
+
+        With ``auto_start`` set, both operator gates are skipped: a printed
+        notice replaces the stand-clear prompt and the episode begins right
+        after the homing ramp. Requires an interactive stdin
+        (faults before any motion otherwise). ``unattended`` skips the gates
+        too, along with the rest of the attended flow, and takes precedence.
+        """
         # Cleared HERE, at entry, not alongside num_steps further down: the home
         # ramp settles below, and that settle reads _settle_disabled. Clearing
         # after the ramp would let a trial that exhausted its budget suppress
@@ -1075,6 +1088,19 @@ class YAMEmbodiment:
                 "([embodiment.args]), or the CLI; or provide a custom "
                 "camera_reader= via the Python API."
             )
+        # auto_start still needs stdin: the end-episode keypress and the
+        # framework's grading prompt both read it. wait_ready() normally
+        # fail-fasts a dead stdin before any motion; with the gates skipped,
+        # this check keeps that property (off-TTY, default_poll_end() always
+        # returns False, so episodes could otherwise only end at max_steps).
+        if self._cfg.auto_start and not self._cfg.unattended and not stdin_interactive():
+            raise EmbodimentFault(
+                "auto_start needs an interactive terminal: the end-episode "
+                "keypress and the operator grading prompt both read stdin, "
+                "which is not a TTY here. Run from a real TTY, or set "
+                "YamConfig(unattended=True) (CLI: -E unattended=true) for "
+                "headless runs."
+            )
         if self._driver is None:
             self._driver = self._driver_factory(self._cfg)
         if self._cfg.control_interface == "eef_pos" and (
@@ -1094,9 +1120,17 @@ class YAMEmbodiment:
             self._validate_eef_home(np.clip(home_pose, self._cfg.low, self._cfg.high))
             self._eef_home_validated = True
         if not self._cfg.unattended and not self._home_gate_confirmed:
-            self._operator.wait_ready(
-                "Arms will move to the home pose - stand clear, then press Enter..."
-            )
+            if self._cfg.auto_start:
+                # Non-blocking replacement for the stand-clear gate: the
+                # operator opted into zero-touch starts, but still gets one
+                # line of warning before the first motion of the connection.
+                self._operator.output_fn(
+                    "auto_start: arms will move to the home pose - stand clear."
+                )
+            else:
+                self._operator.wait_ready(
+                    "Arms will move to the home pose - stand clear, then press Enter..."
+                )
             self._home_gate_confirmed = True
         if not self._cfg.unattended:
             self._status("homing: ramping arms to start pose")
@@ -1125,7 +1159,13 @@ class YAMEmbodiment:
                 measured[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF]
             )
         if not self._cfg.unattended:
-            self._operator.wait_ready()
+            if self._cfg.auto_start:
+                # wait_ready() owns the stdin drain; skipping the gate must not
+                # skip the drain, or a buffered newline ends the episode on the
+                # first default_poll_end() check.
+                _drain_stdin()
+            else:
+                self._operator.wait_ready()
             horizon = self._horizon_secs()
             limit = f" Max {horizon:.0f}s." if horizon is not None else ""
             self._status(f"Running: press any key to end the episode and grade it.{limit}")
@@ -1224,7 +1264,8 @@ class YAMEmbodiment:
                 finally:
                     # Clear connection state even if the driver's own close()
                     # raises, so a later reset() reconnects, re-captures, and
-                    # re-confirms the stand-clear gate.
+                    # re-runs the stand-clear gate (prompt, or the auto_start
+                    # notice).
                     self._driver = None
                     self._init_pose = None
                     self._home_gate_confirmed = False

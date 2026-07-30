@@ -59,6 +59,13 @@ def _drain_stdin() -> None:
         sys.stdin.readline()  # pragma: no cover - TTY-bound
 
 
+def stdin_interactive() -> bool:
+    """True when stdin is a real TTY that can deliver operator keypresses."""
+    import sys
+
+    return sys.stdin.isatty()
+
+
 def default_poll_end() -> bool:  # pragma: no cover - requires a real TTY
     """Real non-blocking check for an operator "end episode" keypress.
 

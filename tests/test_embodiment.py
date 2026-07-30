@@ -13,6 +13,7 @@ from inspect_robots.errors import ConfigError, EmbodimentFault
 from inspect_robots.scene import Scene
 from inspect_robots.types import Action
 
+import inspect_robots_yam.embodiment as embodiment_module
 from inspect_robots_yam.config import (
     DEFAULT_JOINT_HOME_POSE,
     DEFAULT_REST_POSE,
@@ -390,6 +391,93 @@ def test_unattended_skips_operator_prompts() -> None:
     result = emb.step(Action(data=np.zeros(14)))
     assert prompts == []  # neither wait_ready nor the end poll ran
     assert result.terminated is False  # the end poll is skipped entirely
+
+
+def test_auto_start_skips_gates_but_keeps_attended_flow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: True)
+    prompts: list[str] = []
+    lines: list[str] = []
+
+    def _input(prompt: str) -> str:
+        prompts.append(prompt)
+        return ""
+
+    op = OperatorIO(input_fn=_input, output_fn=lines.append)
+    emb, _, _ = _build(YamConfig(auto_start=True), poll_end_seq=[True], operator=op)
+    emb.reset(Scene(id="s", instruction="x"))
+    result = emb.step(Action(data=np.zeros(14)))
+    assert prompts == []  # neither Enter gate ran
+    assert any("stand clear" in line for line in lines)  # notice replaces the home gate
+    assert result.terminated is True  # end-episode keypress still active
+    assert result.termination_reason == "operator_end"
+
+
+def test_auto_start_keeps_running_status_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: True)
+    emb, status = _build_with_status(YamConfig(auto_start=True))
+    emb.reset(Scene(id="s", instruction="x"))
+    assert any(line is not None and line.startswith("Running:") for line in status)
+
+
+def test_auto_start_notice_prints_once_per_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: True)
+    lines: list[str] = []
+    op = OperatorIO(input_fn=lambda _p: "", output_fn=lines.append)
+    emb, _, _ = _build(YamConfig(auto_start=True), operator=op)
+    emb.reset(Scene(id="s1", instruction="x"))
+    emb.reset(Scene(id="s2", instruction="x"))
+    assert sum("stand clear" in line for line in lines) == 1
+    emb.close()
+    emb.reset(Scene(id="s3", instruction="x"))  # new connection: notice again
+    assert sum("stand clear" in line for line in lines) == 2
+
+
+def test_auto_start_drains_stdin_before_episode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: True)
+    drains: list[bool] = []
+    monkeypatch.setattr(embodiment_module, "_drain_stdin", lambda: drains.append(True))
+    prompts: list[str] = []
+
+    def _input(prompt: str) -> str:
+        prompts.append(prompt)
+        return ""
+
+    op = OperatorIO(input_fn=_input, output_fn=lambda _m: None)
+    emb, _, _ = _build(YamConfig(auto_start=True), operator=op)
+    emb.reset(Scene(id="s", instruction="x"))
+    assert drains == [True]  # wait_ready's drain is replaced, not dropped
+    assert prompts == []
+
+
+def test_auto_start_requires_interactive_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: False)
+    emb, drv, _ = _build(YamConfig(auto_start=True))
+    with pytest.raises(EmbodimentFault, match="auto_start"):
+        emb.reset(Scene(id="s", instruction="x"))
+    assert drv.commands == []  # faulted before any motion
+
+
+def test_unattended_precedes_auto_start() -> None:
+    prompts: list[str] = []
+    lines: list[str] = []
+
+    def _input(prompt: str) -> str:
+        prompts.append(prompt)
+        return ""
+
+    op = OperatorIO(input_fn=_input, output_fn=lines.append)
+    emb, _, _ = _build(
+        YamConfig(unattended=True, auto_start=True), poll_end_seq=[True], operator=op
+    )
+    emb.reset(Scene(id="s", instruction="x"))
+    result = emb.step(Action(data=np.zeros(14)))
+    assert prompts == []
+    assert lines == []  # no stand-clear notice, no TTY fault: unattended wins outright
+    assert result.terminated is False  # unattended still disables the end poll
 
 
 def test_first_attended_reset_gates_home_motion_once_per_connection() -> None:
