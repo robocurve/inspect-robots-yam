@@ -365,7 +365,8 @@ def test_option_slots_declare_auto_start_with_valid_config_arg() -> None:
     assert {option.arg for option in options} == {"auto_start"}
     # The wizard's suggested answer must match the config default, or a bare
     # Enter through setup would silently flip the behavior.
-    assert options[0].default is YamConfig().auto_start
+    for option in options:
+        assert option.default is getattr(YamConfig(), option.arg)
 
 
 class CloseRecordingRobot:
