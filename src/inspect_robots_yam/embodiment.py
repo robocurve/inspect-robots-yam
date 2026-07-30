@@ -32,7 +32,7 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
-from inspect_robots.conformance import DeviceSlot
+from inspect_robots.conformance import DeviceSlot, OptionSlot
 from inspect_robots.embodiment import SELF_PACED, EmbodimentInfo
 from inspect_robots.errors import ConfigError, EmbodimentFault
 from inspect_robots.scene import Scene
@@ -902,6 +902,16 @@ class YAMEmbodiment:
         DeviceSlot(arg="top_cam_device", kind="v4l2", label="top camera", group="cameras"),
         DeviceSlot(arg="left_cam_device", kind="v4l2", label="left camera", group="cameras"),
         DeviceSlot(arg="right_cam_device", kind="v4l2", label="right camera", group="cameras"),
+    )
+
+    # The setup wizard offers these as yes/no questions (core OPTION_SLOTS
+    # protocol, inspect-robots#222) and writes the answers to config.ini.
+    # The behavior contract lives on the matching YamConfig field.
+    OPTION_SLOTS: ClassVar[tuple[OptionSlot, ...]] = (
+        OptionSlot(
+            arg="auto_start",
+            label="Skip the operator start prompts (auto_start)",
+        ),
     )
 
     def __init__(

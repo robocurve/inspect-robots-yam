@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `OPTION_SLOTS` declaration on `YAMEmbodiment` (#87): `inspect-robots setup`
+  now offers `auto_start` as a yes/no question and writes the answer to
+  config.ini. Requires inspect-robots 0.29 (the new dependency floor).
 - `YamConfig.auto_start` (plan 0015, #87): opt-in zero-touch attended starts.
   Skips both operator Enter gates in `reset()` (a printed stand-clear notice
   replaces the home gate; the scene-ready gate is dropped and stdin is drained

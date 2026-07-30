@@ -350,6 +350,24 @@ def test_device_slots_cover_channels_and_cameras_with_valid_config_args() -> Non
     }
 
 
+def test_option_slots_declare_auto_start_with_valid_config_arg() -> None:
+    """Every declared option toggles a real YamConfig bool, defaulting alike."""
+    from dataclasses import fields
+
+    from inspect_robots.conformance import OptionSlot, option_slots
+
+    options = option_slots(YAMEmbodiment)
+
+    assert options == YAMEmbodiment.OPTION_SLOTS  # defensive reader keeps every entry
+    config_fields = {f.name for f in fields(YamConfig)}
+    assert all(isinstance(option, OptionSlot) for option in options)
+    assert all(option.arg in config_fields for option in options)
+    assert {option.arg for option in options} == {"auto_start"}
+    # The wizard's suggested answer must match the config default, or a bare
+    # Enter through setup would silently flip the behavior.
+    assert options[0].default is YamConfig().auto_start
+
+
 class CloseRecordingRobot:
     def __init__(self, close_error: Exception | None = None) -> None:
         self.close_calls = 0

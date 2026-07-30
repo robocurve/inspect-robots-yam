@@ -281,8 +281,9 @@ counts up against the run's real step limit (`t = 42s / 120s`) with no
 configuration needed (requires inspect-robots newer than 0.8.1; on older cores
 set `max_steps_hint`).
 
-To skip both Enter gates, set `auto_start=true` (CLI: `-E auto_start=true`, or
-persistently via `[embodiment.args]` in config.ini). The arms home immediately
+To skip both Enter gates, set `auto_start=true` (CLI: `-E auto_start=true`,
+persistently via `[embodiment.args]` in config.ini, or answer yes when
+`inspect-robots setup` offers the toggle). The arms home immediately
 after a one-line stand-clear notice and the episode starts right after the
 homing ramp, so stage the scene before launching the run. The same holds
 between episodes of a multi-episode run: the next episode starts as soon as
