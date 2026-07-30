@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+
+- The `inspect-robots setup` wizard now suggests yes for the `auto_start`
+  question (`[Y/n]`). The `YamConfig.auto_start` default is unchanged
+  (`False`): runs configured outside the wizard keep the prompt-gated flow,
+  and the wizard still writes an explicit true/false answer.
+
 ### Added
 
 - `YamConfig.gripper_stroke_s` and per-gripper `max_step` declarations for
