@@ -42,6 +42,7 @@ collision_left_base_pos: tuple[float, ...] | None = None   # x,y,z — comma str
 collision_right_base_pos: tuple[float, ...] | None = None
 collision_left_base_yaw: float | None = None
 collision_right_base_yaw: float | None = None
+collision_table: bool = True                               # False → no table plane
 collision_table_height: float | None = None
 collision_penetration_threshold: float | None = None
 ```
@@ -53,13 +54,30 @@ layers cannot disagree about what is valid. `table_height` and
 `penetration_threshold` double as the documented remedies for the two known
 false-positive classes (§Behavior changes).
 
-While **both base-pose/yaw pairs are unset**, the contribution stays active
-but adds a standing warning next to the approver name —
-`"yam-collision: cross-arm geometry is the unmeasured library default; "
-"measure and set collision_*_base_pos/yaw"` — so the banner never claims
-measured cross-arm protection that does not exist. Same-arm self-collision
-checking is geometry-independent (the arm model is the system-identified
-menagerie one) and is real protection even in that state.
+`CollisionConfig.table_height` overloads `None` as "no table plane", so a
+single `float | None` YamConfig field cannot express the off-state — and
+core's `-E` parser turns the literal string `none` into Python `None`, which
+a naive replace() would read as *unset*, silently handing an operator who
+typed `collision_table_height=none` the exact table plane they meant to
+remove. Hence the split: `collision_table=false` is the off-state (maps to
+`table_height=None`), `collision_table_height` sets the height (`None` =
+library default), and `from_kwargs` **rejects a parsed-`None`
+`collision_table_height`** with an error naming `collision_table=false`.
+Setting a height with `collision_table=false` is likewise rejected as
+contradictory.
+
+**Unmeasured-geometry warning — one condition, stated once:** the warning
+stands **unless both `collision_left_base_pos` and `collision_right_base_pos`
+are set** (yaws may legitimately be zero and don't lift it). Half-measured
+rigs keep the warning; the text enumerates exactly the fields still at
+library default. The contribution stays active regardless — same-arm
+self-collision checking is geometry-independent (the arm model is the
+packaged system-identified one) and is real protection even unmeasured; the
+warning exists so the banner never claims measured *cross-arm* protection
+that does not exist. Core 0034's `GuardrailContribution.warnings` docstring
+phrases warnings as contributions "declined"; ask core (same PR pair) to
+widen the phrasing to "declined or degraded" so a warning alongside an
+active approver is within the documented contract.
 
 ### 2. `YAMEmbodiment.contribute_guardrails(action_space)`
 
@@ -156,7 +174,17 @@ must say so. Enumerated by run configuration:
     livelocks at the held pose until `max_steps` and scores a failure —
     physically safe, but a scoring regression. Remedy: measured base
     geometry (shrinks the false margin), or per-rig opt-out.
-  README and CHANGELOG call these out explicitly, with the remedies.
+  README and CHANGELOG call these out explicitly, with the remedies
+  (tableless rigs: `collision_table=false`).
+- **joints-absolute rig, mujoco importable, home pose in collision under the
+  effective geometry**: the run **refuses to start** —
+  `CollisionApprover.__init__` rejects a colliding start pose, and that
+  error deliberately propagates (loud-bug stance). Under unmeasured default
+  geometry this can hit a previously-working rig with non-default mounting
+  or a custom home pose. The error message names the way out
+  (`collision_guardrail=false`, or fixing the `collision_*` geometry); the
+  CHANGELOG lists this alongside the false-positive classes as the harshest
+  upgrade edge.
 - **joints-absolute rig, no mujoco**: no behavior change beyond a new
   banner warning with the install command.
 - **eef/delta-joints rigs**: no behavior change beyond the skip warning.
@@ -166,8 +194,9 @@ Hold (not abort) remains the right unattended default — an abort tears down
 the episode a true positive just saved — but the livelock-until-`max_steps`
 cost on false positives is acknowledged above and is the price of failing
 safe. The README also notes the guardrail models *commanded* poses: arms can
-sag away from checked waypoints (gravity-compensated modes), so clearance
-margins should not be shaved to zero.
+sag away from checked waypoints — including under the default
+`zero_gravity_mode=true`, so this is every default rig, not an edge
+configuration — and clearance margins should not be shaved to zero.
 
 ## Not in scope
 
@@ -182,7 +211,9 @@ margins should not be shaved to zero.
 
 - Config: default is `True`; `-E collision_guardrail=false` parses; round-trip
   through the wizard writer; geometry fields parse from comma strings and
-  reject malformed values via `CollisionConfig`'s own validation; an
+  reject malformed values via `CollisionConfig`'s own validation; parsed-
+  `None` `collision_table_height` rejected naming `collision_table=false`;
+  height-with-`collision_table=false` rejected as contradictory; an
   eef-mode and a delta-joints `YamConfig` with default `collision_guardrail`
   stay constructible (the no-`__post_init__`-interplay decision is
   load-bearing for upgrade safety — pin it).
@@ -194,16 +225,22 @@ margins should not be shaved to zero.
   warning; start pose in collision → propagates, message names the opt-out
   flag and geometry fields.
 - Geometry: configured `collision_*` fields reach the built
-  `CollisionConfig`; both-bases-unset → standing unmeasured-geometry warning
-  alongside the active approver; any base pair set → no warning.
+  `CollisionConfig`; warning stands unless **both base positions** are set
+  (one side set → warning persists, enumerating the defaulted fields; both
+  set → no warning); `collision_table=false` reaches the checker as
+  `table_height=None` (no table geom).
 - Contribution approver blocks a cross-arm collision target and holds (reuse
   the #86 scenario fixtures through the contribution path); rewind goes
   through `DeltaLimitApprover.rewind_reference` (assert against the public
   seam, not a string literal).
 - `build_yam_guardrails` and `contribute_guardrails` produce equivalent
   collision approvers (shared-assembly regression).
-- Wizard: toggle interviewed with default yes; carried config value suggests
-  the carried answer; explicit `false` written when declined.
+- Wizard (declarative, the auto_start precedent — the interview loop is
+  core's, and core's generic wizard tests already cover interview/carry/
+  write-back for any declared slot): pin the new OptionSlot's arg, label,
+  and default-true, and its pairing with the `YamConfig` bool. Update the
+  existing assertions the new slot breaks: `test_i2rt.py` pins
+  `{option.arg} == {"auto_start"}` and single-slot-unpacks `OPTION_SLOTS`.
 - CLAUDE.md rows for `collision.py`/`embodiment.py` updated; README guardrail
   section updated (false-positive classes + remedies, commanded-pose caveat);
   CHANGELOG flags the default flip as results-affecting.
