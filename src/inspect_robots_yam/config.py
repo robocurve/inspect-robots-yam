@@ -164,10 +164,11 @@ class YamConfig(_FromKwargs):
     unattended: bool = False
     # Skip both operator Enter gates in reset(): the stand-clear home gate is
     # replaced by a printed one-line notice and homing begins immediately; the
-    # scene-ready gate is dropped and the episode starts as soon as the arms
-    # settle at the home pose. Every other attended behavior stays: status
+    # scene-ready gate is dropped and the episode starts right after the
+    # homing ramp. Every other attended behavior stays: status
     # lines, the end-episode keypress, and operator grading. Stage the scene
-    # BEFORE launching the run. Requires an interactive terminal; reset()
+    # BEFORE launching the run (and between episodes, while answering the
+    # grading prompt). Requires an interactive terminal; reset()
     # faults before any motion otherwise (headless runs want unattended).
     # unattended=True takes precedence and makes this a no-op.
     auto_start: bool = False

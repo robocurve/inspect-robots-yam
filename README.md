@@ -283,11 +283,13 @@ set `max_steps_hint`).
 
 To skip both Enter gates, set `auto_start=true` (CLI: `-E auto_start=true`, or
 persistently via `[embodiment.args]` in config.ini). The arms home immediately
-after a one-line stand-clear notice and the episode starts as soon as they
-settle, so stage the scene before launching the run. Everything else about the
-attended flow stays: the status line, the press-any-key end, and operator
-grading, which is also why `auto_start` refuses to run without an interactive
-terminal.
+after a one-line stand-clear notice and the episode starts right after the
+homing ramp, so stage the scene before launching the run. The same holds
+between episodes of a multi-episode run: the next episode starts as soon as
+the arms re-home, so restage while answering the grading prompt, not after.
+Everything else about the attended flow stays: the status line, the
+press-any-key end, and operator grading, which is also why `auto_start`
+refuses to run without an interactive terminal.
 
 For exotic camera stacks (or full programmatic control), the Python API takes
 a custom `camera_reader` returning

@@ -1061,8 +1061,8 @@ class YAMEmbodiment:
         """Connect (if needed), drive to home, and block on operator readiness.
 
         With ``auto_start`` set, both operator gates are skipped: a printed
-        notice replaces the stand-clear prompt and the episode begins as soon
-        as the arms settle at the home pose. Requires an interactive stdin
+        notice replaces the stand-clear prompt and the episode begins right
+        after the homing ramp. Requires an interactive stdin
         (faults before any motion otherwise). ``unattended`` skips the gates
         too, along with the rest of the attended flow, and takes precedence.
         """
