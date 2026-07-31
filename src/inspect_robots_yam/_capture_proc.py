@@ -485,7 +485,9 @@ def _create_frame_slot(
     layout = _FrameLayout(width, height)
     shm = shared_memory.SharedMemory(create=True, size=layout.nbytes)
     buffer = _buffer(shm)
-    buffer[:] = b"\0" * layout.nbytes
+    # macOS rounds segments up to the page size, so the live buffer may be
+    # longer than requested; zero exactly the layout, never the full buffer.
+    buffer[: layout.nbytes] = b"\0" * layout.nbytes
     del buffer
     return shm, _FrameSlotSpec(shm.name, width, height)
 
