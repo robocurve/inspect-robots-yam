@@ -166,6 +166,13 @@ GR00T_DEFAULTS: Mapping[str, Any] = {
     # Operators evaluating a different GR00T fine-tune pass
     # -P action_horizon=<its chunk length>.
     "action_horizon": 16,
+    # Without this override the connection-failure hint would tell GR00T
+    # operators to start the MolmoAct2 server (the class default).
+    "remedy": (
+        "start the GR00T /act server from an Isaac-GR00T environment: "
+        "python scripts/serve_gr00t_act.py --model robocurve/gr00t-n1.7-yam-molmoact2 (docs: "
+        "https://github.com/robocurve/inspect-robots-yam#serving-a-gr00t-fine-tune)"
+    ),
 }
 
 
