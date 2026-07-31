@@ -42,6 +42,12 @@ from inspect_robots.spaces import Box
 from inspect_robots.types import OPERATOR_END, Action, Observation, StepResult
 
 from inspect_robots_yam import packing
+from inspect_robots_yam._capture_proc import (
+    JOIN_TIMEOUT_S,
+    MAX_FRAME_AGE_S,
+    REALSENSE_CAPTURE_HEIGHT,
+    REALSENSE_CAPTURE_WIDTH,
+)
 from inspect_robots_yam._i2rt import (
     I2RT_INSTALL_COMMAND,
     _load_i2rt,
@@ -68,9 +74,6 @@ from inspect_robots_yam.operator import (
 
 ImageMap = Mapping[str, npt.NDArray[np.uint8]]
 Vec = npt.NDArray[np.float64]
-
-REALSENSE_CAPTURE_WIDTH = 640
-REALSENSE_CAPTURE_HEIGHT = 480
 
 _DOCS_JOINTS = """Two identical 6-DoF arms, prefixed left_ and right_, each with a parallel-jaw
 gripper. Each arm has its own base frame: +x points forward out of the base
@@ -575,12 +578,6 @@ class _RealsenseCameraReader:
     if the RealSense open fails, and ``close()`` recovers them.
     """
 
-    #: Frames older than this mean the camera has stopped delivering.
-    MAX_FRAME_AGE_S: ClassVar[float] = 0.5
-
-    #: Grace period before stopping a pipeline whose drain thread is still alive.
-    JOIN_TIMEOUT_S: ClassVar[float] = 2.0
-
     def __init__(
         self,
         serials: Mapping[str, str],
@@ -659,7 +656,7 @@ class _RealsenseCameraReader:
         """
         self._stop.set()
         for thread in self._threads.values():
-            thread.join(timeout=self.JOIN_TIMEOUT_S)
+            thread.join(timeout=JOIN_TIMEOUT_S)
         for name, bundle in self._bundles.items():
             drain = self._threads[name]
             if drain.is_alive():
@@ -863,9 +860,7 @@ class _RealsenseCameraReader:
                 published = self._published.get(name)
             if fault is not None:
                 raise RuntimeError(f"camera {name} ({serial}) stopped reading") from fault
-            if published is not None and self._clock() - published.published_s <= (
-                self.MAX_FRAME_AGE_S
-            ):
+            if published is not None and self._clock() - published.published_s <= (MAX_FRAME_AGE_S):
                 return published, generation
             self._sleep(0.05)
         raise RuntimeError(f"frame read failed for {name} ({serial})")

@@ -18,6 +18,7 @@ import numpy.typing as npt
 import pytest
 
 import inspect_robots_yam.embodiment as embodiment_module
+from inspect_robots_yam._capture_proc import MAX_FRAME_AGE_S
 from inspect_robots_yam.config import YamConfig
 from inspect_robots_yam.embodiment import (
     YAMEmbodiment,
@@ -742,12 +743,9 @@ def test_close_leaks_pipeline_whose_drain_is_still_alive() -> None:
     reader(cfg())
     assert pipelines[0].entered.wait(timeout=1.0)
 
-    old_timeout = _RealsenseCameraReader.JOIN_TIMEOUT_S
-    _RealsenseCameraReader.JOIN_TIMEOUT_S = 0.05
-    try:
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(embodiment_module, "JOIN_TIMEOUT_S", 0.05)
         reader.close()
-    finally:
-        _RealsenseCameraReader.JOIN_TIMEOUT_S = old_timeout
         pipelines[0].block.set()
 
     assert not pipelines[0].stopped
@@ -762,7 +760,7 @@ def test_stale_pair_raises_with_camera_name_and_serial() -> None:
     reader._stop.set()
     for thread in reader._threads.values():
         thread.join(timeout=1.0)
-    clock.advance(_RealsenseCameraReader.MAX_FRAME_AGE_S + 0.01)
+    clock.advance(MAX_FRAME_AGE_S + 0.01)
 
     with pytest.raises(RuntimeError, match=r"frame read failed for top_cam \(S1\)"):
         reader(cfg())
