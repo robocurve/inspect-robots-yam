@@ -217,11 +217,18 @@ class YamConfig(_FromKwargs):
     # source or none may. Both the device serial from rs-enumerate-devices and
     # the ASIC serial (`asic_serial_number`) in a /dev/v4l/by-id name are accepted.
     # These are plain strings usable through `-E` or config.ini. See the ``depth``
-    # optional extra for the install command.
+    # optional extra for the install command. Quote all-digit serials in
+    # config.ini: unquoted numeric values are int-coerced and lose leading zeros.
     top_depth_serial: str | None = None
     left_depth_serial: str | None = None
     right_depth_serial: str | None = None
+    # Capture all configured RealSense cameras in one spawn child by default,
+    # keeping librealsense and frame-copy work outside the motor-control
+    # interpreter. "inline" restores the prior in-process implementation as a
+    # debugging escape hatch.
     realsense_capture: str = "process"
+    # Librealsense colour and depth stream rate. Both streams use the same rate;
+    # capture resolution remains fixed at 640x480. Valid range: 1 through 90.
     depth_fps: int = 30
 
     @classmethod
