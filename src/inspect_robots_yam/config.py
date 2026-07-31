@@ -518,7 +518,6 @@ class ActServerConfig(_FromKwargs):
     """
 
     server_url: str = "http://127.0.0.1:8202"
-    remedy: str = ""
     joints_are_delta: bool = False
     endpoint: str = "/act"
     num_steps: int = 10
@@ -529,6 +528,9 @@ class ActServerConfig(_FromKwargs):
     cam_height: int = 224
     cam_width: int = 224
     name: str = "molmoact2"
+    # Last on purpose: appending keeps positional construction of the fields
+    # above meaning what it always has.
+    remedy: str = ""
 
     @property
     def url(self) -> str:
