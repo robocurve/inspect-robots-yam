@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- RealSense RGB-D capture now runs all configured pipelines in one lazy spawn
+  child by default, isolating librealsense and frame-copy work from the
+  motor-control interpreter (#95). Shared-memory seqlock slots preserve the
+  existing colour, aligned depth, intrinsics, staleness, and lazy-thunk
+  contracts. `realsense_capture=inline` restores the previous in-process path,
+  and `depth_fps` configures both colour and depth stream rates. All-digit depth
+  serials passed as integers now fail fast with a config.ini quoting hint
+  because integer parsing can discard leading zeros.
+
 - The predictive MuJoCo collision guardrail is now contributed by
   `YAMEmbodiment` for absolute joint control and defaults on. This is a
   results-affecting upgrade: table-press grasps can hold when demonstration

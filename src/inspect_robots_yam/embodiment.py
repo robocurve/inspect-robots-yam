@@ -42,6 +42,14 @@ from inspect_robots.spaces import Box
 from inspect_robots.types import OPERATOR_END, Action, Observation, StepResult
 
 from inspect_robots_yam import packing
+from inspect_robots_yam._capture_proc import (
+    JOIN_TIMEOUT_S,
+    MAX_FRAME_AGE_S,
+    REALSENSE_CAPTURE_HEIGHT,
+    REALSENSE_CAPTURE_WIDTH,
+    _CaptureProcess,
+    _FrameSnapshot,
+)
 from inspect_robots_yam._i2rt import (
     I2RT_INSTALL_COMMAND,
     _load_i2rt,
@@ -181,6 +189,48 @@ DriverFactory = Callable[[YamConfig], BimanualDriver]
 KinematicsFactory = Callable[[YamConfig], tuple[RawKinematics, RawKinematics]]
 CameraReader = Callable[[YamConfig], ImageMap]
 DepthReader = Callable[[YamConfig], dict[str, Any]]
+
+
+class _RealsenseReader(Protocol):
+    """Shared callable/metadata/lifecycle surface of both capture modes."""
+
+    def __call__(self, cfg: YamConfig) -> ImageMap:
+        """Return the latest colour images."""
+        ...
+
+    def extra(self, cfg: YamConfig) -> dict[str, Any]:
+        """Return rescaled intrinsics and lazy aligned depth."""
+        ...
+
+    def close(self) -> None:
+        """Release every camera resource owned by the reader."""
+        ...
+
+
+class _CaptureTransport(Protocol):
+    """Parent transport surface consumed by the process-mode reader."""
+
+    @property
+    def is_alive(self) -> bool:
+        """Whether the child is still running."""
+        ...
+
+    @property
+    def is_open(self) -> bool:
+        """Whether an open cycle currently owns resources."""
+        ...
+
+    def open(self, generation: int) -> None:
+        """Start one capture generation."""
+        ...
+
+    def read(self, name: str) -> _FrameSnapshot | None:
+        """Copy the latest coherent shared-memory snapshot."""
+        ...
+
+    def close(self) -> None:
+        """Stop the child and close its parent mappings."""
+        ...
 
 
 def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cover - real hardware
@@ -572,21 +622,17 @@ class _RealsenseCameraReader:
     if the RealSense open fails, and ``close()`` recovers them.
     """
 
-    #: Frames older than this mean the camera has stopped delivering.
-    MAX_FRAME_AGE_S: ClassVar[float] = 0.5
-
-    #: Grace period before stopping a pipeline whose drain thread is still alive.
-    JOIN_TIMEOUT_S: ClassVar[float] = 2.0
-
     def __init__(
         self,
         serials: Mapping[str, str],
+        depth_fps: int = 30,
         rs_module: Any | None = None,
         cv2_module: Any | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._serials = dict(serials)
+        self._depth_fps = depth_fps
         self._rs = rs_module
         self._cv2 = cv2_module
         self._sleep = sleep_fn
@@ -618,10 +664,18 @@ class _RealsenseCameraReader:
         for name in self._serials:
             pair, generation = self._latest(name)
             intrinsics = pair.intrinsics.copy()
-            intrinsics[0, 0] = float(pair.intrinsics[0, 0]) * cfg.cam_width / 640
-            intrinsics[0, 2] = float(pair.intrinsics[0, 2]) * cfg.cam_width / 640
-            intrinsics[1, 1] = float(pair.intrinsics[1, 1]) * cfg.cam_height / 480
-            intrinsics[1, 2] = float(pair.intrinsics[1, 2]) * cfg.cam_height / 480
+            intrinsics[0, 0] = (
+                float(pair.intrinsics[0, 0]) * cfg.cam_width / REALSENSE_CAPTURE_WIDTH
+            )
+            intrinsics[0, 2] = (
+                float(pair.intrinsics[0, 2]) * cfg.cam_width / REALSENSE_CAPTURE_WIDTH
+            )
+            intrinsics[1, 1] = (
+                float(pair.intrinsics[1, 1]) * cfg.cam_height / REALSENSE_CAPTURE_HEIGHT
+            )
+            intrinsics[1, 2] = (
+                float(pair.intrinsics[1, 2]) * cfg.cam_height / REALSENSE_CAPTURE_HEIGHT
+            )
             extra[f"{name}_intrinsics"] = intrinsics
             extra[f"{name}_depth"] = self._depth_thunk(
                 name, cfg.cam_width, cfg.cam_height, generation
@@ -646,7 +700,7 @@ class _RealsenseCameraReader:
         """
         self._stop.set()
         for thread in self._threads.values():
-            thread.join(timeout=self.JOIN_TIMEOUT_S)
+            thread.join(timeout=JOIN_TIMEOUT_S)
         for name, bundle in self._bundles.items():
             drain = self._threads[name]
             if drain.is_alive():
@@ -754,8 +808,20 @@ class _RealsenseCameraReader:
         """
         rs_cfg = rs.config()
         rs_cfg.enable_device(serial)
-        rs_cfg.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, 30)
-        rs_cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+        rs_cfg.enable_stream(
+            rs.stream.color,
+            REALSENSE_CAPTURE_WIDTH,
+            REALSENSE_CAPTURE_HEIGHT,
+            rs.format.rgb8,
+            self._depth_fps,
+        )
+        rs_cfg.enable_stream(
+            rs.stream.depth,
+            REALSENSE_CAPTURE_WIDTH,
+            REALSENSE_CAPTURE_HEIGHT,
+            rs.format.z16,
+            self._depth_fps,
+        )
         pipeline = rs.pipeline()
         profile = pipeline.start(rs_cfg)
         try:
@@ -838,9 +904,7 @@ class _RealsenseCameraReader:
                 published = self._published.get(name)
             if fault is not None:
                 raise RuntimeError(f"camera {name} ({serial}) stopped reading") from fault
-            if published is not None and self._clock() - published.published_s <= (
-                self.MAX_FRAME_AGE_S
-            ):
+            if published is not None and self._clock() - published.published_s <= (MAX_FRAME_AGE_S):
                 return published, generation
             self._sleep(0.05)
         raise RuntimeError(f"frame read failed for {name} ({serial})")
@@ -853,6 +917,148 @@ class _RealsenseCameraReader:
         def resolve() -> npt.NDArray[np.float32]:
             pair, _ = self._latest(name, generation)
             depth_m = pair.depth.astype(np.float32) * np.float32(pair.depth_scale)
+            rows = np.arange(height) * depth_m.shape[0] // height
+            columns = np.arange(width) * depth_m.shape[1] // width
+            resized: npt.NDArray[np.float32] = depth_m[rows[:, None], columns]
+            return resized.copy()
+
+        return resolve
+
+
+class _ProcessRealsenseCameraReader:
+    """Serve RealSense colour, depth, and K from an isolated capture child."""
+
+    def __init__(
+        self,
+        serials: Mapping[str, str],
+        depth_fps: int = 30,
+        *,
+        child_entry: Any = None,
+        transport: _CaptureTransport | None = None,
+        cv2_module: Any | None = None,
+        sleep_fn: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._serials = dict(serials)
+        self._capture: _CaptureTransport = (
+            transport
+            if transport is not None
+            else _CaptureProcess(
+                self._serials,
+                depth_fps,
+                child_entry=child_entry,
+            )
+        )
+        self._cv2 = cv2_module
+        self._sleep = sleep_fn
+        self._clock = clock
+        self._generation = 0
+        self._closed = False
+
+    def __call__(self, cfg: YamConfig) -> ImageMap:
+        """Return the newest RGB frame from every isolated camera."""
+        self._ensure_open()
+        cv2 = self._cv2 if self._cv2 is not None else _import_cv2()
+        self._cv2 = cv2
+        images: dict[str, npt.NDArray[np.uint8]] = {}
+        for name in self._serials:
+            snapshot = self._latest(name)
+            resized = cv2.resize(snapshot.colour, (cfg.cam_width, cfg.cam_height))
+            images[name] = np.asarray(resized).astype(np.uint8)
+        return images
+
+    def extra(self, cfg: YamConfig) -> dict[str, Any]:
+        """Return rescaled camera matrices and generation-bound depth thunks."""
+        self._ensure_open()
+        extra: dict[str, Any] = {}
+        for name in self._serials:
+            snapshot = self._latest(name)
+            intrinsics = snapshot.intrinsics.copy()
+            intrinsics[0, 0] = (
+                float(snapshot.intrinsics[0, 0]) * cfg.cam_width / REALSENSE_CAPTURE_WIDTH
+            )
+            intrinsics[0, 2] = (
+                float(snapshot.intrinsics[0, 2]) * cfg.cam_width / REALSENSE_CAPTURE_WIDTH
+            )
+            intrinsics[1, 1] = (
+                float(snapshot.intrinsics[1, 1]) * cfg.cam_height / REALSENSE_CAPTURE_HEIGHT
+            )
+            intrinsics[1, 2] = (
+                float(snapshot.intrinsics[1, 2]) * cfg.cam_height / REALSENSE_CAPTURE_HEIGHT
+            )
+            extra[f"{name}_intrinsics"] = intrinsics
+            extra[f"{name}_depth"] = self._depth_thunk(
+                name,
+                cfg.cam_width,
+                cfg.cam_height,
+                self._generation,
+            )
+        return extra
+
+    def close(self) -> None:
+        """Stop the child and retire thunks from its capture generation."""
+        if not self._capture.is_open:
+            return
+        self._closed = True
+        self._generation += 1
+        self._capture.close()
+
+    def _ensure_open(self) -> None:
+        """Spawn the capture child on first use or after a prior close."""
+        if self._capture.is_open:
+            return
+        self._generation += 1
+        self._capture.open(self._generation)
+        self._closed = False
+
+    def _latest(
+        self,
+        name: str,
+        expected_generation: int | None = None,
+    ) -> _FrameSnapshot:
+        """Return a fresh coherent slot copy, waiting through brief staleness."""
+        serial = self._serials[name]
+        if self._closed or (
+            expected_generation is not None and expected_generation != self._generation
+        ):
+            raise RuntimeError(f"depth for {name} resolved after camera close or reopen")
+        for _ in range(10):
+            if self._closed or (
+                expected_generation is not None and expected_generation != self._generation
+            ):
+                raise RuntimeError(f"depth for {name} resolved after camera close or reopen")
+            if not self._capture.is_alive:
+                raise RuntimeError(f"frame read failed for {name} ({serial})")
+            snapshot = self._capture.read(name)
+            # A parent-side frozen test clock can precede the real child's
+            # machine-wide monotonic stamp, yielding a large negative age. That
+            # is fresh and intentionally satisfies this upper-bound comparison.
+            if (
+                snapshot is not None
+                and snapshot.generation == self._generation
+                and self._clock() - snapshot.published_s <= MAX_FRAME_AGE_S
+            ):
+                return snapshot
+            self._sleep(0.05)
+        raise RuntimeError(f"frame read failed for {name} ({serial})")
+
+    def _depth_thunk(
+        self,
+        name: str,
+        width: int,
+        height: int,
+        generation: int,
+    ) -> Callable[[], npt.NDArray[np.float32]]:
+        """Build a lazy nearest-neighbour depth conversion for one child cycle."""
+
+        def resolve() -> npt.NDArray[np.float32]:
+            # Check before _latest constructs any views over shm.buf. A stale
+            # thunk must never reach closed shared memory and surface BufferError
+            # or ValueError instead of the generation fault.
+            if self._closed or generation != self._generation:
+                raise RuntimeError(f"depth for {name} resolved after camera close or reopen")
+            snapshot = self._latest(name, generation)
+            depth_m = snapshot.depth.astype(np.float32) * np.float32(snapshot.depth_scale)
             rows = np.arange(height) * depth_m.shape[0] // height
             columns = np.arange(width) * depth_m.shape[1] // width
             resized: npt.NDArray[np.float32] = depth_m[rows[:, None], columns]
@@ -959,7 +1165,7 @@ class YAMEmbodiment:
             )
             if serial is not None
         }
-        self._builtin_realsense_reader: _RealsenseCameraReader | None = None
+        self._builtin_realsense_reader: _RealsenseReader | None = None
         if camera_reader is not None:
             if depth_serials:
                 raise ValueError(
@@ -979,7 +1185,14 @@ class YAMEmbodiment:
             ):
                 builtin_readers.append(_opencv_camera_reader(self._cfg))
             if depth_serials:
-                self._builtin_realsense_reader = _RealsenseCameraReader(depth_serials)
+                if self._cfg.realsense_capture == "inline":
+                    self._builtin_realsense_reader = _RealsenseCameraReader(
+                        depth_serials, self._cfg.depth_fps
+                    )
+                else:
+                    self._builtin_realsense_reader = _ProcessRealsenseCameraReader(
+                        depth_serials, self._cfg.depth_fps
+                    )
                 builtin_readers.append(self._builtin_realsense_reader)
             if len(builtin_readers) == 1:
                 camera_reader = builtin_readers[0]

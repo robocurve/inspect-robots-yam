@@ -250,6 +250,15 @@ A slot configured with `*_depth_serial` is owned by librealsense, which serves
 both its colour image and aligned depth plus intrinsics. Find the device serial
 with `rs-enumerate-devices`, or reuse the ASIC serial embedded in the
 `/dev/v4l/by-id/...` name used for `*_cam_device`; either namespace is accepted.
+Quote all-digit serials in `config.ini` (`top_depth_serial = "0385..."`) —
+unquoted numeric values are int-coerced and rejected with a hint.
+
+RealSense capture runs in an isolated child process by default
+(`realsense_capture = process`), keeping librealsense and frame-copy work away
+from the motor-control interpreter; `realsense_capture = inline` restores the
+in-process reader as a debugging escape hatch. `depth_fps` (default 30) sets
+both stream rates — devices accept only their discrete rates (D435/D405:
+6/15/30/60/90).
 
 Cameras open lazily, so the first `reset()` has a one-time warm-up cost while
 the pipelines start and deliver their first frames. A RealSense opened through

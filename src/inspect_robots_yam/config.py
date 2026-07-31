@@ -217,14 +217,32 @@ class YamConfig(_FromKwargs):
     # source or none may. Both the device serial from rs-enumerate-devices and
     # the ASIC serial (`asic_serial_number`) in a /dev/v4l/by-id name are accepted.
     # These are plain strings usable through `-E` or config.ini. See the ``depth``
-    # optional extra for the install command.
+    # optional extra for the install command. Quote all-digit serials in
+    # config.ini: unquoted numeric values are int-coerced and lose leading zeros.
     top_depth_serial: str | None = None
     left_depth_serial: str | None = None
     right_depth_serial: str | None = None
+    # Capture all configured RealSense cameras in one spawn child by default,
+    # keeping librealsense and frame-copy work outside the motor-control
+    # interpreter. "inline" restores the prior in-process implementation as a
+    # debugging escape hatch.
+    realsense_capture: str = "process"
+    # Librealsense colour and depth stream rate. Both streams use the same rate;
+    # capture resolution remains fixed at 640x480. Valid range: 1 through 90,
+    # but devices only accept their discrete rates (D435/D405: 6/15/30/60/90);
+    # an unsupported rate fails at camera open with the librealsense error.
+    depth_fps: int = 30
 
     @classmethod
     def from_kwargs(cls, **flat: Any) -> YamConfig:
         """Build CLI configuration while keeping the table off-state explicit."""
+        for slot in ("top", "left", "right"):
+            field = f"{slot}_depth_serial"
+            if isinstance(flat.get(field), int):
+                raise ValueError(
+                    f"{field} must be a string; quote the serial in config.ini — "
+                    "numeric values are int-coerced and lose leading zeros"
+                )
         # The CLI parses the literal `none` to Python None, which is falsy: an
         # unvalidated None here would read as a silent opt-out of a safety
         # gate (or silently remove the table plane) instead of the
@@ -335,6 +353,18 @@ class YamConfig(_FromKwargs):
             raise ValueError("rest_secs must be > 0")
         if self.max_steps_hint is not None and self.max_steps_hint < 1:
             raise ValueError("max_steps_hint must be >= 1")
+        valid_realsense_capture = {"inline", "process"}
+        if self.realsense_capture not in valid_realsense_capture:
+            raise ValueError(
+                "realsense_capture must be one of "
+                f"{sorted(valid_realsense_capture)}, got {self.realsense_capture!r}"
+            )
+        if (
+            not isinstance(self.depth_fps, int)
+            or isinstance(self.depth_fps, bool)
+            or not 1 <= self.depth_fps <= 90
+        ):
+            raise ValueError("depth_fps must be an integer from 1 to 90")
         camera_source_fields = tuple(
             f"{slot}_{suffix}"
             for slot in ("top", "left", "right")
