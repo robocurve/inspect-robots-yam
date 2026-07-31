@@ -8,7 +8,7 @@ Closes #97.
 Since core v0.29.0, a connection failure inside a policy gets an actionable
 hint appended to the `PolicyError`. Core reads two optional duck-typed
 attributes off the policy instance via `getattr`: `server_url` (truthy → the
-hint names the exact endpoint and says to start the server) and `remedy`
+hint names the server address and says to start the server) and `remedy`
 (truthy → appended verbatim as an extra `hint:` line). `ActServerPolicy`
 keeps its config private (`self._cfg`), so both `getattr`s return `None` and
 molmoact2 users see only the generic fallback — "a backend it depends on may
