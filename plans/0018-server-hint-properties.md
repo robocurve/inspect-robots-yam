@@ -30,12 +30,16 @@ config knows both.
 - `ActServerPolicy.remedy` (read-only property) → `self._cfg.remedy`.
 - Properties never raise (attribute reads on a frozen dataclass); core guards
   against raising properties anyway, but we don't rely on it.
-- No `pyproject.toml` floor bump: on cores older than v0.29.0 the properties
-  are inert extra attributes, and nothing here imports new core API.
+- No `pyproject.toml` floor bump: the existing `inspect-robots>=0.31` floor
+  already exceeds v0.29.0 (the release carrying the hint reader), so every
+  supported core reads the properties; nothing here imports new core API.
 - README: in the `server_url` config paragraph, note the two attributes feed
   core's connection-failure hint; in the "nothing moves until the server is
-  up" paragraph, mention the error now names the endpoint. CHANGELOG under
-  `Unreleased`/`Added`, referencing #97 and core #219.
+  up" paragraph, mention the error now names the endpoint; add `remedy` to
+  the canonical `ActServerConfig` field enumeration (~line 670), beside the
+  "scalar knobs are settable from the CLI" note since `-P remedy=…` is the
+  headline use. CHANGELOG under `Unreleased`/`Added`, referencing #97 and
+  core #219.
 
 ## Tests
 
