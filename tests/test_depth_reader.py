@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import threading
 import time
-import types
 from collections.abc import Iterator
 from typing import Any
 
@@ -18,6 +17,13 @@ import numpy.typing as npt
 import pytest
 
 import inspect_robots_yam.embodiment as embodiment_module
+from conftest import (
+    FakeAlign,
+    FakeDevice,
+    FakePipeline,
+    FakeRs,
+    frameset,
+)
 from inspect_robots_yam._capture_proc import MAX_FRAME_AGE_S
 from inspect_robots_yam.config import YamConfig
 from inspect_robots_yam.embodiment import (
@@ -56,242 +62,7 @@ class Clock:
         self.now += seconds
 
 
-class FakeFrame:
-    """A RealSense frame with data and optional video intrinsics."""
-
-    def __init__(self, data: npt.NDArray[Any], intrinsics: Any | None = None) -> None:
-        self._data = data
-        if intrinsics is not None:
-            video_profile = types.SimpleNamespace(intrinsics=intrinsics)
-            self.profile = types.SimpleNamespace(as_video_stream_profile=lambda: video_profile)
-
-    def get_data(self) -> npt.NDArray[Any]:
-        """Return the SDK-owned backing array."""
-        return self._data
-
-
-class FakeFrameset:
-    """An aligned colour/depth frameset."""
-
-    def __init__(self, colour: Any, depth: Any) -> None:
-        self._colour = colour
-        self._depth = depth
-
-    def get_color_frame(self) -> Any:
-        """Return the colour frame."""
-        return self._colour
-
-    def get_depth_frame(self) -> Any:
-        """Return the depth frame."""
-        return self._depth
-
-
-def frameset(
-    *,
-    colour: npt.NDArray[np.uint8] | None = None,
-    depth: npt.NDArray[np.uint16] | None = None,
-    falsy_colour: bool = False,
-    falsy_depth: bool = False,
-) -> FakeFrameset:
-    """Build one native-resolution RGB8/z16 pair."""
-    if colour is None:
-        colour = np.full((480, 640, 3), 7, dtype=np.uint8)
-    if depth is None:
-        depth = np.full((480, 640), 1000, dtype=np.uint16)
-    intrinsics = types.SimpleNamespace(fx=600.0, fy=600.0, ppx=320.0, ppy=240.0)
-    colour_frame: Any = None if falsy_colour else FakeFrame(colour, intrinsics=intrinsics)
-    depth_frame: Any = None if falsy_depth else FakeFrame(depth)
-    return FakeFrameset(colour_frame, depth_frame)
-
-
 Response = tuple[bool, Any] | BaseException
-
-
-class FakePipeline:
-    """A pipeline with scripted tuple-returning frame waits."""
-
-    def __init__(
-        self,
-        responses: list[Response] | None = None,
-        *,
-        depth_scale: float = DEPTH_SCALE,
-        start_error: BaseException | None = None,
-        stop_error: Exception | None = None,
-        block_after: int | None = None,
-    ) -> None:
-        self.responses = list(responses or [(True, frameset())])
-        self.depth_scale = depth_scale
-        self.start_error = start_error
-        self.stop_error = stop_error
-        self.block_after = block_after
-        self.block = threading.Event()
-        self.entered = threading.Event()
-        self.calls = 0
-        self.timeouts: list[int] = []
-        self.started = False
-        self.stopped = False
-        self.config: FakeConfig | None = None
-        self._stop_after: tuple[threading.Event, int] | None = None
-
-    def start(self, config: FakeConfig) -> Any:
-        """Record the config and return a depth-scale profile."""
-        self.config = config
-        if self.start_error is not None:
-            raise self.start_error
-        self.started = True
-        sensor = types.SimpleNamespace(get_depth_scale=lambda: self.depth_scale)
-        device = types.SimpleNamespace(first_depth_sensor=lambda: sensor)
-        return types.SimpleNamespace(get_device=lambda: device)
-
-    def try_wait_for_frames(self, timeout_ms: int) -> tuple[bool, Any]:
-        """Return the next scripted result, repeating the last one."""
-        self.timeouts.append(timeout_ms)
-        self.calls += 1
-        if self.block_after is not None and self.calls >= self.block_after:
-            self.entered.set()
-            self.block.wait(timeout=5.0)
-        if self.calls > len(self.responses):
-            time.sleep(0.01)
-        response = self.responses[min(self.calls, len(self.responses)) - 1]
-        if self._stop_after is not None and self.calls >= self._stop_after[1]:
-            self._stop_after[0].set()
-        if isinstance(response, BaseException):
-            raise response
-        return response
-
-    def stop_after(self, stop: threading.Event, calls: int) -> None:
-        """Set a stop event after a bounded number of waits."""
-        self._stop_after = (stop, calls)
-
-    def reset_responses(self, responses: list[Response]) -> None:
-        """Replace the script for a later synchronous drain."""
-        self.responses = responses
-        self.calls = 0
-        self._stop_after = None
-
-    def stop(self) -> None:
-        """Record pipeline shutdown, optionally raising after doing so."""
-        self.stopped = True
-        if self.stop_error is not None:
-            raise self.stop_error
-
-
-class FakeAlign:
-    """An align filter that records processing."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def process(self, source: Any) -> Any:
-        """Return an already-aligned frameset."""
-        self.calls += 1
-        return source
-
-
-class FakeConfig:
-    """A recording librealsense pipeline config."""
-
-    def __init__(self) -> None:
-        self.device: str | None = None
-        self.streams: list[tuple[Any, ...]] = []
-
-    def enable_device(self, serial: str) -> None:
-        """Record the device serial passed to librealsense."""
-        self.device = serial
-
-    def enable_stream(self, *args: Any) -> None:
-        """Record one stream declaration."""
-        self.streams.append(args)
-
-
-class FakeDevice:
-    """A discoverable device with device and optional ASIC serials."""
-
-    def __init__(self, name: str, serial: str, asic_serial: str | None) -> None:
-        self.name = name
-        self.serial = serial
-        self.asic_serial = asic_serial
-
-    def supports(self, info: Any) -> bool:
-        """Report whether the optional ASIC serial is available."""
-        return info != FakeRs.camera_info.asic_serial_number or self.asic_serial is not None
-
-    def get_info(self, info: Any) -> str:
-        """Return the requested device identity field."""
-        if info == FakeRs.camera_info.name:
-            return self.name
-        if info == FakeRs.camera_info.serial_number:
-            return self.serial
-        if self.asic_serial is None:
-            raise AssertionError("unsupported ASIC serial queried")
-        return self.asic_serial
-
-
-class FakeContext:
-    """A context whose device enumeration count is assertable."""
-
-    def __init__(self, devices: list[FakeDevice]) -> None:
-        self.devices = devices
-        self.query_calls = 0
-
-    def query_devices(self) -> list[FakeDevice]:
-        """Return all visible devices."""
-        self.query_calls += 1
-        return self.devices
-
-
-class FakeRs:
-    """The pyrealsense2 namespace used by the reader."""
-
-    stream = types.SimpleNamespace(color="colour", depth="depth")
-    format = types.SimpleNamespace(rgb8="rgb8", z16="z16")
-    camera_info = types.SimpleNamespace(
-        name="name", serial_number="serial", asic_serial_number="asic"
-    )
-
-    def __init__(
-        self,
-        pipelines: list[FakePipeline] | None = None,
-        devices: list[FakeDevice] | None = None,
-    ) -> None:
-        self.pipelines = list(pipelines or [])
-        self.context_value = FakeContext(
-            devices
-            if devices is not None
-            else [
-                FakeDevice("Top D405", "S1", "A1"),
-                FakeDevice("Left D405", "S2", "A2"),
-                FakeDevice("Right D405", "S3", "A3"),
-            ]
-        )
-        self.configs: list[FakeConfig] = []
-        self.aligns: list[FakeAlign] = []
-        self.pipeline_calls = 0
-
-    def context(self) -> FakeContext:
-        """Return the one enumeration context."""
-        return self.context_value
-
-    def config(self) -> FakeConfig:
-        """Return a fresh pipeline config."""
-        config = FakeConfig()
-        self.configs.append(config)
-        return config
-
-    def pipeline(self) -> FakePipeline:
-        """Return the next scripted pipeline."""
-        if self.pipeline_calls == len(self.pipelines):
-            self.pipelines.append(FakePipeline())
-        pipeline = self.pipelines[self.pipeline_calls]
-        self.pipeline_calls += 1
-        return pipeline
-
-    def align(self, stream: Any) -> FakeAlign:
-        """Return a fresh colour align filter."""
-        assert stream == self.stream.color
-        align = FakeAlign()
-        self.aligns.append(align)
-        return align
 
 
 class FakeCapture:

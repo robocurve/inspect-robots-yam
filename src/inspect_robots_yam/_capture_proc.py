@@ -13,8 +13,10 @@ startup path.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import struct
+import time
 from dataclasses import dataclass
 from multiprocessing import resource_tracker, shared_memory
 from typing import Any
@@ -84,6 +86,246 @@ class _FrameSnapshot:
     depth_scale: float
     published_s: float
     generation: int
+
+
+@dataclass(frozen=True)
+class _CaptureSpec:
+    """Minimal pickle-safe configuration passed to the spawn child."""
+
+    serials: tuple[tuple[str, str], ...]
+    depth_fps: int
+    slots: tuple[tuple[str, _FrameSlotSpec], ...]
+    generation: int
+    stop_event: Any
+
+
+@dataclass(frozen=True)
+class _ChildPipeline:
+    """One child-owned pipeline with its alignment filter and depth scale."""
+
+    pipeline: Any
+    align: Any
+    depth_scale: float
+
+
+def _import_rs() -> Any:  # pragma: no cover - real child hardware import
+    """Import pyrealsense2 only inside a capture child that needs real hardware."""
+    import pyrealsense2 as rs  # type: ignore
+
+    return rs
+
+
+def _child_main(conn: Any, spec: _CaptureSpec, *, rs_module: Any | None = None) -> None:
+    """Own every RealSense pipeline and publish frames until parent shutdown."""
+    shms: dict[str, shared_memory.SharedMemory] = {}
+    bundles: dict[str, _ChildPipeline] = {}
+    ready = False
+    try:
+        shms = {name: _attach_frame_slot(slot_spec) for name, slot_spec in spec.slots}
+        rs = rs_module if rs_module is not None else _import_rs()
+        bundles = _open_child_pipelines(rs, spec, shms)
+        conn.send(("ready", {"slots": tuple(shms)}))
+        ready = True
+        _drain_child(conn, spec, bundles, shms)
+    except BaseException as exc:
+        if not ready:
+            with contextlib.suppress(BrokenPipeError, EOFError, OSError):
+                conn.send(("error", str(exc)))
+    finally:
+        for bundle in bundles.values():
+            with contextlib.suppress(BaseException):
+                bundle.pipeline.stop()
+        for shm in shms.values():
+            shm.close()
+        conn.close()
+
+
+def _open_child_pipelines(
+    rs: Any,
+    spec: _CaptureSpec,
+    shms: dict[str, shared_memory.SharedMemory],
+) -> dict[str, _ChildPipeline]:
+    """Resolve and open every requested camera, rolling back partial opens."""
+    visible: list[tuple[str, str, str | None]] = []
+    for device in rs.context().query_devices():
+        serial = str(device.get_info(rs.camera_info.serial_number))
+        asic_info = rs.camera_info.asic_serial_number
+        asic_serial = str(device.get_info(asic_info)) if device.supports(asic_info) else None
+        device_name = str(device.get_info(rs.camera_info.name))
+        visible.append((device_name, serial, asic_serial))
+
+    resolved: dict[str, str] = {}
+    for name, configured_serial in spec.serials:
+        match = next(
+            (
+                serial
+                for _, serial, asic_serial in visible
+                if configured_serial in (serial, asic_serial)
+            ),
+            None,
+        )
+        if match is None:
+            listing = ", ".join(
+                f"{device_name} / {serial} / {asic_serial or '<unavailable>'}"
+                for device_name, serial, asic_serial in visible
+            )
+            raise RuntimeError(
+                f"cannot find RealSense camera {name} ({configured_serial}); "
+                f"visible devices: {listing or 'none'}"
+            )
+        resolved[name] = match
+
+    resolved_slots: dict[str, tuple[str, str]] = {}
+    for name, resolved_serial in resolved.items():
+        configured_serial = dict(spec.serials)[name]
+        previous = resolved_slots.get(resolved_serial)
+        if previous is not None:
+            previous_name, previous_configured_serial = previous
+            raise RuntimeError(
+                f"cannot use RealSense cameras {previous_name} "
+                f"({previous_configured_serial}) and {name} ({configured_serial}): "
+                f"both resolve to device serial {resolved_serial}; configure each "
+                f"slot with a different visible device"
+            )
+        resolved_slots[resolved_serial] = (name, configured_serial)
+
+    slots = dict(spec.slots)
+    bundles: dict[str, _ChildPipeline] = {}
+    try:
+        for name, serial in resolved.items():
+            bundles[name] = _open_child_pipeline(
+                rs,
+                serial,
+                spec.depth_fps,
+                slots[name],
+                shms[name],
+                spec.generation,
+            )
+    except BaseException:
+        for bundle in bundles.values():
+            with contextlib.suppress(BaseException):
+                bundle.pipeline.stop()
+        raise
+    return bundles
+
+
+def _open_child_pipeline(
+    rs: Any,
+    serial: str,
+    depth_fps: int,
+    slot_spec: _FrameSlotSpec,
+    shm: shared_memory.SharedMemory,
+    generation: int,
+) -> _ChildPipeline:
+    """Open, warm, and return one configured child-owned pipeline."""
+    rs_cfg = rs.config()
+    rs_cfg.enable_device(serial)
+    rs_cfg.enable_stream(
+        rs.stream.color,
+        slot_spec.width,
+        slot_spec.height,
+        rs.format.rgb8,
+        depth_fps,
+    )
+    rs_cfg.enable_stream(
+        rs.stream.depth,
+        slot_spec.width,
+        slot_spec.height,
+        rs.format.z16,
+        depth_fps,
+    )
+    pipeline = rs.pipeline()
+    profile = pipeline.start(rs_cfg)
+    try:
+        depth_scale = float(profile.get_device().first_depth_sensor().get_depth_scale())
+        align = rs.align(rs.stream.color)
+        for _ in range(10):
+            ok, frames = pipeline.try_wait_for_frames(timeout_ms=1000)
+            if not ok:
+                time.sleep(0.1)
+                continue
+            _publish_frameset(
+                align.process(frames),
+                shm,
+                slot_spec,
+                depth_scale,
+                generation,
+            )
+            break
+        return _ChildPipeline(pipeline, align, depth_scale)
+    except BaseException:
+        with contextlib.suppress(BaseException):
+            pipeline.stop()
+        raise
+
+
+def _drain_child(
+    conn: Any,
+    spec: _CaptureSpec,
+    bundles: dict[str, _ChildPipeline],
+    shms: dict[str, shared_memory.SharedMemory],
+) -> None:
+    """Drain all pipelines, treating a control message or Pipe EOF as shutdown."""
+    slots = dict(spec.slots)
+    while not spec.stop_event.is_set():
+        if _parent_requested_stop(conn):
+            return
+        for name, bundle in bundles.items():
+            if spec.stop_event.is_set() or _parent_requested_stop(conn):
+                return
+            ok, frames = bundle.pipeline.try_wait_for_frames(timeout_ms=1000)
+            if ok:
+                _publish_frameset(
+                    bundle.align.process(frames),
+                    shms[name],
+                    slots[name],
+                    bundle.depth_scale,
+                    spec.generation,
+                )
+
+
+def _parent_requested_stop(conn: Any) -> bool:
+    """Return whether the parent sent a control message or closed its Pipe end."""
+    if not conn.poll():
+        return False
+    with contextlib.suppress(EOFError):
+        conn.recv()
+    return True
+
+
+def _publish_frameset(
+    aligned: Any,
+    shm: shared_memory.SharedMemory,
+    slot_spec: _FrameSlotSpec,
+    depth_scale: float,
+    generation: int,
+) -> None:
+    """Copy one aligned SDK frameset into its shared-memory slot."""
+    depth_frame = aligned.get_depth_frame()
+    colour_frame = aligned.get_color_frame()
+    if not depth_frame or not colour_frame:
+        return
+    colour: npt.NDArray[np.uint8] = np.asarray(colour_frame.get_data(), dtype=np.uint8).copy()
+    depth: npt.NDArray[np.uint16] = np.asarray(depth_frame.get_data(), dtype=np.uint16).copy()
+    intrinsics = colour_frame.profile.as_video_stream_profile().intrinsics
+    k_matrix: npt.NDArray[np.float32] = np.array(
+        [
+            [float(intrinsics.fx), 0.0, float(intrinsics.ppx)],
+            [0.0, float(intrinsics.fy), float(intrinsics.ppy)],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    _write_frame(
+        shm,
+        slot_spec,
+        colour=colour,
+        depth=depth,
+        intrinsics=k_matrix,
+        depth_scale=depth_scale,
+        published_s=time.monotonic(),
+        generation=generation,
+    )
 
 
 def _create_frame_slot(
