@@ -24,12 +24,13 @@ from conftest import (
     FakeRs,
     frameset,
 )
-from inspect_robots_yam._capture_proc import MAX_FRAME_AGE_S
+from inspect_robots_yam._capture_proc import MAX_FRAME_AGE_S, _FrameSnapshot
 from inspect_robots_yam.config import YamConfig
 from inspect_robots_yam.embodiment import (
     YAMEmbodiment,
     _CompositeCameraReader,
     _PipelineBundle,
+    _ProcessRealsenseCameraReader,
     _RealsenseCameraReader,
 )
 from inspect_robots_yam.operator import OperatorIO
@@ -134,6 +135,54 @@ class FakeCv2:
         return source[rows[:, None], columns].copy()
 
 
+class FakeTransport:
+    """Synchronous copied-frame transport for process-reader parity tests."""
+
+    def __init__(self) -> None:
+        self.is_open = False
+        self.is_alive = False
+        self.generation = 0
+        self.published_s = 0.0
+        self.colour = np.dstack([np.full((480, 640), value, dtype=np.uint8) for value in (1, 2, 3)])
+        self.depth = np.full((480, 640), 500, dtype=np.uint16)
+        self.intrinsics = np.array(
+            [[600, 0, 320], [0, 600, 240], [0, 0, 1]],
+            dtype=np.float32,
+        )
+        self.depth_scale = 0.001
+        self.return_none = False
+        self.opens: list[int] = []
+        self.reads = 0
+        self.closes = 0
+
+    def open(self, generation: int) -> None:
+        """Begin one synthetic capture generation."""
+        self.is_open = True
+        self.is_alive = True
+        self.generation = generation
+        self.opens.append(generation)
+
+    def read(self, _name: str) -> _FrameSnapshot | None:
+        """Return the current synthetic publication as copied arrays."""
+        self.reads += 1
+        if self.return_none:
+            return None
+        return _FrameSnapshot(
+            colour=self.colour.copy(),
+            depth=self.depth.copy(),
+            intrinsics=self.intrinsics.copy(),
+            depth_scale=self.depth_scale,
+            published_s=self.published_s,
+            generation=self.generation,
+        )
+
+    def close(self) -> None:
+        """End the current synthetic capture generation."""
+        self.closes += 1
+        self.is_open = False
+        self.is_alive = False
+
+
 def build(
     *,
     serials: dict[str, str] | None = None,
@@ -226,6 +275,159 @@ def test_inline_reader_threads_configured_depth_fps_to_both_streams() -> None:
         ("colour", 640, 480, "rgb8", 15),
         ("depth", 640, 480, "z16", 15),
     ]
+
+
+def test_process_reader_is_lazy_and_matches_image_depth_and_intrinsics() -> None:
+    transport = FakeTransport()
+    cv2 = FakeCv2()
+    reader = _ProcessRealsenseCameraReader(
+        SERIALS,
+        transport=transport,
+        cv2_module=cv2,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+    )
+    reader.close()
+    assert transport.opens == []
+
+    images = reader(cfg())
+    extra = reader.extra(cfg())
+
+    assert transport.opens == [1]
+    assert set(images) == set(SERIALS)
+    assert all(image.shape == (4, 4, 3) for image in images.values())
+    assert all(list(image[0, 0]) == [1, 2, 3] for image in images.values())
+    expected_intrinsics = np.array(
+        [[600 * 4 / 640, 0, 320 * 4 / 640], [0, 600 * 4 / 480, 240 * 4 / 480], [0, 0, 1]],
+        dtype=np.float32,
+    )
+    for name in SERIALS:
+        np.testing.assert_array_equal(extra[f"{name}_intrinsics"], expected_intrinsics)
+        depth = extra[f"{name}_depth"]()
+        assert depth.shape == (4, 4)
+        assert depth.dtype == np.float32
+        assert np.all(depth == np.float32(0.5))
+    reader.close()
+    reader.close()
+    assert transport.closes == 1
+
+
+def test_process_depth_thunk_reads_freshest_frame_and_rejects_old_generation() -> None:
+    transport = FakeTransport()
+    reader = _ProcessRealsenseCameraReader(
+        {"top_cam": "S1"},
+        transport=transport,
+        cv2_module=FakeCv2(),
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+    )
+    thunk = reader.extra(cfg())["top_cam_depth"]
+    assert np.all(thunk() == np.float32(0.5))
+    transport.depth[:] = 2000
+    assert np.all(thunk() == np.float32(2.0))
+    reads_before_close = transport.reads
+
+    reader.close()
+
+    with pytest.raises(
+        RuntimeError,
+        match="depth for top_cam resolved after camera close or reopen",
+    ):
+        thunk()
+    assert transport.reads == reads_before_close
+
+    reader(cfg())
+    with pytest.raises(RuntimeError, match="resolved after camera close or reopen"):
+        thunk()
+    assert transport.opens == [1, 3]
+    reader.close()
+
+
+def test_process_reader_waits_through_stale_torn_and_wrong_generation_frames() -> None:
+    for mode in ("stale", "torn", "generation"):
+        transport = FakeTransport()
+        clock = Clock()
+        sleeps: list[float] = []
+        if mode == "stale":
+            clock.advance(MAX_FRAME_AGE_S + 0.01)
+        elif mode == "torn":
+            transport.return_none = True
+        else:
+            transport.generation = -1
+        reader = _ProcessRealsenseCameraReader(
+            {"top_cam": "S1"},
+            transport=transport,
+            cv2_module=FakeCv2(),
+            sleep_fn=sleeps.append,
+            clock=clock,
+        )
+        if mode == "generation":
+            reader._ensure_open()
+            transport.generation = -1
+
+        with pytest.raises(
+            RuntimeError,
+            match=r"frame read failed for top_cam \(S1\)",
+        ):
+            reader(cfg())
+
+        assert sleeps == [0.05] * 10
+        reader.close()
+
+
+def test_process_reader_detects_dead_child_before_reading_slot() -> None:
+    transport = FakeTransport()
+    reader = _ProcessRealsenseCameraReader(
+        {"top_cam": "S1"},
+        transport=transport,
+        cv2_module=FakeCv2(),
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+    )
+    reader._ensure_open()
+    transport.is_alive = False
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"frame read failed for top_cam \(S1\)",
+    ):
+        reader(cfg())
+
+    assert transport.reads == 0
+    reader.close()
+
+
+def test_process_latest_rechecks_generation_before_and_during_wait() -> None:
+    transport = FakeTransport()
+    reader = _ProcessRealsenseCameraReader(
+        {"top_cam": "S1"},
+        transport=transport,
+        cv2_module=FakeCv2(),
+        clock=lambda: MAX_FRAME_AGE_S + 1.0,
+    )
+    reader._ensure_open()
+
+    with pytest.raises(RuntimeError, match="resolved after camera close or reopen"):
+        reader._latest("top_cam", expected_generation=-1)
+
+    reader._sleep = lambda _seconds: reader.close()
+    with pytest.raises(RuntimeError, match="resolved after camera close or reopen"):
+        reader._latest("top_cam", expected_generation=reader._generation)
+
+
+def test_process_reader_accepts_child_stamp_ahead_of_frozen_parent_clock() -> None:
+    transport = FakeTransport()
+    transport.published_s = time.monotonic()
+    reader = _ProcessRealsenseCameraReader(
+        {"top_cam": "S1"},
+        transport=transport,
+        cv2_module=FakeCv2(),
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+    )
+
+    assert reader(cfg())["top_cam"].shape == (4, 4, 3)
+    reader.close()
 
 
 def test_rgb8_channel_order_is_not_swapped() -> None:
@@ -762,6 +964,7 @@ def test_mixed_builtin_rig_merges_images_and_only_serial_depth(
         top_cam_device="/dev/top",
         left_depth_serial="S2",
         right_depth_serial="S3",
+        realsense_capture="inline",
     )
     emb, rs, cv2 = builtin_embodiment(cfg_value, monkeypatch)
 
@@ -789,6 +992,7 @@ def test_serial_only_rig_constructs_builtin_reader_and_observes_depth(
         top_depth_serial="S1",
         left_depth_serial="S2",
         right_depth_serial="S3",
+        realsense_capture="inline",
     )
     emb, _, _ = builtin_embodiment(cfg_value, monkeypatch)
     assert isinstance(emb._builtin_realsense_reader, _RealsenseCameraReader)
@@ -808,6 +1012,7 @@ def test_serial_only_rig_includes_depth_docs(monkeypatch: pytest.MonkeyPatch) ->
         top_depth_serial="S1",
         left_depth_serial="S2",
         right_depth_serial="S3",
+        realsense_capture="inline",
     )
     emb, _, _ = builtin_embodiment(cfg_value, monkeypatch)
 
@@ -826,6 +1031,7 @@ def test_mixed_builtin_rig_depth_docs_name_only_serial_cameras() -> None:
             top_cam_device="/dev/top",
             left_depth_serial="S2",
             right_depth_serial="S3",
+            realsense_capture="inline",
         )
     )
 
@@ -854,6 +1060,7 @@ def test_injected_camera_reader_conflicts_with_configured_serials() -> None:
         top_depth_serial="S1",
         left_depth_serial="S2",
         right_depth_serial="S3",
+        realsense_capture="inline",
     )
 
     with pytest.raises(
@@ -897,6 +1104,7 @@ def test_injected_depth_reader_overrides_serial_builtin_extra(
         top_depth_serial="S1",
         left_depth_serial="S2",
         right_depth_serial="S3",
+        realsense_capture="inline",
     )
     replacement = np.eye(3, dtype=np.float32) * 7
     emb, _, _ = builtin_embodiment(

@@ -138,6 +138,11 @@ class _CaptureProcess:
         return self._process is not None and bool(self._process.is_alive())
 
     @property
+    def is_open(self) -> bool:
+        """Return whether an open cycle owns a child and shared mappings."""
+        return self._process is not None
+
+    @property
     def process(self) -> Any | None:
         """Expose the child handle for liveness checks and tests."""
         return self._process

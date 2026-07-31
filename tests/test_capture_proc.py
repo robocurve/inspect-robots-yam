@@ -19,7 +19,8 @@ import numpy.typing as npt
 import pytest
 
 import inspect_robots_yam._capture_proc as capture_proc
-from conftest import FakeDevice, FakePipeline, FakeRs, frameset
+import inspect_robots_yam.embodiment as embodiment_module
+from conftest import FakeCv2, FakeDevice, FakePipeline, FakeRs, frameset
 from inspect_robots_yam._capture_proc import (
     _attach_frame_slot,
     _CaptureProcess,
@@ -29,6 +30,11 @@ from inspect_robots_yam._capture_proc import (
     _FrameSlotSpec,
     _read_frame,
     _write_frame,
+)
+from inspect_robots_yam.config import YamConfig
+from inspect_robots_yam.embodiment import (
+    YAMEmbodiment,
+    _ProcessRealsenseCameraReader,
 )
 
 
@@ -488,6 +494,86 @@ def test_capture_process_terminate_and_reopen_use_fresh_slots(
         capture.close()
 
     assert cycles[0][0] != cycles[1][0]
+
+
+def test_process_reader_reports_stale_live_and_dead_spawn_children() -> None:
+    stale = _ProcessRealsenseCameraReader(
+        {"top_cam": "silent"},
+        child_entry=_fake_subprocess_child,
+        cv2_module=FakeCv2(),
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: time.monotonic() + 1.0,
+    )
+    dead = _ProcessRealsenseCameraReader(
+        {"top_cam": "dead"},
+        child_entry=_fake_subprocess_child,
+        cv2_module=FakeCv2(),
+        sleep_fn=lambda _seconds: None,
+    )
+    try:
+        with _without_coverage_child_env():
+            stale._ensure_open()
+        with pytest.raises(
+            RuntimeError,
+            match=r"frame read failed for top_cam \(silent\)",
+        ):
+            stale(YamConfig(cam_height=4, cam_width=4))
+
+        with _without_coverage_child_env():
+            dead._ensure_open()
+        deadline = time.monotonic() + 1.0
+        while dead._capture.is_alive and time.monotonic() < deadline:
+            time.sleep(0.01)
+        with pytest.raises(
+            RuntimeError,
+            match=r"frame read failed for top_cam \(dead\)",
+        ):
+            dead(YamConfig(cam_height=4, cam_width=4))
+    finally:
+        stale.close()
+        dead.close()
+
+
+def test_process_mode_embodiment_uses_fake_spawn_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def capture_factory(
+        serials: dict[str, str],
+        depth_fps: int,
+        *,
+        child_entry: Any = None,
+    ) -> _CaptureProcess:
+        del child_entry
+        return _CaptureProcess(
+            serials,
+            depth_fps,
+            child_entry=_fake_subprocess_child,
+        )
+
+    monkeypatch.setattr(embodiment_module, "_CaptureProcess", capture_factory)
+    monkeypatch.setattr(embodiment_module, "_import_cv2", FakeCv2)
+    emb = YAMEmbodiment(
+        YamConfig(
+            cam_height=4,
+            cam_width=4,
+            top_depth_serial="ready",
+            left_depth_serial="ready-left",
+            right_depth_serial="ready-right",
+        )
+    )
+    reader = emb._builtin_realsense_reader
+
+    assert isinstance(reader, _ProcessRealsenseCameraReader)
+    assert not reader._capture.is_open
+    try:
+        with _without_coverage_child_env():
+            images = reader(emb._cfg)
+        extra = reader.extra(emb._cfg)
+        assert images["top_cam"].shape == (4, 4, 3)
+        assert callable(extra["top_cam_depth"])
+        assert extra["top_cam_intrinsics"].shape == (3, 3)
+    finally:
+        emb.close()
 
 
 def test_capture_process_escalates_from_terminate_to_kill() -> None:
