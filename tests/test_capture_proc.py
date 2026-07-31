@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import multiprocessing
+import os
 import struct
 import threading
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from multiprocessing import shared_memory
 from typing import Any
 
@@ -17,6 +22,7 @@ import inspect_robots_yam._capture_proc as capture_proc
 from conftest import FakeDevice, FakePipeline, FakeRs, frameset
 from inspect_robots_yam._capture_proc import (
     _attach_frame_slot,
+    _CaptureProcess,
     _CaptureSpec,
     _child_main,
     _create_frame_slot,
@@ -24,6 +30,66 @@ from inspect_robots_yam._capture_proc import (
     _read_frame,
     _write_frame,
 )
+
+
+@contextmanager
+def _without_coverage_child_env() -> Iterator[None]:
+    """Keep killable spawned helpers from owning corruptible coverage files."""
+    removed = {key: os.environ.pop(key) for key in tuple(os.environ) if key.startswith("COV_CORE_")}
+    try:
+        yield
+    finally:
+        os.environ.update(removed)
+
+
+def _fake_subprocess_child(conn: Any, spec: _CaptureSpec) -> None:
+    """Publish synthetic frames or exercise one requested handshake behavior."""
+    mode = spec.serials[0][1]
+    if mode == "error":
+        conn.send(("error", f"fake open failed: {spec.slots[0][1].name}"))
+        conn.close()
+        return
+    if mode == "timeout":
+        time.sleep(5.0)
+        return
+    if mode == "eof":
+        conn.close()
+        return
+    if mode == "invalid":
+        conn.send(("unexpected", None))
+        conn.close()
+        return
+
+    attached = {name: _attach_frame_slot(slot_spec) for name, slot_spec in spec.slots}
+    try:
+        for name, slot_spec in spec.slots:
+            colour = np.full((slot_spec.height, slot_spec.width, 3), 21, dtype=np.uint8)
+            depth = np.full((slot_spec.height, slot_spec.width), 1250, dtype=np.uint16)
+            _write_frame(
+                attached[name],
+                slot_spec,
+                colour=colour,
+                depth=depth,
+                intrinsics=np.eye(3, dtype=np.float32),
+                depth_scale=0.001,
+                published_s=time.monotonic(),
+                generation=spec.generation,
+            )
+        conn.send(("ready", None))
+        if mode == "dead":
+            return
+        if mode == "ignore":
+            while True:
+                time.sleep(0.05)
+        while not spec.stop_event.is_set():
+            if conn.poll(0.05):
+                with contextlib.suppress(EOFError):
+                    conn.recv()
+                return
+    finally:
+        for shm in attached.values():
+            shm.close()
+        conn.close()
 
 
 def _child_spec(
@@ -220,6 +286,289 @@ def test_attach_unregisters_on_python_without_track(
 
     assert isinstance(attached, FakeSharedMemory)
     assert unregisters == [("/slot", "shared_memory")]
+
+
+def test_capture_process_is_lazy_and_ready_names_are_unlinked() -> None:
+    capture = _CaptureProcess(
+        {"top_cam": "ready"},
+        30,
+        child_entry=_fake_subprocess_child,
+    )
+
+    capture.close()
+    assert capture.process is None
+    with _without_coverage_child_env():
+        capture.open(generation=8)
+    first_process = capture.process
+    names = capture.slot_names
+    capture.open(generation=9)
+
+    try:
+        assert capture.process is first_process
+        assert first_process is not None
+        assert first_process.daemon
+        assert capture.is_alive
+        snapshot = capture.read("top_cam")
+        assert snapshot is not None
+        assert snapshot.generation == 8
+        assert snapshot.colour[0, 0, 0] == 21
+        with pytest.raises(FileNotFoundError):
+            shared_memory.SharedMemory(name=names["top_cam"])
+    finally:
+        capture.close()
+
+    assert capture.process is None
+    assert not capture.is_alive
+
+
+def test_capture_process_cleans_up_partial_slot_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    names: list[str] = []
+    calls = 0
+    original_create = capture_proc._create_frame_slot
+
+    def fail_second_create() -> tuple[shared_memory.SharedMemory, _FrameSlotSpec]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("allocation failed")
+        shm, spec = original_create()
+        names.append(spec.name)
+        return shm, spec
+
+    monkeypatch.setattr(capture_proc, "_create_frame_slot", fail_second_create)
+    capture = _CaptureProcess({"top_cam": "S1", "left_cam": "S2"}, 30)
+
+    with pytest.raises(RuntimeError, match="allocation failed"):
+        capture.open(1)
+
+    with pytest.raises(FileNotFoundError):
+        shared_memory.SharedMemory(name=names[0])
+
+
+def test_capture_process_cleans_up_when_process_start_fails() -> None:
+    class FakeConnection:
+        """Connection recording cleanup before re-raise."""
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FailingProcess:
+        """Process whose spawn fails before a child exists."""
+
+        def start(self) -> None:
+            raise RuntimeError("spawn failed")
+
+    class FailingContext:
+        """Context exposing the start-failure path."""
+
+        def __init__(self) -> None:
+            self.connections = (FakeConnection(), FakeConnection())
+
+        def Event(self) -> threading.Event:
+            return threading.Event()
+
+        def Pipe(self) -> tuple[FakeConnection, FakeConnection]:
+            return self.connections
+
+        def Process(self, **_kwargs: Any) -> FailingProcess:
+            return FailingProcess()
+
+    names: list[str] = []
+    original_create = capture_proc._create_frame_slot
+
+    def recording_create() -> tuple[shared_memory.SharedMemory, _FrameSlotSpec]:
+        shm, spec = original_create()
+        names.append(spec.name)
+        return shm, spec
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(capture_proc, "_create_frame_slot", recording_create)
+        context = FailingContext()
+        capture = _CaptureProcess({"top_cam": "S1"}, 30, context=context)
+
+        with pytest.raises(RuntimeError, match="spawn failed"):
+            capture.open(1)
+
+    assert all(conn.closed for conn in context.connections)
+    with pytest.raises(FileNotFoundError):
+        shared_memory.SharedMemory(name=names[0])
+
+
+@pytest.mark.parametrize(
+    ("mode", "message"),
+    (
+        ("error", "fake open failed"),
+        ("eof", "exited during open handshake"),
+        ("invalid", "invalid RealSense capture handshake status"),
+    ),
+)
+def test_capture_process_unlinks_before_handshake_error(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    message: str,
+) -> None:
+    names: list[str] = []
+    original_create = capture_proc._create_frame_slot
+
+    def recording_create() -> tuple[shared_memory.SharedMemory, _FrameSlotSpec]:
+        shm, spec = original_create()
+        names.append(spec.name)
+        return shm, spec
+
+    monkeypatch.setattr(capture_proc, "_create_frame_slot", recording_create)
+    capture = _CaptureProcess(
+        {"top_cam": mode},
+        30,
+        child_entry=_fake_subprocess_child,
+    )
+
+    with pytest.raises(RuntimeError, match=message), _without_coverage_child_env():
+        capture.open(generation=1)
+
+    assert capture.process is None
+    assert len(names) == 1
+    with pytest.raises(FileNotFoundError):
+        shared_memory.SharedMemory(name=names[0])
+
+
+def test_capture_process_timeout_unlinks_and_terminates_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    names: list[str] = []
+    original_create = capture_proc._create_frame_slot
+
+    def recording_create() -> tuple[shared_memory.SharedMemory, _FrameSlotSpec]:
+        shm, spec = original_create()
+        names.append(spec.name)
+        return shm, spec
+
+    monkeypatch.setattr(capture_proc, "_create_frame_slot", recording_create)
+    monkeypatch.setattr(capture_proc, "JOIN_TIMEOUT_S", 0.05)
+    capture = _CaptureProcess(
+        {"top_cam": "timeout"},
+        30,
+        child_entry=_fake_subprocess_child,
+        open_timeout_s=0.05,
+    )
+
+    with pytest.raises(RuntimeError, match="timed out opening"), _without_coverage_child_env():
+        capture.open(generation=1)
+
+    assert capture.process is None
+    with pytest.raises(FileNotFoundError):
+        shared_memory.SharedMemory(name=names[0])
+
+
+def test_capture_process_terminate_and_reopen_use_fresh_slots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(capture_proc, "JOIN_TIMEOUT_S", 0.05)
+    capture = _CaptureProcess(
+        {"top_cam": "ignore"},
+        30,
+        child_entry=_fake_subprocess_child,
+    )
+    cycles: list[tuple[str, Any]] = []
+    try:
+        for generation in (1, 2):
+            with _without_coverage_child_env():
+                capture.open(generation)
+            process = capture.process
+            assert process is not None
+            cycles.append((capture.slot_names["top_cam"], process))
+            assert capture.read("top_cam") is not None
+            capture.close()
+            assert not process.is_alive()
+    finally:
+        capture.close()
+
+    assert cycles[0][0] != cycles[1][0]
+
+
+def test_capture_process_escalates_from_terminate_to_kill() -> None:
+    class FakeEvent:
+        """Recording stop event."""
+
+        def __init__(self) -> None:
+            self.set_called = False
+
+        def set(self) -> None:
+            self.set_called = True
+
+    class FakeConnection:
+        """One ready handshake endpoint."""
+
+        def poll(self, _timeout: float) -> bool:
+            return True
+
+        def recv(self) -> tuple[str, None]:
+            return "ready", None
+
+        def close(self) -> None:
+            return None
+
+    class FakeProcess:
+        """Process that survives terminate but not kill."""
+
+        def __init__(self, **kwargs: Any) -> None:
+            self.daemon = kwargs["daemon"]
+            self.started = False
+            self.alive = False
+            self.terminated = False
+            self.killed = False
+            self.joins: list[float] = []
+
+        def start(self) -> None:
+            self.started = True
+            self.alive = True
+
+        def join(self, timeout: float) -> None:
+            self.joins.append(timeout)
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+            self.alive = False
+
+    class FakeContext:
+        """Spawn-context surface used by the lifecycle manager."""
+
+        def __init__(self) -> None:
+            self.event = FakeEvent()
+            self.process: FakeProcess | None = None
+
+        def Event(self) -> FakeEvent:
+            return self.event
+
+        def Pipe(self) -> tuple[FakeConnection, FakeConnection]:
+            return FakeConnection(), FakeConnection()
+
+        def Process(self, **kwargs: Any) -> FakeProcess:
+            self.process = FakeProcess(**kwargs)
+            return self.process
+
+    context = FakeContext()
+    capture = _CaptureProcess({"top_cam": "S1"}, 30, context=context)
+    capture.open(1)
+
+    capture.close()
+
+    process = context.process
+    assert process is not None
+    assert process.started and process.daemon
+    assert process.terminated and process.killed
+    assert len(process.joins) == 3
+    assert context.event.set_called
 
 
 def test_child_opens_warms_publishes_and_stops_in_process(
