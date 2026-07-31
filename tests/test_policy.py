@@ -46,6 +46,35 @@ def test_info_and_config_zero_arg() -> None:
     assert pol.config.action_horizon == 30
 
 
+def test_server_url_property_follows_config_default_and_flat_kwargs() -> None:
+    assert MolmoAct2Policy().server_url == ActServerConfig().server_url
+    assert MolmoAct2Policy(server_url="http://gpu:9000").server_url == "http://gpu:9000"
+
+
+def test_remedy_property_defaults_and_follows_construction_paths() -> None:
+    assert MolmoAct2Policy().remedy == ""
+    configured = MolmoAct2Policy(ActServerConfig(remedy="start the configured server"))
+    assert configured.remedy == "start the configured server"
+    assert MolmoAct2Policy(remedy="run server.sh").remedy == "run server.sh"
+
+
+def test_connection_failure_hint_getattr_contract() -> None:
+    pol = MolmoAct2Policy(
+        server_url="http://robot-gpu:8202",
+        remedy="run ~/robocurve/molmoact2/run_yam.sh",
+    )
+    assert getattr(pol, "server_url", None) == "http://robot-gpu:8202"
+    assert getattr(pol, "remedy", None) == "run ~/robocurve/molmoact2/run_yam.sh"
+
+
+def test_connection_failure_hint_properties_are_read_only() -> None:
+    pol = MolmoAct2Policy()
+    with pytest.raises(AttributeError):
+        pol.server_url = "http://other:8202"
+    with pytest.raises(AttributeError):
+        pol.remedy = "restart it"
+
+
 def test_policy_action_space_declares_no_gripper_max_step() -> None:
     sem = MolmoAct2Policy().info.action_space.semantics
     assert sem is not None and sem.max_step is None

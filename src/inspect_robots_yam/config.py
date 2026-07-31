@@ -513,9 +513,12 @@ class ActServerConfig(_FromKwargs):
     :class:`~inspect_robots.policy.PolicyConfig` metadata; the actual length is
     always taken from the server's response. Its 30-step default belongs to
     MolmoAct2's bimanual-YAM checkpoint. ``name`` labels the policy in eval logs.
+    ``remedy`` is a free-text recovery instruction that core shows as its own
+    ``hint:`` line after connection failures; the empty default omits that line.
     """
 
     server_url: str = "http://127.0.0.1:8202"
+    remedy: str = ""
     joints_are_delta: bool = False
     endpoint: str = "/act"
     num_steps: int = 10

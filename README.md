@@ -110,6 +110,9 @@ inspect-robots "stack the red block on the blue block" \
 The client defaults to `http://127.0.0.1:8203`. Override a remote or alternate
 server with `-P server_url=http://gpu:8203`. The config key is `server_url`;
 `url` is a read-only property, and `ActServerConfig.from_kwargs` rejects it.
+The policy's `server_url` and `remedy` attributes feed core's
+connection-failure hint with the configured address and an optional recovery
+instruction.
 For another GR00T fine-tune, pass `-P action_horizon=<its chunk length>` so the
 recorded policy metadata matches that checkpoint.
 
@@ -268,7 +271,8 @@ for each slot.
 
 Make sure the plugin is installed and the MolmoAct2 server is up. The
 `molmoact2` policy is only a client: nothing moves until the server is
-listening, and it does not start itself or survive a reboot (full setup in
+listening, and it does not start itself or survive a reboot. A connection
+failure names the configured server address in the policy error (full setup in
 [Install](#install-on-the-robotgpu-machine)):
 
 ```bash
@@ -676,14 +680,19 @@ line the real horizon automatically; the hint is only a fallback for direct
 The current factory value is available for inspection as
 `inspect_robots_yam.config.DEFAULT_REST_POSE`; this is an informational constant,
 not a stable import.
-`ActServerConfig`: `server_url`, `endpoint`, `num_steps` (the wire field: the
-server's flow-matching denoising steps, *not* the chunk length),
+`ActServerConfig`: `server_url`, `remedy` (optional connection-failure recovery
+instruction), `endpoint`, `num_steps` (the wire field: the server's
+flow-matching denoising steps, *not* the chunk length),
 `action_horizon` (the checkpoint's advertised chunk length, 30 for the bimanual
 YAM tag; metadata only), `timeout_s`, `camera_order`, `state_key`,
 `cam_height/width`, `name` (the policy label recorded in eval logs).
 
-Scalar knobs are settable from the CLI:
-`inspect-robots run -P server_url=http://gpu:8202 -E left_channel=can0 ...`.
+Scalar knobs, including the free-text remedy, are settable from the CLI:
+
+```bash
+inspect-robots run -P server_url=http://gpu:8202 \
+    -P remedy='run ~/robocurve/molmoact2/run_yam.sh' -E left_channel=can0 ...
+```
 
 ### Settling before observing
 

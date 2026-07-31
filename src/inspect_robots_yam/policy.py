@@ -79,6 +79,22 @@ class ActServerPolicy:
         )
         self.config = PolicyConfig(action_horizon=self._cfg.action_horizon)
 
+    @property
+    def server_url(self) -> str:
+        """Expose the configured address to core's duck-typed connection-failure hint.
+
+        Inspect Robots #219 / PR #221 reads this optional attribute with ``getattr``.
+        """
+        return self._cfg.server_url
+
+    @property
+    def remedy(self) -> str:
+        """Expose the recovery instruction to core's duck-typed connection-failure hint.
+
+        Inspect Robots #219 / PR #221 reads this optional attribute with ``getattr``.
+        """
+        return self._cfg.remedy
+
     def reset(self, scene: Scene) -> None:
         """Stash the scene's instruction (fed to the VLA verbatim)."""
         self._instruction = scene.instruction
