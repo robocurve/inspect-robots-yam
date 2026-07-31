@@ -513,6 +513,8 @@ class ActServerConfig(_FromKwargs):
     :class:`~inspect_robots.policy.PolicyConfig` metadata; the actual length is
     always taken from the server's response. Its 30-step default belongs to
     MolmoAct2's bimanual-YAM checkpoint. ``name`` labels the policy in eval logs.
+    ``remedy`` is a free-text recovery instruction that core shows as its own
+    ``hint:`` line after connection failures; the empty default omits that line.
     """
 
     server_url: str = "http://127.0.0.1:8202"
@@ -526,6 +528,9 @@ class ActServerConfig(_FromKwargs):
     cam_height: int = 224
     cam_width: int = 224
     name: str = "molmoact2"
+    # Last on purpose: appending keeps positional construction of the fields
+    # above meaning what it always has.
+    remedy: str = ""
 
     @property
     def url(self) -> str:

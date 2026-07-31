@@ -38,6 +38,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the wizard still writes an explicit true/false answer.
 
 ### Added
+- `ActServerPolicy.server_url` and `remedy` connection-failure hint attributes,
+  plus the CLI-settable `ActServerConfig.remedy` recovery instruction (#97,
+  robocurve/inspect-robots#219).
 - `YamConfig.gripper_stroke_s` and per-gripper `max_step` declarations for
   absolute joint and Cartesian action spaces, pacing a full normalized gripper
   stroke at approximately one second by default. Requires inspect-robots 0.30
