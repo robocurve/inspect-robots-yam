@@ -30,6 +30,9 @@ REALSENSE_CAPTURE_HEIGHT = 480
 MAX_FRAME_AGE_S = 0.5
 JOIN_TIMEOUT_S = 2.0
 OPEN_TIMEOUT_S = 45.0
+#: Back-to-back attempts run in microseconds while a write lasts ~1 ms, so
+#: these retries mostly fail together; real robustness comes from the caller's
+#: 10 x 50 ms staleness loop re-invoking the read.
 SEQLOCK_READ_RETRIES = 3
 
 _HEADER = struct.Struct("<QdQd")
@@ -166,8 +169,13 @@ class _CaptureProcess:
             _close_slots(slots)
             raise
 
-        stop_event = context.Event()
-        parent_conn, child_conn = context.Pipe()
+        try:
+            stop_event = context.Event()
+            parent_conn, child_conn = context.Pipe()
+        except BaseException:
+            _unlink_slots(slots)
+            _close_slots(slots)
+            raise
         spec = _CaptureSpec(
             serials=self._serials,
             depth_fps=self._depth_fps,
@@ -175,12 +183,19 @@ class _CaptureProcess:
             generation=generation,
             stop_event=stop_event,
         )
-        process = context.Process(
-            target=self._child_entry,
-            args=(child_conn, spec),
-            name="yam-realsense-capture",
-            daemon=True,
-        )
+        try:
+            process = context.Process(
+                target=self._child_entry,
+                args=(child_conn, spec),
+                name="yam-realsense-capture",
+                daemon=True,
+            )
+        except BaseException:
+            child_conn.close()
+            parent_conn.close()
+            _unlink_slots(slots)
+            _close_slots(slots)
+            raise
         try:
             process.start()
         except BaseException:

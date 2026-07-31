@@ -405,6 +405,81 @@ def test_capture_process_cleans_up_when_process_start_fails() -> None:
         shared_memory.SharedMemory(name=names[0])
 
 
+def test_capture_process_cleans_up_when_pipe_creation_fails() -> None:
+    class PipelessContext:
+        """Context whose Pipe construction fails before any child exists."""
+
+        def Event(self) -> threading.Event:
+            return threading.Event()
+
+        def Pipe(self) -> tuple[Any, Any]:
+            raise OSError("out of file descriptors")
+
+    names: list[str] = []
+    original_create = capture_proc._create_frame_slot
+
+    def recording_create() -> tuple[shared_memory.SharedMemory, _FrameSlotSpec]:
+        shm, spec = original_create()
+        names.append(spec.name)
+        return shm, spec
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(capture_proc, "_create_frame_slot", recording_create)
+        capture = _CaptureProcess({"top_cam": "S1"}, 30, context=PipelessContext())
+
+        with pytest.raises(OSError, match="out of file descriptors"):
+            capture.open(1)
+
+    with pytest.raises(FileNotFoundError):
+        shared_memory.SharedMemory(name=names[0])
+
+
+def test_capture_process_cleans_up_when_process_construction_fails() -> None:
+    class FakeConnection:
+        """Connection recording cleanup before re-raise."""
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    class ProcesslessContext:
+        """Context whose Process construction fails before spawn."""
+
+        def __init__(self) -> None:
+            self.connections = (FakeConnection(), FakeConnection())
+
+        def Event(self) -> threading.Event:
+            return threading.Event()
+
+        def Pipe(self) -> tuple[FakeConnection, FakeConnection]:
+            return self.connections
+
+        def Process(self, **_kwargs: Any) -> Any:
+            raise RuntimeError("process construction failed")
+
+    names: list[str] = []
+    original_create = capture_proc._create_frame_slot
+
+    def recording_create() -> tuple[shared_memory.SharedMemory, _FrameSlotSpec]:
+        shm, spec = original_create()
+        names.append(spec.name)
+        return shm, spec
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(capture_proc, "_create_frame_slot", recording_create)
+        context = ProcesslessContext()
+        capture = _CaptureProcess({"top_cam": "S1"}, 30, context=context)
+
+        with pytest.raises(RuntimeError, match="process construction failed"):
+            capture.open(1)
+
+    assert all(conn.closed for conn in context.connections)
+    with pytest.raises(FileNotFoundError):
+        shared_memory.SharedMemory(name=names[0])
+
+
 @pytest.mark.parametrize(
     ("mode", "message"),
     (

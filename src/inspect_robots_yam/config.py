@@ -228,7 +228,9 @@ class YamConfig(_FromKwargs):
     # debugging escape hatch.
     realsense_capture: str = "process"
     # Librealsense colour and depth stream rate. Both streams use the same rate;
-    # capture resolution remains fixed at 640x480. Valid range: 1 through 90.
+    # capture resolution remains fixed at 640x480. Valid range: 1 through 90,
+    # but devices only accept their discrete rates (D435/D405: 6/15/30/60/90);
+    # an unsupported rate fails at camera open with the librealsense error.
     depth_fps: int = 30
 
     @classmethod

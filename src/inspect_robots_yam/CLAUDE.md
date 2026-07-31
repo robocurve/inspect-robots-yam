@@ -50,7 +50,8 @@ The package is `mypy --strict` clean, ships `py.typed`, and is 100%-covered.
 - **Cameras must be released:** `_OpenCVCameraReader` runs a daemon drain thread
   per camera (#63), while the default RealSense reader owns a daemon capture
   child (#95). Both keep devices open until released. `YAMEmbodiment.close()`
-  calls `close()` on any reader that has one, ahead of the driver teardown and
-  guarded so a camera error cannot strand the arms.
+  calls `close()` on any reader that has one, after park + driver teardown
+  (deliberately — arms reach a safe state before any camera work) and guarded
+  so a camera error cannot strand the arms.
 - **Safety lives in `step()`**, not in an optional Approver — see the root
   `CLAUDE.md`.
