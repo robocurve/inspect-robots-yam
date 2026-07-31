@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -62,6 +64,20 @@ def test_remedy_property_defaults_and_follows_construction_paths() -> None:
     assert MolmoAct2Policy(remedy="run server.sh").remedy == "run server.sh"
     # Explicit empty string opts out of the hint line (falsy for core).
     assert MolmoAct2Policy(remedy="").remedy == ""
+
+
+def test_remedy_docs_anchors_resolve_to_readme_headings() -> None:
+    # The remedy renders inside an error message; a README heading rename must
+    # not silently 404 its deep link. Mirrors GitHub's heading slugger.
+    readme = (Path(__file__).parent.parent / "README.md").read_text()
+    slugs = {
+        re.sub(r"[^a-z0-9 -]", "", line.lstrip("#").strip().lower()).replace(" ", "-")
+        for line in readme.splitlines()
+        if line.startswith("#")
+    }
+    for remedy in (MolmoAct2Policy().remedy, gr00t_policy().remedy):
+        fragment = remedy.rsplit("#", 1)[1].rstrip(")")
+        assert fragment in slugs
 
 
 def test_gr00t_remedy_default_names_the_gr00t_server() -> None:
