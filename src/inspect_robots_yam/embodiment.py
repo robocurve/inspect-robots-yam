@@ -69,6 +69,9 @@ from inspect_robots_yam.operator import (
 ImageMap = Mapping[str, npt.NDArray[np.uint8]]
 Vec = npt.NDArray[np.float64]
 
+REALSENSE_CAPTURE_WIDTH = 640
+REALSENSE_CAPTURE_HEIGHT = 480
+
 _DOCS_JOINTS = """Two identical 6-DoF arms, prefixed left_ and right_, each with a parallel-jaw
 gripper. Each arm has its own base frame: +x points forward out of the base
 (the direction the folded gripper points at all-zero joints), +y left, +z up;
@@ -581,12 +584,14 @@ class _RealsenseCameraReader:
     def __init__(
         self,
         serials: Mapping[str, str],
+        depth_fps: int = 30,
         rs_module: Any | None = None,
         cv2_module: Any | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._serials = dict(serials)
+        self._depth_fps = depth_fps
         self._rs = rs_module
         self._cv2 = cv2_module
         self._sleep = sleep_fn
@@ -618,10 +623,18 @@ class _RealsenseCameraReader:
         for name in self._serials:
             pair, generation = self._latest(name)
             intrinsics = pair.intrinsics.copy()
-            intrinsics[0, 0] = float(pair.intrinsics[0, 0]) * cfg.cam_width / 640
-            intrinsics[0, 2] = float(pair.intrinsics[0, 2]) * cfg.cam_width / 640
-            intrinsics[1, 1] = float(pair.intrinsics[1, 1]) * cfg.cam_height / 480
-            intrinsics[1, 2] = float(pair.intrinsics[1, 2]) * cfg.cam_height / 480
+            intrinsics[0, 0] = (
+                float(pair.intrinsics[0, 0]) * cfg.cam_width / REALSENSE_CAPTURE_WIDTH
+            )
+            intrinsics[0, 2] = (
+                float(pair.intrinsics[0, 2]) * cfg.cam_width / REALSENSE_CAPTURE_WIDTH
+            )
+            intrinsics[1, 1] = (
+                float(pair.intrinsics[1, 1]) * cfg.cam_height / REALSENSE_CAPTURE_HEIGHT
+            )
+            intrinsics[1, 2] = (
+                float(pair.intrinsics[1, 2]) * cfg.cam_height / REALSENSE_CAPTURE_HEIGHT
+            )
             extra[f"{name}_intrinsics"] = intrinsics
             extra[f"{name}_depth"] = self._depth_thunk(
                 name, cfg.cam_width, cfg.cam_height, generation
@@ -754,8 +767,20 @@ class _RealsenseCameraReader:
         """
         rs_cfg = rs.config()
         rs_cfg.enable_device(serial)
-        rs_cfg.enable_stream(rs.stream.color, 640, 480, rs.format.rgb8, 30)
-        rs_cfg.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+        rs_cfg.enable_stream(
+            rs.stream.color,
+            REALSENSE_CAPTURE_WIDTH,
+            REALSENSE_CAPTURE_HEIGHT,
+            rs.format.rgb8,
+            self._depth_fps,
+        )
+        rs_cfg.enable_stream(
+            rs.stream.depth,
+            REALSENSE_CAPTURE_WIDTH,
+            REALSENSE_CAPTURE_HEIGHT,
+            rs.format.z16,
+            self._depth_fps,
+        )
         pipeline = rs.pipeline()
         profile = pipeline.start(rs_cfg)
         try:
@@ -979,7 +1004,9 @@ class YAMEmbodiment:
             ):
                 builtin_readers.append(_opencv_camera_reader(self._cfg))
             if depth_serials:
-                self._builtin_realsense_reader = _RealsenseCameraReader(depth_serials)
+                self._builtin_realsense_reader = _RealsenseCameraReader(
+                    depth_serials, self._cfg.depth_fps
+                )
                 builtin_readers.append(self._builtin_realsense_reader)
             if len(builtin_readers) == 1:
                 camera_reader = builtin_readers[0]

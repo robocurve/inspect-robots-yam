@@ -371,6 +371,7 @@ def build(
     cv2: FakeCv2 | None = None,
     clock: Clock | None = None,
     sleeps: list[float] | None = None,
+    depth_fps: int = 30,
 ) -> tuple[_RealsenseCameraReader, FakeRs, FakeCv2, Clock, list[float]]:
     """Build a reader and all of its injected recording fakes."""
     rs = rs if rs is not None else FakeRs(pipelines, devices)
@@ -379,6 +380,7 @@ def build(
     sleeps = sleeps if sleeps is not None else []
     reader = _RealsenseCameraReader(
         serials or SERIALS,
+        depth_fps,
         rs_module=rs,
         cv2_module=cv2,
         sleep_fn=sleeps.append,
@@ -441,6 +443,17 @@ def test_images_depth_thunks_and_intrinsics_are_returned_for_every_camera() -> N
         for pipeline in pipelines
     )
     assert all(timeout == 1000 for pipeline in pipelines for timeout in pipeline.timeouts)
+
+
+def test_inline_reader_threads_configured_depth_fps_to_both_streams() -> None:
+    reader, rs, _, _, _ = build(serials={"top_cam": "S1"}, depth_fps=15)
+
+    reader(cfg())
+
+    assert rs.configs[0].streams == [
+        ("colour", 640, 480, "rgb8", 15),
+        ("depth", 640, 480, "z16", 15),
+    ]
 
 
 def test_rgb8_channel_order_is_not_swapped() -> None:
@@ -859,7 +872,34 @@ def test_yamconfig_empty_camera_source_is_rejected(field: str, value: str) -> No
 
 
 def test_yamconfig_none_ok() -> None:
-    assert YamConfig().top_depth_serial is None
+    cfg_value = YamConfig()
+    assert cfg_value.top_depth_serial is None
+    assert cfg_value.realsense_capture == "process"
+    assert cfg_value.depth_fps == 30
+
+
+@pytest.mark.parametrize("value", ("thread", "", None))
+def test_yamconfig_realsense_capture_mode_is_validated(value: Any) -> None:
+    with pytest.raises(ValueError, match=r"realsense_capture must be one of.*inline.*process"):
+        YamConfig(realsense_capture=value)
+
+
+@pytest.mark.parametrize("value", (0, 91, 15.0, True))
+def test_yamconfig_depth_fps_is_validated(value: Any) -> None:
+    with pytest.raises(ValueError, match="depth_fps must be an integer from 1 to 90"):
+        YamConfig(depth_fps=value)
+
+
+@pytest.mark.parametrize("field", ("top_depth_serial", "left_depth_serial", "right_depth_serial"))
+def test_from_kwargs_guides_int_depth_serials(field: str) -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            rf"{field} must be a string; quote the serial in config.ini — "
+            "numeric values are int-coerced and lose leading zeros"
+        ),
+    ):
+        YamConfig.from_kwargs(**{field: 38212071234})
 
 
 def cameras(_config: YamConfig) -> dict[str, Any]:
