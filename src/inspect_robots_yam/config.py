@@ -514,7 +514,10 @@ class ActServerConfig(_FromKwargs):
     always taken from the server's response. Its 30-step default belongs to
     MolmoAct2's bimanual-YAM checkpoint. ``name`` labels the policy in eval logs.
     ``remedy`` is a free-text recovery instruction that core shows as its own
-    ``hint:`` line after connection failures; the empty default omits that line.
+    ``hint:`` line after connection failures. The default carries the canonical
+    MolmoAct2 launch command; override it with the rig's own recipe
+    (``-P remedy='run ~/my/launch.sh'``) or pass an empty string to omit the
+    line.
     """
 
     server_url: str = "http://127.0.0.1:8202"
@@ -529,8 +532,13 @@ class ActServerConfig(_FromKwargs):
     cam_width: int = 224
     name: str = "molmoact2"
     # Last on purpose: appending keeps positional construction of the fields
-    # above meaning what it always has.
-    remedy: str = ""
+    # above meaning what it always has. No port in the text: the hint's
+    # previous line already names the configured server_url.
+    remedy: str = (
+        "start the MolmoAct2 /act server from its checkout: "
+        "python examples/yam/host_server_yam.py (docs: "
+        "https://github.com/robocurve/inspect-robots-yam#install-on-the-robotgpu-machine)"
+    )
 
     @property
     def url(self) -> str:

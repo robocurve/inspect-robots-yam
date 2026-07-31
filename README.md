@@ -111,8 +111,9 @@ The client defaults to `http://127.0.0.1:8203`. Override a remote or alternate
 server with `-P server_url=http://gpu:8203`. The config key is `server_url`;
 `url` is a read-only property, and `ActServerConfig.from_kwargs` rejects it.
 The policy's `server_url` and `remedy` attributes feed core's
-connection-failure hint with the configured address and an optional recovery
-instruction.
+connection-failure hint with the configured address and a recovery
+instruction; each policy entry defaults `remedy` to its own canonical server
+launch command, and `-P remedy=...` replaces it (empty string omits the line).
 For another GR00T fine-tune, pass `-P action_horizon=<its chunk length>` so the
 recorded policy metadata matches that checkpoint.
 
@@ -680,8 +681,9 @@ line the real horizon automatically; the hint is only a fallback for direct
 The current factory value is available for inspection as
 `inspect_robots_yam.config.DEFAULT_REST_POSE`; this is an informational constant,
 not a stable import.
-`ActServerConfig`: `server_url`, `remedy` (optional connection-failure recovery
-instruction), `endpoint`, `num_steps` (the wire field: the server's
+`ActServerConfig`: `server_url`, `remedy` (connection-failure recovery
+instruction; defaults to the policy entry's canonical server launch command
+plus a docs link), `endpoint`, `num_steps` (the wire field: the server's
 flow-matching denoising steps, *not* the chunk length),
 `action_horizon` (the checkpoint's advertised chunk length, 30 for the bimanual
 YAM tag; metadata only), `timeout_s`, `camera_order`, `state_key`,

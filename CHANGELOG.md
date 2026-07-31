@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The connection-failure `remedy` now defaults to the policy entry's canonical
+  server launch command plus a docs link — `host_server_yam.py` for
+  `molmoact2`, `serve_gr00t_act.py` for `gr00t` — instead of an empty string,
+  so the hint tells a new user exactly how to start the server. `-P
+  remedy=...` still replaces it; an empty string omits the line (#99).
 - RealSense RGB-D capture now runs all configured pipelines in one lazy spawn
   child by default, isolating librealsense and frame-copy work from the
   motor-control interpreter (#95). Shared-memory seqlock slots preserve the
