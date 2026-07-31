@@ -115,7 +115,12 @@ as: header (`seq: uint64`, `published_s: float64`, `generation: uint64`,
 ### 3. Parent-side `_ProcessRealsenseCameraReader`
 
 Drop-in replacement constructed where `_RealsenseCameraReader` is built
-today (`YAMEmbodiment.__init__`), same public surface:
+today (`YAMEmbodiment.__init__`), same public surface. **Spawn is lazy**
+(first read/`_ensure_open`, exactly like the inline reader): construction
+must not start a child, `close()` before first use is a no-op —
+construction-only tests and `reset()`'s fail-fast ordering depend on this.
+On handshake **error or timeout**, the parent unlinks its blocks before
+raising (the after-ready unlink covers only the success path).
 
 - `__call__(cfg)` → colour from shm, `cv2.resize` to `cam_{width,height}`
   (cv2 stays a lazy parent-side import).
@@ -191,7 +196,10 @@ today (`YAMEmbodiment.__init__`), same public surface:
 ## Tests
 
 All hardware-free, preserving the 100% branch gate. The only pragma in new
-code is the child's real `import pyrealsense2` line.
+code is the child's real rs import — implemented as a pragma'd module-level
+`_import_rs`-style helper with a monkeypatch test covering the
+`rs_module is None` else-arm, matching the existing lazy-import test
+pattern, so the branch gate holds without extra pragmas.
 
 1. **Seqlock + layout**: writer/reader round-trip over a real
    `SharedMemory` block; torn-read retry (odd seq); bounded-retry
