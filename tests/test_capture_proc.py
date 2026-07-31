@@ -1003,6 +1003,32 @@ def test_child_exits_on_control_message_and_on_drain_failure(
             shm.unlink()
 
 
+def test_child_drain_exits_at_the_outer_check_when_parent_is_already_gone() -> None:
+    """Pin the top-of-loop EOF return; which check catches EOF is otherwise a
+    platform-dependent race between the outer and per-camera sites."""
+    parent_conn, child_conn = multiprocessing.Pipe()
+    parent_conn.close()
+    pipeline = FakePipeline()
+    spec = _CaptureSpec(
+        serials=(),
+        depth_fps=30,
+        slots=(),
+        generation=1,
+        stop_event=threading.Event(),
+    )
+    try:
+        capture_proc._drain_child(
+            child_conn,
+            spec,
+            {"top_cam": capture_proc._ChildPipeline(pipeline, object(), 0.001)},
+            {},
+        )
+
+        assert pipeline.calls == 0
+    finally:
+        child_conn.close()
+
+
 def test_child_drain_observes_stop_between_pipe_poll_and_camera_read() -> None:
     class StopOnSecondCheck:
         """Become set at the per-camera stop check."""
