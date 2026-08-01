@@ -1779,8 +1779,8 @@ class YAMEmbodiment:
             if base is not None
             else self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
         )
-        clamped = np.clip(cmd, current + self._cfg.delta_low, current + self._cfg.delta_high)
-        clamped = np.clip(clamped, self._cfg.low, self._cfg.high)
+        clamped = np.clip(cmd, self._cfg.low, self._cfg.high)
+        clamped = np.clip(clamped, current + self._cfg.delta_low, current + self._cfg.delta_high)
         physical = self._denorm_grippers(clamped)
         driver.command_joint_pos(physical)
         return clamped

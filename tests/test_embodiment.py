@@ -127,7 +127,8 @@ def test_reset_without_home_pose_ramps_to_current_pose() -> None:
     cfg = YamConfig(rest_secs=0.1, gripper_open=10.0, gripper_closed=20.0)
     emb, drv, _ = _build(cfg, driver=FakeDriver(state=state))
     emb.reset(Scene(id="s", instruction="x"))
-    # When home_pose is None, reset ramps to DEFAULT_JOINT_HOME_POSE (0.0 for joints, open for grippers)
+    # When home_pose is None, reset ramps to DEFAULT_JOINT_HOME_POSE
+    # (0.0 for joints, open for grippers).
     # At rest_secs=0.1 (1 waypoint at step limit 0.2), joint 0 moves from 0.5 -> 0.3
     expected = np.zeros(14)
     expected[0] = 0.3
@@ -150,7 +151,7 @@ def test_step_clamps_to_limits() -> None:
 def test_step_clamps_to_absolute_joint_limits() -> None:
     emb, drv, _ = _build()
     emb.reset(Scene(id="s", instruction="x"))
-    # Out of absolute bounds (10.0 > pi); first clamped to pi by low/high, then clipped by delta window
+    # Out of absolute bounds (10.0 > pi); first clamped to pi, then clipped by delta window.
     emb.step(Action(data=np.full(14, 10.0)))
     cmd = drv.commands[-1]
     assert cmd[0] == pytest.approx(0.2)  # step limit from 0
@@ -165,10 +166,10 @@ def test_step_measured_pose_out_of_bounds_walks_back_gently() -> None:
     drv.state[[6, 13]] = 1.0
     drv.commands.clear()
 
-    # Target is in-range (0.0). Absolute clip first clips 0.0 to low/high (0.0), delta clip bounds step from 3.4 -> 3.14159 (clamped to pi).
+    # Target is 0.0. Absolute clip target to 0.0, delta clip bounds step from 3.4 to 3.2.
     emb.step(Action(data=np.zeros(14)))
     cmd = drv.commands[-1]
-    assert cmd[0] == pytest.approx(np.pi)
+    assert cmd[0] == pytest.approx(3.2)
 
 
 def test_step_gripper_denormalization() -> None:
