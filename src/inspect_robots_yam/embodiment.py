@@ -369,6 +369,10 @@ class _PublishedPair:
     published_s: float
 
 
+_CAMERA_OPEN_ATTEMPTS: int = 5
+_CAMERA_OPEN_RETRY_S: float = 1.0
+
+
 class _OpenCVCameraReader:
     """Builtin V4L2 reader for rigs configured via ``*_cam_device`` (YamConfig).
 
@@ -436,8 +440,8 @@ class _OpenCVCameraReader:
         Joins before releasing, and skips the release of any capture whose thread
         is still running: a ``release()`` underneath an in-flight ``read()``
         crashes the process, and this process is holding torque-enabled arms. A
-        leaked device is the better failure. Idempotent, and a no-op before the
-        first read since devices open lazily.
+        leaked device is the better failure. Idempotent, and a no-op before
+        the first read since devices open lazily.
         """
         self._stop.set()
         for thread in self._threads.values():
@@ -497,6 +501,12 @@ class _OpenCVCameraReader:
     def _open_one(self, cv2: Any, name: str, device: str, generation: int) -> Any:
         """Open and configure one camera, seeding its slot from the warm-up read.
 
+        Retries up to ``_CAMERA_OPEN_ATTEMPTS`` times with ``_CAMERA_OPEN_RETRY_S``
+        delays between attempts to handle V4L2 device lock release latency between
+        rapid back-to-back CLI invocations. Tradeoff: a genuinely missing device
+        now takes ``(_CAMERA_OPEN_ATTEMPTS - 1) * _CAMERA_OPEN_RETRY_S`` seconds
+        (about 4 s) to fault, including on reader reopens (relevant for watch loops).
+
         ``BUFFERSIZE`` is set first: OpenCV's V4L2 backend refuses it once
         streaming has begun, and it bounds the queue if a drain thread is ever
         descheduled. Seeding the slot matters because ``reset()`` observes
@@ -506,9 +516,18 @@ class _OpenCVCameraReader:
         A warm-up that never yields a frame is not fatal here, as before #63:
         the drain thread gets its own chance and ``_latest`` waits for it.
         """
-        cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
-        if not cap.isOpened():
-            raise RuntimeError(f"cannot open {name} at {device}")
+        cap = None
+        for attempt in range(_CAMERA_OPEN_ATTEMPTS):
+            cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+            if cap.isOpened():
+                break
+            cap.release()
+            if attempt < _CAMERA_OPEN_ATTEMPTS - 1:
+                self._sleep(_CAMERA_OPEN_RETRY_S)
+        if cap is None or not cap.isOpened():
+            raise RuntimeError(
+                f"cannot open {name} at {device} after {_CAMERA_OPEN_ATTEMPTS} attempts"
+            )
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"YUYV"))
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)

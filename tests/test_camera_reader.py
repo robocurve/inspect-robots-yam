@@ -119,17 +119,47 @@ def test_partial_open_failure_releases_what_opened_and_retries_everything() -> N
         "/dev/cam1": FakeCapture(opened=False),
         "/dev/cam2": FakeCapture(),
     }
-    reader, cv2, _, _ = build(caps)
+    reader, cv2, sleeps, _ = build(caps)
 
-    with pytest.raises(RuntimeError, match=r"cannot open left_cam at /dev/cam1"):
+    with pytest.raises(RuntimeError, match=r"cannot open left_cam at /dev/cam1 after 5 attempts"):
         reader(YamConfig())
 
     assert caps["/dev/cam0"].released
     assert not caps["/dev/cam2"].released  # never opened, so nothing to release
 
+    # Retries /dev/cam1 5 times before giving up on the first call, sleeping 4 times for 1.0 s
+    expected_first_run = ["/dev/cam0"] + ["/dev/cam1"] * 5
+    assert cv2.opened == expected_first_run
+    assert sleeps == [1.0, 1.0, 1.0, 1.0]
+
     caps["/dev/cam1"] = FakeCapture()
     reader(YamConfig())
-    assert cv2.opened == ["/dev/cam0", "/dev/cam1", "/dev/cam0", "/dev/cam1", "/dev/cam2"]
+    assert cv2.opened == [*expected_first_run, "/dev/cam0", "/dev/cam1", "/dev/cam2"]
+
+
+def test_camera_open_retries_and_succeeds_after_latency() -> None:
+    class LatencyCapture(FakeCapture):
+        def __init__(self, fail_attempts: int = 2) -> None:
+            super().__init__()
+            self.fail_attempts = fail_attempts
+            self.attempts = 0
+
+        def isOpened(self) -> bool:
+            self.attempts += 1
+            return self.attempts > self.fail_attempts
+
+    retry_cap = LatencyCapture(fail_attempts=2)
+    caps = {
+        "/dev/cam0": FakeCapture(),
+        "/dev/cam1": retry_cap,
+        "/dev/cam2": FakeCapture(),
+    }
+    reader, cv2, sleeps, _ = build(caps)
+    reader(YamConfig())
+
+    assert retry_cap.attempts == 4
+    assert cv2.opened == ["/dev/cam0", "/dev/cam1", "/dev/cam1", "/dev/cam1", "/dev/cam2"]
+    assert sleeps == [1.0, 1.0]
 
 
 def test_reader_returns_the_newest_drained_frame() -> None:
