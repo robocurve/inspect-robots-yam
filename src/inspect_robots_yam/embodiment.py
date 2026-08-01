@@ -2,7 +2,7 @@
 
 Wraps the i2rt joint-position driver. Designed for real-robot reality:
 
-* **Safety backstop** — every command is clamped to the configured joint and step limits
+* **Safety backstop** — every command is clamped to the configured joint limits
   inside :meth:`step`, *independently* of any Inspect Robots ``Approver`` (so unclamped
   model outputs can never reach the motors).
 * **Operator-in-the-loop success** — there is no privileged success oracle; the
@@ -1461,13 +1461,14 @@ class YAMEmbodiment:
             target = self._step_eef(cmd, driver)
         else:
             cmd = packing.validate_dim(action.data)
-            base = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
             if self._cfg.joints_are_delta:
-                # Normalize the gripper slots of the current position first, so the
-                # delta is applied in policy units (a fraction of the gripper stroke)
-                # and the sum re-enters _send() in the same units as absolute mode.
+                # Normalize the gripper slots of the current position first, so
+                # the delta is applied in policy units (a fraction of the
+                # gripper stroke) and the sum re-enters _send() in the same
+                # units as absolute mode.
+                base = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
                 cmd = base + cmd
-            target = self._send(cmd, base=base)
+            target = self._send(cmd)
         # Before _pace(), so a settle that finishes inside the control period
         # costs nothing: the pace simply sleeps out whatever is left.
         settle_info = self._settle_info(self._settle(target))
@@ -1579,9 +1580,6 @@ class YAMEmbodiment:
         a distant pose is violent on real arms. Each waypoint goes through
         :meth:`_send`, so the joint-limit clamp and gripper de-normalization
         apply to these motions exactly as they do to policy actions.
-
-        The step count ``n`` guarantees the target is fully reached even if the
-        distance exceeds ``rest_secs * hz * step_limit``.
         """
         driver = self._require_driver()
         start = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
@@ -1590,7 +1588,7 @@ class YAMEmbodiment:
         sent = start
         for i in range(1, n + 1):
             alpha = i / n
-            sent = self._send((1.0 - alpha) * start + alpha * target)
+            sent = self._send((1.0 - alpha) * start + alpha * target, base=sent)
             self._sleep(1.0 / hz)
         return sent
 
@@ -1717,7 +1715,7 @@ class YAMEmbodiment:
             np.concatenate((left_command, action[4:5])),
             np.concatenate((right_command, action[9:10])),
         )
-        sent = self._send(command, base=state)
+        sent = self._send(command)
         left_kinematics.update_sent(sent[: packing.ARM_DOF])
         right_kinematics.update_sent(sent[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF])
         return sent
@@ -1764,15 +1762,7 @@ class YAMEmbodiment:
         return self._driver
 
     def _send(self, cmd: Vec, base: Vec | None = None) -> Vec:
-        """Clamp to absolute joint limits first, then step-limit delta window (safety backstop).
-
-        The absolute low/high limits clip the target into the configured bounding box.
-        Then, the per-step delta window ([current + delta_low, current + delta_high])
-        is applied second so that no individual command tick can exceed the velocity
-        limit (step_limits), even if the arm is currently resting outside the configured box.
-        If out-of-bounds, the arm will gently walk back toward the valid region at most
-        one step_limit per tick instead of snapping violently.
-        """
+        """Clamp to joint and step limits (safety backstop) and de-normalize grippers."""
         driver = self._require_driver()
         current = (
             base

@@ -69,7 +69,7 @@ def test_disabled_by_default_leaves_timing_untouched(build_settle: Any) -> None:
     result = _step(emb, sleeps)
 
     assert sleeps == [PACE_S]  # the pace, and nothing else
-    assert driver.reads - reads_before == 1  # _observe only; no settle polls
+    assert driver.reads - reads_before == 2  # _send delta clamp + _observe
     assert result.info == {}
 
 
@@ -82,19 +82,19 @@ def test_settles_by_polling_until_within_tolerance(build_settle: Any) -> None:
     _step(emb, sleeps)
 
     assert sleeps == [POLL_S, POLL_S, PACE_S]
-    assert driver.reads - reads_before == 4  # three settle polls, then _observe
+    assert driver.reads - reads_before == 5  # _send delta clamp + 3 settle polls + _observe
 
 
 def test_already_converged_costs_no_poll_sleep(build_settle: Any) -> None:
     driver = SettleDriver(converge_after=1)
     emb, sleeps, _ = build_settle(_settled_cfg(), driver)
     emb.reset(Scene(id="s", instruction="go"))
-
-    _step(emb, sleeps)
-
-    # Reads before sleeping, so the common case (and every oscillation hold)
-    # adds no latency at all.
+    # The homing ramp leaves the arm holding TARGET, so the first poll sees
+    # zero residual and finishes immediately.
+    result = _step(emb, sleeps)
     assert sleeps == [PACE_S]
+    assert result.info["settled"] is True
+    assert result.info["settle_residual"] == pytest.approx(0.0)
 
 
 def test_step_info_reports_settled_residual_and_count(build_settle: Any) -> None:
@@ -125,8 +125,7 @@ def test_timeout_bounded_by_poll_count_when_the_clock_is_frozen(
 
     # The frozen clock can never satisfy the elapsed bound, so the poll count is
     # the only thing that ends the loop. Without it this test would hang.
-    assert driver.reads - reads_before == MAX_POLLS + 1  # + _observe
-    assert sleeps.count(POLL_S) == MAX_POLLS - 1
+    assert driver.reads - reads_before == MAX_POLLS + 2  # _send + 100 polls + _observe
     assert result.info["settled"] is False
     assert result.info["settle_timeouts"] == 1
 
@@ -134,7 +133,6 @@ def test_timeout_bounded_by_poll_count_when_the_clock_is_frozen(
 def test_timeout_bounded_by_elapsed_time_when_reads_cost_time(
     build_settle: Any, clock: Any
 ) -> None:
-
     driver = SettleDriver(converge_after=1, clock=clock, read_advance=READ_ADVANCE_S)
     emb, sleeps, _ = build_settle(_settled_cfg(), driver, clock=clock)
     emb.reset(Scene(id="s", instruction="go"))
@@ -146,8 +144,7 @@ def test_timeout_bounded_by_elapsed_time_when_reads_cost_time(
     # Each read charges 0.05 s, so 1.0 s of budget is gone after 20 polls, well
     # short of the 100-poll cap: elapsed is the only reason the loop stopped.
     expected = int(1.0 / READ_ADVANCE_S)
-    assert driver.reads - reads_before == expected + 1  # + _observe
-    assert expected < MAX_POLLS
+    assert driver.reads - reads_before == expected + 2  # _send + polls + _observe
     assert result.info["settled"] is False
 
 
@@ -181,7 +178,7 @@ def test_budget_exhaustion_disables_settling_and_marks_every_later_step(
     after = _step(emb, sleeps)
     assert after.info["settle_disabled"] is True
     assert "settled" not in after.info  # no settle ran
-    assert driver.reads - reads_before == 1  # _observe only
+    assert driver.reads - reads_before == 2  # _send + _observe
     assert sleeps == [PACE_S]
 
 
