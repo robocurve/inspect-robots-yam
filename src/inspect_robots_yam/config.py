@@ -10,9 +10,12 @@ forwards scalar ``key=value`` pairs.
 
 from __future__ import annotations
 
+import configparser
 import dataclasses
+import os
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, TypeVar
 
 import numpy as np
@@ -78,6 +81,32 @@ DEFAULT_EEF_HIGH: tuple[float, ...] = _EEF_ARM_HIGH * 2
 # jaw axis pitched 30 degrees from vertical toward the arm base, and open grippers.
 _EEF_HOME_ARM = (-0.024, 0.794, 0.645, -0.375, -0.021, -0.012, 1.0)
 DEFAULT_EEF_HOME_POSE: tuple[float, ...] = _EEF_HOME_ARM * 2
+
+
+def get_framework_config_path() -> Path:
+    """Return the location of the framework's ``config.ini`` file."""
+    config_dir = os.environ.get("XDG_CONFIG_HOME")
+    if config_dir:
+        return Path(config_dir) / "inspect-robots" / "config.ini"
+    return Path.home() / ".config" / "inspect-robots" / "config.ini"
+
+
+def load_framework_embodiment_args(path: Path | None = None) -> dict[str, str]:
+    """Load key-value pairs from ``[embodiment.args]`` in the framework's ``config.ini``.
+
+    Returns an empty dict if the file does not exist or has no ``[embodiment.args]`` section.
+    """
+    config_path = path if path is not None else get_framework_config_path()
+    if not config_path.is_file():
+        return {}
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(config_path, encoding="utf-8")
+    except configparser.Error:
+        return {}
+    if not parser.has_section("embodiment.args"):
+        return {}
+    return dict(parser.items("embodiment.args"))
 
 
 class _FromKwargs:
