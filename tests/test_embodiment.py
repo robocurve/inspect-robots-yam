@@ -13,6 +13,7 @@ from inspect_robots.errors import ConfigError, EmbodimentFault
 from inspect_robots.scene import Scene
 from inspect_robots.types import Action
 
+import inspect_robots_yam.embodiment as embodiment_module
 from inspect_robots_yam.config import (
     DEFAULT_REST_POSE,
     YamConfig,
@@ -50,15 +51,11 @@ def _cameras(_cfg):
     return {"top_cam": img, "left_cam": img, "right_cam": img}
 
 
-def _operator(answers: list[str] | None = None, *, prompts: list[str] | None = None) -> OperatorIO:
-    seq = list(answers or [])
-
+def _operator(*, prompts: list[str] | None = None) -> OperatorIO:
     def _input(prompt: str) -> str:
         if prompts is not None:
             prompts.append(prompt)
-        if "succeed" not in prompt:
-            return ""
-        return seq.pop(0)
+        return ""
 
     return OperatorIO(input_fn=_input, output_fn=lambda _m: None)
 
@@ -130,9 +127,13 @@ def test_reset_without_home_pose_ramps_to_current_pose() -> None:
     cfg = YamConfig(rest_secs=0.1, gripper_open=10.0, gripper_closed=20.0)
     emb, drv, _ = _build(cfg, driver=FakeDriver(state=state))
     emb.reset(Scene(id="s", instruction="x"))
-    expected = state.copy()
-    expected[[6, 13]] = cfg.gripper_open
-    assert drv.commands[-1] == pytest.approx(expected)
+    # When home_pose is None, reset ramps to DEFAULT_JOINT_HOME_POSE (0.0 for joints, open for grippers)
+    # At rest_secs=0.1 (1 waypoint at step limit 0.2), joint 0 moves from 0.5 -> 0.3
+    expected = np.zeros(14)
+    expected[0] = 0.3
+    expected[[6, 13]] = 1.0  # normalized open gripper
+    expected_physical = emb._denorm_grippers(expected)
+    assert drv.commands[-1] == pytest.approx(expected_physical)
 
 
 def test_step_clamps_to_limits() -> None:
@@ -144,6 +145,30 @@ def test_step_clamps_to_limits() -> None:
     assert cmd[0] == pytest.approx(0.2)  # joint clamped to step limit
     # gripper slot clamped to 1.0 then de-normalized with default identity (0..1) -> 1.0
     assert cmd[6] == pytest.approx(1.0)
+
+
+def test_step_clamps_to_absolute_joint_limits() -> None:
+    emb, drv, _ = _build()
+    emb.reset(Scene(id="s", instruction="x"))
+    # Out of absolute bounds (10.0 > pi); first clamped to pi by low/high, then clipped by delta window
+    emb.step(Action(data=np.full(14, 10.0)))
+    cmd = drv.commands[-1]
+    assert cmd[0] == pytest.approx(0.2)  # step limit from 0
+
+
+def test_step_measured_pose_out_of_bounds_walks_back_gently() -> None:
+    # Arm resting outside configured joint limits at 3.4 (high limit is pi ≈ 3.14159)
+    drv = EchoDriver()
+    emb, _, _ = _build(driver=drv)
+    emb.reset(Scene(id="s", instruction="x"))
+    drv.state = np.full(14, 3.4)
+    drv.state[[6, 13]] = 1.0
+    drv.commands.clear()
+
+    # Target is in-range (0.0). Absolute clip first clips 0.0 to low/high (0.0), delta clip bounds step from 3.4 -> 3.14159 (clamped to pi).
+    emb.step(Action(data=np.zeros(14)))
+    cmd = drv.commands[-1]
+    assert cmd[0] == pytest.approx(np.pi)
 
 
 def test_step_gripper_denormalization() -> None:
@@ -294,24 +319,16 @@ def test_reset_twice_reuses_driver() -> None:
     assert calls["n"] == 1  # driver built once, reused on the second reset
 
 
-def test_step_terminates_success_on_operator_yes() -> None:
-    emb, _, _ = _build(poll_end_seq=[True], operator=_operator(["y"]))
-    emb.reset(Scene(id="s", instruction="x"))
-    result = emb.step(Action(data=np.zeros(14)))
-    assert result.terminated is True
-    assert result.termination_reason == "success"
-    assert result.info["operator_confirmed"] is True
-
-
-def test_step_terminates_failure_on_operator_no() -> None:
+def test_step_terminates_operator_end_without_prompting() -> None:
     prompts: list[str] = []
-    emb, _, _ = _build(poll_end_seq=[True], operator=_operator(["n"], prompts=prompts))
+    emb, _, _ = _build(poll_end_seq=[True], operator=_operator(prompts=prompts))
     emb.reset(Scene(id="s", instruction="x"))
     result = emb.step(Action(data=np.zeros(14)))
     assert result.terminated is True
-    assert result.termination_reason == "failure"
-    assert result.info["operator_confirmed"] is False
-    assert sum("succeed" in prompt for prompt in prompts) == 1
+    assert result.termination_reason == "operator_end"
+    assert "operator_confirmed" not in result.info
+    # Grading is the framework prompt's job; the embodiment asks nothing.
+    assert all("succeed" not in prompt for prompt in prompts)
 
 
 def test_step_continues_when_no_end_signal() -> None:
@@ -385,7 +402,10 @@ def test_reset_non_callable_camera_reader_fails_fast() -> None:
         sleep_fn=lambda _d: None,
         clock=lambda: 0.0,
     )
-    with pytest.raises(ConfigError, match="cam_device"):
+    with pytest.raises(
+        ConfigError,
+        match=r"\*_cam_device.*\*_depth_serial.*camera_reader",
+    ):
         emb.reset(Scene(id="s", instruction="x"))
 
 
@@ -400,8 +420,95 @@ def test_unattended_skips_operator_prompts() -> None:
     emb, _, _ = _build(YamConfig(unattended=True), poll_end_seq=[True], operator=op)
     emb.reset(Scene(id="s", instruction="x"))
     result = emb.step(Action(data=np.zeros(14)))
-    assert prompts == []  # neither wait_ready nor confirm_success ran
+    assert prompts == []  # neither wait_ready nor the end poll ran
     assert result.terminated is False  # the end poll is skipped entirely
+
+
+def test_auto_start_skips_gates_but_keeps_attended_flow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: True)
+    prompts: list[str] = []
+    lines: list[str] = []
+
+    def _input(prompt: str) -> str:
+        prompts.append(prompt)
+        return ""
+
+    op = OperatorIO(input_fn=_input, output_fn=lines.append)
+    emb, _, _ = _build(YamConfig(auto_start=True), poll_end_seq=[True], operator=op)
+    emb.reset(Scene(id="s", instruction="x"))
+    result = emb.step(Action(data=np.zeros(14)))
+    assert prompts == []  # neither Enter gate ran
+    assert any("stand clear" in line for line in lines)  # notice replaces the home gate
+    assert result.terminated is True  # end-episode keypress still active
+    assert result.termination_reason == "operator_end"
+
+
+def test_auto_start_keeps_running_status_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: True)
+    emb, status = _build_with_status(YamConfig(auto_start=True))
+    emb.reset(Scene(id="s", instruction="x"))
+    assert any(line is not None and line.startswith("Running:") for line in status)
+
+
+def test_auto_start_notice_prints_once_per_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: True)
+    lines: list[str] = []
+    op = OperatorIO(input_fn=lambda _p: "", output_fn=lines.append)
+    emb, _, _ = _build(YamConfig(auto_start=True), operator=op)
+    emb.reset(Scene(id="s1", instruction="x"))
+    emb.reset(Scene(id="s2", instruction="x"))
+    assert sum("stand clear" in line for line in lines) == 1
+    emb.close()
+    emb.reset(Scene(id="s3", instruction="x"))  # new connection: notice again
+    assert sum("stand clear" in line for line in lines) == 2
+
+
+def test_auto_start_drains_stdin_before_episode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: True)
+    drains: list[bool] = []
+    monkeypatch.setattr(embodiment_module, "_drain_stdin", lambda: drains.append(True))
+    prompts: list[str] = []
+
+    def _input(prompt: str) -> str:
+        prompts.append(prompt)
+        return ""
+
+    op = OperatorIO(input_fn=_input, output_fn=lambda _m: None)
+    emb, _, _ = _build(YamConfig(auto_start=True), operator=op)
+    emb.reset(Scene(id="s", instruction="x"))
+    assert drains == [True]  # wait_ready's drain is replaced, not dropped
+    assert prompts == []
+
+
+def test_auto_start_requires_interactive_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: False)
+    emb, drv, _ = _build(YamConfig(auto_start=True))
+    with pytest.raises(EmbodimentFault, match="auto_start"):
+        emb.reset(Scene(id="s", instruction="x"))
+    assert drv.commands == []  # faulted before any motion
+
+
+def test_unattended_precedes_auto_start() -> None:
+    prompts: list[str] = []
+    lines: list[str] = []
+
+    def _input(prompt: str) -> str:
+        prompts.append(prompt)
+        return ""
+
+    op = OperatorIO(input_fn=_input, output_fn=lines.append)
+    emb, _, _ = _build(
+        YamConfig(unattended=True, auto_start=True), poll_end_seq=[True], operator=op
+    )
+    emb.reset(Scene(id="s", instruction="x"))
+    result = emb.step(Action(data=np.zeros(14)))
+    assert prompts == []
+    assert lines == []  # no stand-clear notice, no TTY fault: unattended wins outright
+    assert result.terminated is False  # unattended still disables the end poll
 
 
 def test_first_attended_reset_gates_home_motion_once_per_connection() -> None:
@@ -766,7 +873,7 @@ def _build_with_status(cfg: YamConfig | None = None, poll_end_seq: list[bool] | 
         cfg,
         driver_factory=lambda _c: drv,
         camera_reader=_cameras,
-        operator=_operator(["y"]),
+        operator=_operator(),
         poll_end=lambda: polls.pop(0) if polls else False,
         sleep_fn=lambda _s: None,
         clock=lambda: 0.0,
@@ -784,7 +891,7 @@ def test_reset_announces_run_instructions() -> None:
     assert status[:2] == ["homing: ramping arms to start pose", None]
     msg = status[-1]
     assert msg is not None
-    assert "any key" in msg and "y/N" in msg  # how to end + how scoring works
+    assert "any key" in msg and "grade" in msg  # how to end + how scoring works
     assert "120s" in msg  # horizon from max_steps_hint / control_hz
 
 
@@ -818,7 +925,7 @@ def test_status_finishes_with_none_when_operator_ends_episode() -> None:
     emb.reset(Scene(id="s", instruction="x"))
     result = emb.step(Action(data=np.zeros(14)))
     assert result.terminated is True
-    assert status[-1] is None  # line closed before the y/N prompt
+    assert status[-1] is None  # line closed before control returns for grading
 
 
 def test_unattended_runs_emit_no_status() -> None:
@@ -909,12 +1016,29 @@ def test_camera_devices_select_the_builtin_opencv_reader() -> None:
     assert emb._camera_reader is not _default_camera_reader
 
 
+def test_injected_camera_reader_suppresses_configured_opencv_builtin() -> None:
+    emb = YAMEmbodiment(
+        YamConfig(
+            top_cam_device="/dev/video0",
+            left_cam_device="/dev/video2",
+            right_cam_device="/dev/video4",
+        ),
+        camera_reader=_cameras,
+    )
+
+    assert emb._camera_reader is _cameras
+    assert emb._builtin_realsense_reader is None
+
+
 def test_no_cameras_configured_keeps_fail_fast_reader_with_device_hint() -> None:
     emb, drv, _ = _build()
     emb._camera_reader = __import__(
         "inspect_robots_yam.embodiment", fromlist=["_default_camera_reader"]
     )._default_camera_reader
-    with pytest.raises(ConfigError, match="cam_device"):
+    with pytest.raises(
+        ConfigError,
+        match=r"\*_cam_device.*\*_depth_serial.*camera_reader",
+    ):
         emb.reset(Scene(id="s", instruction="x"))
     assert drv.commands == []  # fail-fast happened before any driver connect
 
@@ -960,18 +1084,31 @@ def test_step_tracks_far_target_at_step_limits() -> None:
     assert cmd2[0] == pytest.approx(0.4)
 
 
-def test_reset_zero_g_first_command_equals_current_pose() -> None:
-    # If the arm is sitting at 0.7 in zero-g, reset should send 0.7 as the first command.
-    drv = FakeDriver(state=np.full(14, 0.7))
-    emb, _, _ = _build(YamConfig(home_pose=None), driver=drv)
-    emb.reset(Scene(id="s", instruction="x"))
-    assert len(drv.commands) > 0
-    # The homing ramp should have sent 0.7 across the board (clamped properly)
-    assert drv.commands[0][0] == pytest.approx(0.7)
-    assert drv.commands[-1][0] == pytest.approx(0.7)
-    # Grippers should be set to 1.0 (fully open)
-    assert drv.commands[-1][6] == pytest.approx(1.0)
-    assert drv.commands[-1][13] == pytest.approx(1.0)
+@pytest.mark.parametrize(
+    ("cfg", "gripper_indices"),
+    [
+        (YamConfig(), (6, 13)),
+        (YamConfig(control_interface="eef_pos"), (4, 9)),
+    ],
+    ids=["joint-pos", "eef-abs-pose"],
+)
+def test_absolute_action_spaces_wire_derived_gripper_max_step(
+    cfg: YamConfig, gripper_indices: tuple[int, int]
+) -> None:
+    emb, _, _ = _build(cfg)
+    sem = emb.info.action_space.semantics
+    assert sem is not None and sem.max_step is not None
+    assert len(sem.max_step) == emb.info.action_space.dim
+    assert all(
+        step == pytest.approx(0.1) if index in gripper_indices else step is None
+        for index, step in enumerate(sem.max_step)
+    )
+
+
+def test_delta_action_space_ignores_derived_gripper_max_step() -> None:
+    emb, _, _ = _build(YamConfig(joints_are_delta=True))
+    sem = emb.info.action_space.semantics
+    assert sem is not None and sem.max_step is None
 
 
 def test_observe_validates_camera_shape() -> None:

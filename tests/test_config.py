@@ -75,6 +75,38 @@ def test_yam_from_kwargs() -> None:
     assert cfg.control_hz == 25.0
 
 
+def test_gripper_stroke_defaults_to_one_second_and_point_one_step() -> None:
+    cfg = YamConfig()
+    assert cfg.gripper_stroke_s == 1.0
+    assert cfg.gripper_max_step == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("gripper_stroke_s", [0.0, -1.0, np.nan, np.inf, -np.inf])
+def test_gripper_stroke_validation(gripper_stroke_s: float) -> None:
+    with pytest.raises(ValueError, match="gripper_stroke_s must be finite and > 0"):
+        YamConfig(gripper_stroke_s=gripper_stroke_s)
+
+
+def test_gripper_max_step_caps_at_one_step() -> None:
+    assert YamConfig(gripper_stroke_s=0.01).gripper_max_step == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("control_hz", [0.0, -5.0])
+def test_gripper_max_step_nonpositive_hz_falls_back(control_hz: float) -> None:
+    assert YamConfig(control_hz=control_hz).gripper_max_step == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("control_hz", [np.nan, np.inf, -np.inf])
+def test_gripper_max_step_nonfinite_hz_declines_to_declare(control_hz: float) -> None:
+    assert YamConfig(control_hz=control_hz).gripper_max_step is None
+
+
+def test_gripper_max_step_nonfinite_product_or_result_declines_to_declare() -> None:
+    assert YamConfig(gripper_stroke_s=1e308, control_hz=1e308).gripper_max_step is None
+    smallest_positive = float.fromhex("0x0.0000000000001p-1022")
+    assert YamConfig(gripper_stroke_s=smallest_positive, control_hz=1.0).gripper_max_step is None
+
+
 def test_from_kwargs_rejects_unknown() -> None:
     with pytest.raises(TypeError, match="unexpected config keys"):
         MolmoActConfig.from_kwargs(nope=1)
@@ -137,6 +169,34 @@ def test_eef_config_knob_validation(kwargs: dict[str, object], message: str) -> 
         YamConfig(control_interface="eef_pos", **kwargs)
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"settle_tolerance": 0.0}, "settle_tolerance must be finite and > 0"),
+        ({"settle_tolerance": -0.01}, "settle_tolerance must be finite and > 0"),
+        ({"settle_tolerance": np.inf}, "settle_tolerance must be finite and > 0"),
+        ({"settle_timeout_s": 0.0}, "settle_timeout_s must be finite and > 0"),
+        ({"settle_timeout_s": np.nan}, "settle_timeout_s must be finite and > 0"),
+        ({"settle_timeout_budget": 0}, "settle_timeout_budget must be a positive integer"),
+        ({"settle_timeout_budget": 1.5}, "settle_timeout_budget must be a positive integer"),
+        ({"settle_timeout_budget": True}, "settle_timeout_budget must be a positive integer"),
+    ],
+)
+def test_settle_config_validation(kwargs: dict[str, object], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        YamConfig(**kwargs)
+
+
+def test_settle_defaults_are_off() -> None:
+    cfg = YamConfig()
+    assert cfg.settle_tolerance is None  # opt-in, so VLA cadence is untouched
+    assert cfg.settle_timeout_s == pytest.approx(1.0)
+    assert cfg.settle_timeout_budget == 20
+    # Scalars arrive already typed (the CLI parses them); from_kwargs only
+    # coerces the comma-separated tuple fields.
+    assert YamConfig.from_kwargs(settle_tolerance=0.05).settle_tolerance == pytest.approx(0.05)
+
+
 def test_eef_config_defaults_and_cli_tuple_overrides() -> None:
     cfg = YamConfig.from_kwargs(
         control_interface="eef_pos",
@@ -185,6 +245,47 @@ def test_eef_action_space_shape_labels_bounds_and_semantics() -> None:
     assert space.semantics.gripper == "continuous"
     assert space.semantics.frame == "base"
     assert space.semantics.dim_labels == EEF_DIM_LABELS
+
+
+def test_absolute_action_spaces_declare_gripper_max_step_only_at_grippers() -> None:
+    joint_space = action_box(gripper_max_step=0.25)
+    assert joint_space.semantics is not None
+    assert joint_space.semantics.max_step == tuple(
+        0.25 if index in (6, 13) else None for index in range(14)
+    )
+
+    eef_space = action_box(control_interface="eef_pos", gripper_max_step=0.25)
+    assert eef_space.semantics is not None
+    assert eef_space.semantics.max_step == tuple(
+        0.25 if index in (4, 9) else None for index in range(len(EEF_DIM_LABELS))
+    )
+
+
+def test_pinned_gripper_bounds_decline_the_declaration_per_dim() -> None:
+    # A gripper pinned via custom bounds (low == high) constructs today; the
+    # declaration must decline on exactly that dim instead of tripping core's
+    # pinned-dim rejection at Box construction.
+    low = np.array(YamConfig().low)
+    high = np.array(YamConfig().high)
+    high[6] = low[6]  # pin the left gripper only
+    space = action_box(low, high, gripper_max_step=0.25)
+    assert space.semantics is not None
+    assert space.semantics.max_step == tuple(0.25 if index == 13 else None for index in range(14))
+
+    high[13] = low[13]  # pin both grippers: nothing left to declare
+    space = action_box(low, high, gripper_max_step=0.25)
+    assert space.semantics is not None
+    assert space.semantics.max_step is None
+
+
+def test_delta_and_unspecified_action_spaces_declare_no_max_step() -> None:
+    delta_space = action_box(joints_are_delta=True, gripper_max_step=0.25)
+    assert delta_space.semantics is not None
+    assert delta_space.semantics.max_step is None
+
+    unspecified_space = action_box()
+    assert unspecified_space.semantics is not None
+    assert unspecified_space.semantics.max_step is None
 
 
 def test_eef_observation_space_declares_joint_and_eef_state_once() -> None:
@@ -279,8 +380,8 @@ def test_yam_camera_devices_default_none() -> None:
     assert cfg.right_cam_device is None
 
 
-def test_yam_camera_devices_all_or_none() -> None:
-    with pytest.raises(ValueError, match="all three or none"):
+def test_yam_camera_sources_all_slots_or_none() -> None:
+    with pytest.raises(ValueError, match="unsourced slots: left, right"):
         YamConfig(top_cam_device="/dev/video0")
     cfg = YamConfig(
         top_cam_device="/dev/video0",
@@ -288,6 +389,36 @@ def test_yam_camera_devices_all_or_none() -> None:
         right_cam_device="/dev/video4",
     )
     assert cfg.left_cam_device == "/dev/video2"
+
+
+def test_yam_duplicate_camera_devices_are_rejected() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "top_cam_device and left_cam_device must be different; "
+            "duplicate camera device '/dev/video0'"
+        ),
+    ):
+        YamConfig(
+            top_cam_device="/dev/video0",
+            left_cam_device="/dev/video0",
+            right_cam_device="/dev/video4",
+        )
+
+
+def test_yam_duplicate_depth_serials_are_rejected() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            "top_depth_serial and left_depth_serial must be different; "
+            "duplicate depth serial 'SAME'"
+        ),
+    ):
+        YamConfig(
+            top_depth_serial="SAME",
+            left_depth_serial="SAME",
+            right_depth_serial="S3",
+        )
 
 
 def test_action_semantics_is_config_dependent_with_labels() -> None:
@@ -361,3 +492,63 @@ def test_pose_string_parse_errors_are_guided() -> None:
 def test_pose_fields_still_accept_real_tuples() -> None:
     cfg = YamConfig.from_kwargs(rest_pose=(0.0,) * 14)
     assert cfg.rest_pose == (0.0,) * 14
+
+
+def test_auto_start_defaults_off_and_binds_via_kwargs() -> None:
+    assert YamConfig().auto_start is False
+    assert YamConfig.from_kwargs(auto_start=True).auto_start is True
+
+
+def test_collision_guardrail_defaults_on_and_binds_via_kwargs() -> None:
+    assert YamConfig().collision_guardrail is True
+    assert YamConfig.from_kwargs(collision_guardrail=False).collision_guardrail is False
+    assert YamConfig.from_kwargs(collision_table=False).collision_table is False
+
+
+def test_collision_geometry_parses_comma_strings_and_scalars() -> None:
+    cfg = YamConfig.from_kwargs(
+        collision_left_base_pos="0.1, 0.2, 0.3",
+        collision_right_base_pos="-0.1,-0.2,-0.3",
+        collision_left_base_yaw=0.25,
+        collision_right_base_yaw=-0.25,
+        collision_table_height=0.02,
+        collision_penetration_threshold=0.004,
+    )
+
+    assert cfg.collision_left_base_pos == pytest.approx((0.1, 0.2, 0.3))
+    assert cfg.collision_right_base_pos == pytest.approx((-0.1, -0.2, -0.3))
+    assert cfg.collision_left_base_yaw == pytest.approx(0.25)
+    assert cfg.collision_right_base_yaw == pytest.approx(-0.25)
+    assert cfg.collision_table is True
+    assert cfg.collision_table_height == pytest.approx(0.02)
+    assert cfg.collision_penetration_threshold == pytest.approx(0.004)
+
+
+def test_collision_geometry_string_parse_errors_are_guided() -> None:
+    with pytest.raises(ValueError, match="collision_left_base_pos"):
+        YamConfig.from_kwargs(collision_left_base_pos="0.1,sideways,0.3")
+
+
+def test_collision_table_height_none_names_explicit_table_switch() -> None:
+    with pytest.raises(ValueError, match="collision_table=false"):
+        YamConfig.from_kwargs(collision_table_height=None)
+
+
+def test_collision_table_height_rejects_disabled_table_contradiction() -> None:
+    with pytest.raises(ValueError, match="contradicts collision_table=false"):
+        YamConfig.from_kwargs(collision_table=False, collision_table_height=0.1)
+
+
+@pytest.mark.parametrize("flag", ["collision_guardrail", "collision_table"])
+@pytest.mark.parametrize("value", [None, "yes", 1])
+def test_collision_bool_flags_reject_non_bool_values(flag: str, value: object) -> None:
+    # The CLI parses the literal `none` to Python None; unvalidated it would
+    # falsy-disable a safety gate (or drop the table plane) instead of meaning
+    # "library default" as it does for every other collision_* field.
+    with pytest.raises(ValueError, match=f"{flag} must be true or false"):
+        YamConfig.from_kwargs(**{flag: value})
+
+
+def test_default_collision_flag_does_not_reject_unsupported_contribution_modes() -> None:
+    assert YamConfig(control_interface="eef_pos").collision_guardrail is True
+    assert YamConfig(joints_are_delta=True).collision_guardrail is True

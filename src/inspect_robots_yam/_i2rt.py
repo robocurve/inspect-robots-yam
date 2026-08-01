@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any
 
 # The build constraint is required while every published ruckig (i2rt's pinned
@@ -76,6 +78,79 @@ def close_robot_safely(robot: Any) -> None:
 
     chain.motor_interface.close = close_motor_interface_safely
     robot.close()
+
+
+def start_arms_concurrently(
+    left_factory: Callable[[], Any],
+    right_factory: Callable[[], Any],
+) -> tuple[Any, Any]:
+    """Bring up both arms concurrently, tearing down survivors on failure.
+
+    Each arm's driver init includes a mandatory gripper hard-stop calibration
+    (multiple seconds), and the arms are fully independent hardware (own CAN
+    channel, own control thread), so running the two factories on worker
+    threads cuts bring-up wall-clock to max(left, right). If either factory
+    raises, every arm that did come up is closed via ``close_robot_safely`` —
+    the sequential code leaked it (robocurve/inspect-robots-yam#83) — and the
+    init error is re-raised (left's first when both fail).
+
+    Ctrl-C during bring-up takes effect only once both workers finish: the
+    interrupt waits out the in-flight factories, closes every arm they built,
+    and re-raises. A factory wedged on unresponsive hardware therefore makes
+    Ctrl-C ineffective (the sequential code aborted immediately); a second
+    interrupt abandons the cleanup wait.
+    """
+    sides = ("left", "right")
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix="yam-arm-init") as pool:
+        futures = [
+            pool.submit(_bring_up_one_arm, side, factory)
+            for side, factory in zip(sides, (left_factory, right_factory), strict=True)
+        ]
+        robots: dict[str, Any] = {}
+        errors: list[tuple[str, Exception]] = []
+        try:
+            for side, future in zip(sides, futures, strict=True):
+                try:
+                    robots[side] = future.result()
+                except Exception as exc:
+                    errors.append((side, exc))
+        except BaseException:
+            # Main-thread Ctrl-C (or a worker-raised BaseException): wait out
+            # both workers so nothing is mid-construction, close whatever was
+            # built, and let the interrupt propagate. An init failure already
+            # collected would otherwise vanish with the interrupt — log it.
+            for side, error in errors:
+                logger.error(
+                    "%s arm bring-up failed before the interrupt: %s", side, error, exc_info=error
+                )
+            wait(futures)
+            for side, future in zip(sides, futures, strict=True):
+                if future.exception() is None:
+                    _close_after_failed_bring_up(side, future.result())
+            raise
+
+    if not errors:
+        return robots["left"], robots["right"]
+
+    for side, robot in robots.items():
+        _close_after_failed_bring_up(side, robot)
+    for side, error in errors[1:]:
+        logger.error("%s arm bring-up also failed: %s", side, error, exc_info=error)
+    raise errors[0][1]
+
+
+def _bring_up_one_arm(side: str, factory: Callable[[], Any]) -> Any:
+    logger.info("%s arm bring-up starting", side)
+    robot = factory()
+    logger.info("%s arm bring-up complete", side)
+    return robot
+
+
+def _close_after_failed_bring_up(side: str, robot: Any) -> None:
+    try:
+        close_robot_safely(robot)
+    except Exception:
+        logger.warning("closing the %s arm after a failed bring-up failed", side, exc_info=True)
 
 
 def _load_i2rt() -> tuple[Any, Any]:

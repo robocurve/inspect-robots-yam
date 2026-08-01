@@ -26,8 +26,9 @@ without hardware; the real i2rt connection is a pragma'd default.
 from __future__ import annotations
 
 import argparse
+import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -35,6 +36,7 @@ import numpy as np
 import numpy.typing as npt
 
 from inspect_robots_yam._i2rt import _load_i2rt
+from inspect_robots_yam._user_config import load_yam_defaults
 
 DEFAULT_SETTLE_RAD = 0.05
 DEFAULT_TREND_RAD = 0.01
@@ -158,6 +160,7 @@ def _parse_bool(text: str) -> bool:
 def main(
     argv: list[str] | None = None,
     *,
+    env: Mapping[str, str] | None = None,
     robot_factory: RobotFactory | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
     emit: EmitFn = _print_flushed,
@@ -167,7 +170,13 @@ def main(
         prog="inspect-robots-yam-holdcheck",
         description="Verify the arm holds position between action chunks (item 6.4).",
     )
-    parser.add_argument("channel", help="CAN channel of the arm to test (can0 / can1)")
+    parser.add_argument(
+        "channel",
+        help=(
+            "CAN channel or wizard side (left/right); an interface literally named "
+            "left or right must be renamed because those literals are claimed"
+        ),
+    )
     parser.add_argument(
         "--zero-gravity",
         type=_parse_bool,
@@ -189,11 +198,35 @@ def main(
         default=DEFAULT_TREND_RAD,
         help="max acceptable drift GROWTH after the first sample (sag/walk-off)",
     )
+    parser.add_argument(
+        "--no-config",
+        action="store_true",
+        help="ignore wizard-configured channels (left/right will be unavailable)",
+    )
     args = parser.parse_args(argv)
 
+    requested_channel = args.channel
+    channel = requested_channel
+    if requested_channel in {"left", "right"}:
+        config_args = (
+            {} if args.no_config else load_yam_defaults(os.environ if env is None else env).args
+        )
+        key = f"{requested_channel}_channel"
+        resolved = config_args.get(key)
+        if resolved is None:
+            parser.error(
+                f"{requested_channel} requires {key} in the wizard config; "
+                "run inspect-robots setup, or pass the CAN channel name directly"
+            )
+        channel = str(resolved)
+
     factory = robot_factory if robot_factory is not None else _default_robot_factory
-    emit(f"{args.channel} zero_gravity={args.zero_gravity}: watching for {args.duration_s:.0f}s")
-    robot = factory(args.channel, args.zero_gravity)
+    channel_label = (
+        f"{channel} ({requested_channel})" if requested_channel in {"left", "right"} else channel
+    )
+    mode = str(args.zero_gravity).lower()
+    emit(f"{channel_label} zero_gravity={mode}: watching for {args.duration_s:.0f}s")
+    robot = factory(channel, args.zero_gravity)
     try:
         result = run_hold_check(
             robot,

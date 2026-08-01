@@ -1,10 +1,12 @@
-"""Operator-in-the-loop confirmation for real hardware runs.
+"""Operator-in-the-loop I/O for real hardware runs.
 
-A real kitchen has no privileged success oracle, so the human operator decides.
-All stdin/stdout goes through injectable ``input_fn`` / ``output_fn`` so tests
-drive these paths without a real terminal. The one genuinely TTY-bound piece —
-the non-blocking "operator pressed end" poll — is isolated in
-:func:`default_poll_end`, which is excluded from coverage.
+The operator readies scenes and signals end-of-episode; the success verdict
+itself (with optional grader notes) is collected afterwards by the framework's
+operator prompt, so this module owns no grading UI. All stdin/stdout goes
+through injectable ``input_fn`` / ``output_fn`` so tests drive these paths
+without a real terminal. The one genuinely TTY-bound piece — the non-blocking
+"operator pressed end" poll — is isolated in :func:`default_poll_end`, which is
+excluded from coverage.
 """
 
 from __future__ import annotations
@@ -13,9 +15,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from inspect_robots.errors import EmbodimentFault
-
-# Affirmative answers (case-insensitive) for the end-of-episode success prompt.
-_AFFIRMATIVE = frozenset({"y", "yes", "1", "true", "success", "pass"})
 
 
 @dataclass
@@ -46,11 +45,6 @@ class OperatorIO:
         # "end episode" keypress on the first step and terminates immediately.
         _drain_stdin()
 
-    def confirm_success(self, prompt: str = "Did the robot succeed? [y/N]: ") -> bool:
-        """Return the operator's success verdict (affirmative answers → True)."""
-        answer = self.input_fn(prompt)
-        return answer.strip().lower() in _AFFIRMATIVE
-
 
 def _drain_stdin() -> None:
     """Discard buffered stdin so a stale newline (e.g. from the start prompt)
@@ -63,6 +57,13 @@ def _drain_stdin() -> None:
 
     while select.select([sys.stdin], [], [], 0)[0]:  # pragma: no cover - TTY-bound
         sys.stdin.readline()  # pragma: no cover - TTY-bound
+
+
+def stdin_interactive() -> bool:
+    """True when stdin is a real TTY that can deliver operator keypresses."""
+    import sys
+
+    return sys.stdin.isatty()
 
 
 def default_poll_end() -> bool:  # pragma: no cover - requires a real TTY

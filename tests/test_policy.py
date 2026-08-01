@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -44,6 +46,68 @@ def test_info_and_config_zero_arg() -> None:
     assert pol.info.control_hz is None  # load-bearing: keeps compat warning-free
     assert pol.info.observation_space.state_keys == frozenset({"joint_pos"})
     assert pol.config.action_horizon == 30
+
+
+def test_server_url_property_follows_config_default_and_flat_kwargs() -> None:
+    assert MolmoAct2Policy().server_url == ActServerConfig().server_url
+    assert MolmoAct2Policy(server_url="http://gpu:9000").server_url == "http://gpu:9000"
+
+
+def test_remedy_property_defaults_and_follows_construction_paths() -> None:
+    # The default must be actionable on its own: a runnable command plus a
+    # docs URL, since it renders in an error message with no other guidance.
+    default = MolmoAct2Policy().remedy
+    assert "host_server_yam.py" in default
+    assert "https://github.com/robocurve/inspect-robots-yam#" in default
+    configured = MolmoAct2Policy(ActServerConfig(remedy="start the configured server"))
+    assert configured.remedy == "start the configured server"
+    assert MolmoAct2Policy(remedy="run server.sh").remedy == "run server.sh"
+    # Explicit empty string opts out of the hint line (falsy for core).
+    assert MolmoAct2Policy(remedy="").remedy == ""
+
+
+def test_remedy_docs_anchors_resolve_to_readme_headings() -> None:
+    # The remedy renders inside an error message; a README heading rename must
+    # not silently 404 its deep link. Mirrors GitHub's heading slugger.
+    readme = (Path(__file__).parent.parent / "README.md").read_text()
+    slugs = {
+        re.sub(r"[^a-z0-9 -]", "", line.lstrip("#").strip().lower()).replace(" ", "-")
+        for line in readme.splitlines()
+        if line.startswith("#")
+    }
+    for remedy in (MolmoAct2Policy().remedy, gr00t_policy().remedy):
+        fragment = remedy.rsplit("#", 1)[1].rstrip(")")
+        assert fragment in slugs
+
+
+def test_gr00t_remedy_default_names_the_gr00t_server() -> None:
+    default = gr00t_policy().remedy
+    assert "serve_gr00t_act.py" in default
+    assert "host_server_yam.py" not in default
+    assert "https://github.com/robocurve/inspect-robots-yam#" in default
+    assert gr00t_policy(remedy="run gr00t.sh").remedy == "run gr00t.sh"
+
+
+def test_connection_failure_hint_getattr_contract() -> None:
+    pol = MolmoAct2Policy(
+        server_url="http://robot-gpu:8202",
+        remedy="run ~/robocurve/molmoact2/run_yam.sh",
+    )
+    assert getattr(pol, "server_url", None) == "http://robot-gpu:8202"
+    assert getattr(pol, "remedy", None) == "run ~/robocurve/molmoact2/run_yam.sh"
+
+
+def test_connection_failure_hint_properties_are_read_only() -> None:
+    pol = MolmoAct2Policy()
+    with pytest.raises(AttributeError):
+        pol.server_url = "http://other:8202"
+    with pytest.raises(AttributeError):
+        pol.remedy = "restart it"
+
+
+def test_policy_action_space_declares_no_gripper_max_step() -> None:
+    sem = MolmoAct2Policy().info.action_space.semantics
+    assert sem is not None and sem.max_step is None
 
 
 def test_gr00t_info_and_config_zero_arg() -> None:

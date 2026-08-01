@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from inspect_robots_yam.hold_check import HoldResult, main, run_hold_check
+
+
+def _write_config(tmp_path: Path, values: dict[str, str]) -> dict[str, str]:
+    path = tmp_path / "inspect-robots" / "config.ini"
+    path.parent.mkdir()
+    args = "\n".join(f"{key} = {value}" for key, value in values.items())
+    path.write_text(
+        f"[defaults]\nembodiment = yam_arms\n[embodiment.args]\n{args}\n",
+        encoding="utf-8",
+    )
+    return {"XDG_CONFIG_HOME": str(tmp_path)}
 
 
 class _FakeArm:
@@ -107,6 +120,101 @@ def test_main_wires_argv_and_exit_codes() -> None:
     )
     assert rc == 1
     assert any("FAIL" in line for line in lines)
+
+
+@pytest.mark.parametrize(
+    ("side", "key", "resolved"),
+    [
+        ("left", "left_channel", "can_left"),
+        ("right", "right_channel", "can_right"),
+    ],
+)
+def test_main_resolves_wizard_side_and_prints_resolved_channel(
+    side: str,
+    key: str,
+    resolved: str,
+    tmp_path: Path,
+) -> None:
+    env = _write_config(tmp_path, {key: resolved})
+    lines: list[str] = []
+    calls: list[tuple[str, bool]] = []
+
+    def factory(channel: str, zero_gravity: bool) -> _FakeArm:
+        calls.append((channel, zero_gravity))
+        return _FakeArm()
+
+    assert (
+        main(
+            [side, "--zero-gravity", "false", "--duration-s", "0"],
+            env=env,
+            robot_factory=factory,
+            sleep_fn=lambda _seconds: None,
+            emit=lines.append,
+        )
+        == 0
+    )
+    assert calls == [(resolved, False)]
+    assert lines[0] == f"{resolved} ({side}) zero_gravity=false: watching for 0s"
+
+
+def test_raw_channel_never_loads_a_malformed_config(tmp_path: Path) -> None:
+    path = tmp_path / "inspect-robots" / "config.ini"
+    path.parent.mkdir()
+    path.write_text("[defaults\n", encoding="utf-8")
+    channels: list[str] = []
+
+    assert (
+        main(
+            ["can0", "--zero-gravity", "true", "--duration-s", "0"],
+            env={"XDG_CONFIG_HOME": str(tmp_path)},
+            robot_factory=lambda channel, _mode: channels.append(channel) or _FakeArm(),
+            sleep_fn=lambda _seconds: None,
+            emit=lambda _line: None,
+        )
+        == 0
+    )
+    assert channels == ["can0"]
+
+
+def test_side_without_config_has_guided_parser_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            ["left", "--zero-gravity", "true"],
+            env={"XDG_CONFIG_HOME": str(tmp_path)},
+        )
+
+    assert exc_info.value.code == 2
+    assert (
+        "left requires left_channel in the wizard config; run inspect-robots setup, "
+        "or pass the CAN channel name directly"
+    ) in capsys.readouterr().err
+
+
+def test_no_config_forces_side_resolution_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env = _write_config(tmp_path, {"right_channel": "can_right"})
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["right", "--zero-gravity", "true", "--no-config"], env=env)
+
+    assert exc_info.value.code == 2
+    assert "right requires right_channel in the wizard config" in capsys.readouterr().err
+
+
+def test_channel_help_explains_claimed_side_literals(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--help"])
+
+    assert exc_info.value.code == 0
+    output = " ".join(capsys.readouterr().out.split())
+    assert "interface literally named left or right must be renamed" in output
 
 
 def test_main_rejects_bad_zero_gravity_value() -> None:

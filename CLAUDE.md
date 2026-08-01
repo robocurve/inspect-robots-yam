@@ -57,12 +57,22 @@ gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
 
 - `YAMEmbodiment.step()` **always clamps** to `YamConfig.joint_low/high` before
   commanding, independent of any `Approver`. This is the last line of defense.
-- The declared `control_mode` is `joint_pos` (absolute). Delta checkpoints are
-  converted to absolute *inside* `step()` (`joints_are_delta=True`) so the
-  declared semantics stay honest. There is no `joint_delta` control mode in
-  Inspect Robots, so compat cannot verify abs-vs-delta — that's a hardware check.
-- Success reaches the scorer **only** via `StepResult.termination_reason="success"`
-  (stock `rollout` never sets `operator_judgement`).
+- The declared `control_mode` is `joint_pos` for absolute joint mode,
+  `joint_delta` when `joints_are_delta=True`, and `eef_abs_pose` in EEF mode.
+  Delta joint commands are converted to absolute *inside* `step()` before the
+  hardware clamp, and compatibility checking verifies the declared mode pairing.
+- The end-episode keypress terminates with `termination_reason="operator_end"`;
+  the framework prompt then records `operator_judgement`, which is what
+  judgement-reading scorers (`operator`, KitchenBench `task_success`) score.
+  `success_at_end` counts only embodiment-detected `"success"` terminations,
+  which stock yam never emits.
+- `control_hz` is the step rate only while `settle_tolerance` is `None`, which
+  is the default. Setting it makes `step()` and `reset()` wait for the arm to
+  reach the commanded pose, so `control_hz` becomes a floor on step duration and
+  the step-count-derived operator displays understate real time (#64). Keep the
+  default off: enabling it by default would change timing for every VLA, which
+  are trained on a fixed cadence. See `plans/0009-settle-before-observe.md`, and
+  #63 for why settling alone does not make the camera image postdate the motion.
 
 ## Out of scope
 
