@@ -1588,7 +1588,7 @@ class YAMEmbodiment:
         sent = start
         for i in range(1, n + 1):
             alpha = i / n
-            sent = self._send((1.0 - alpha) * start + alpha * target)
+            sent = self._send((1.0 - alpha) * start + alpha * target, base=sent)
             self._sleep(1.0 / hz)
         return sent
 
@@ -1761,11 +1761,18 @@ class YAMEmbodiment:
             raise RuntimeError("step() called before reset() (or after close())")
         return self._driver
 
-    def _send(self, cmd: Vec) -> Vec:
-        """Clamp to joint limits (safety backstop) and de-normalize grippers."""
+    def _send(self, cmd: Vec, base: Vec | None = None) -> Vec:
+        """Clamp to joint and step limits (safety backstop) and de-normalize grippers."""
+        driver = self._require_driver()
+        current = (
+            base
+            if base is not None
+            else self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+        )
         clamped = np.clip(cmd, self._cfg.low, self._cfg.high)
+        clamped = np.clip(clamped, current + self._cfg.delta_low, current + self._cfg.delta_high)
         physical = self._denorm_grippers(clamped)
-        self._require_driver().command_joint_pos(physical)
+        driver.command_joint_pos(physical)
         return clamped
 
     def _denorm_grippers(self, cmd: Vec) -> Vec:
