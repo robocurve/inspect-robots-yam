@@ -84,13 +84,13 @@ hermeticity gap Task 0 closes).
 
 ## Task 0: dependency floor and test hermeticity
 
-- [ ] **Step 1: bump the core floor.** `pyproject.toml`: `inspect-robots>=
+- [x] **Step 1: bump the core floor.** `pyproject.toml`: `inspect-robots>=
   0.38`; run `uv lock` and `uv sync --extra dev` (dev tooling is a project
   extra, not a group — bare `uv sync` strips pytest/mypy/ruff; CI uses
   `--extra dev` too). Confirm
   `uv run python -c "from inspect_robots.defaults import _ENV_CONFIG"`
   succeeds.
-- [ ] **Step 2: harden the autouse fixture.** Extend `isolate_user_config`
+- [x] **Step 2: harden the autouse fixture.** Extend `isolate_user_config`
   (`tests/conftest.py:47-50`) with `monkeypatch.chdir(tmp_path)` AND
   `monkeypatch.delenv("INSPECT_ROBOTS_CONFIG", raising=False)` — after
   the floor bump, a developer's exported `INSPECT_ROBOTS_CONFIG` (the
@@ -102,7 +102,7 @@ hermeticity gap Task 0 closes).
   any test that turns out to depend on the repo-root cwd (none are known;
   if one appears, it was latently broken and gets a `tmp_path`-relative
   fixture).
-- [ ] **Step 3: gates green, commit** (message: floor bump + hermeticity,
+- [x] **Step 3: gates green, commit** (message: floor bump + hermeticity,
   reference #107).
 
 ## Task 1: health CLI honors the CWD .env
