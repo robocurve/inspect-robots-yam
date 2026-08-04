@@ -294,6 +294,8 @@ end the episode, then grade it at the prompt that follows. The status line
 counts up against the run's real step limit (`t = 42s / 120s`) with no
 configuration needed (requires inspect-robots newer than 0.8.1; on older cores
 set `max_steps_hint`).
+With inspect-robots' operator console, the framework owns stdin and typing sends
+feedback.
 
 To skip both Enter gates, set `auto_start=true` (CLI: `-E auto_start=true`,
 persistently via `[embodiment.args]` in config.ini, or accept the suggested

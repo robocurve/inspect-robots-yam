@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Operator console support via `YAMEmbodiment.defer_operator_end()` lets the
+  framework own stdin, deliver typed feedback, and terminate trials without
+  competing with YAM's legacy keypress reader (#102).
 - The connection-failure `remedy` now defaults to the policy entry's canonical
   server launch command plus a docs link — `host_server_yam.py` for
   `molmoact2`, `serve_gr00t_act.py` for `gr00t` — instead of an empty string,

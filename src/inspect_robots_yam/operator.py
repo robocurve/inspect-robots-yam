@@ -4,9 +4,8 @@ The operator readies scenes and signals end-of-episode; the success verdict
 itself (with optional grader notes) is collected afterwards by the framework's
 operator prompt, so this module owns no grading UI. All stdin/stdout goes
 through injectable ``input_fn`` / ``output_fn`` so tests drive these paths
-without a real terminal. The one genuinely TTY-bound piece — the non-blocking
-"operator pressed end" poll — is isolated in :func:`default_poll_end`, which is
-excluded from coverage.
+without a real terminal. The genuinely TTY-bound pieces are isolated in
+module-private seams or :func:`default_poll_end` and excluded from coverage.
 """
 
 from __future__ import annotations
@@ -17,20 +16,50 @@ from dataclasses import dataclass
 from inspect_robots.errors import EmbodimentFault
 
 
+def _flush_stdin_fd() -> None:
+    """Discard pending TTY input at the file-descriptor level before a gate."""
+    import sys
+
+    if not sys.stdin.isatty():
+        return
+    import os  # pragma: no cover - TTY-bound
+    import select  # pragma: no cover - TTY-bound
+
+    while select.select([sys.stdin], [], [], 0)[0]:  # pragma: no cover - TTY-bound
+        if not os.read(sys.stdin.fileno(), 65536):  # pragma: no cover - TTY-bound
+            break  # pragma: no cover - TTY-bound
+
+
 @dataclass
 class OperatorIO:
     """Console I/O for operator prompts, with injectable functions for testing."""
 
     input_fn: Callable[[str], str] = input
     output_fn: Callable[[str], None] = print
+    flush_fn: Callable[[], None] = _flush_stdin_fd
 
-    def wait_ready(self, prompt: str = "Position the scene, then press Enter to start...") -> None:
+    def wait_ready(
+        self,
+        prompt: str = "Position the scene, then press Enter to start...",
+        *,
+        drain: bool = True,
+        flush_first: bool = False,
+    ) -> None:
         """Block until the operator confirms the scene is set up.
 
         A dead stdin (no TTY: nohup, CI, a closed pipe) surfaces as
         :class:`~inspect_robots.errors.EmbodimentFault` — the framework's always-halt
         path — with instructions, instead of a bare ``EOFError`` mid-eval.
+
+        The trailing drain protects the legacy keypress path from a stray
+        buffered newline. A framework console that owns stdin passes
+        ``drain=False`` because pending lines belong to the console and
+        ``flush_first=True`` so stale feedback cannot stand in for a safety-gate
+        confirmation. Exactly one reader discipline must consume stdin: mixing
+        this buffered reader with the console's file-descriptor reads is fragile.
         """
+        if flush_first:
+            self.flush_fn()
         try:
             self.input_fn(prompt)
         except (EOFError, OSError) as exc:
@@ -43,7 +72,8 @@ class OperatorIO:
         # Discard anything still buffered on stdin (e.g. an extra newline from the
         # start prompt). Otherwise default_poll_end's select() reads it as an
         # "end episode" keypress on the first step and terminates immediately.
-        _drain_stdin()
+        if drain:
+            _drain_stdin()
 
 
 def _drain_stdin() -> None:
