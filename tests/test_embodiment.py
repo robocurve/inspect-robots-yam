@@ -61,6 +61,24 @@ def _operator(*, prompts: list[str] | None = None) -> OperatorIO:
     return OperatorIO(input_fn=_input, output_fn=lambda _m: None)
 
 
+class _RecordingOperator(OperatorIO):
+    """Record readiness ownership controls without touching stdin."""
+
+    def __init__(self) -> None:
+        super().__init__(input_fn=lambda _prompt: "", output_fn=lambda _message: None)
+        self.wait_calls: list[tuple[str, bool, bool]] = []
+
+    def wait_ready(
+        self,
+        prompt: str = "Position the scene, then press Enter to start...",
+        *,
+        drain: bool = True,
+        flush_first: bool = False,
+    ) -> None:
+        """Record the prompt and stdin ownership controls."""
+        self.wait_calls.append((prompt, drain, flush_first))
+
+
 def _build(
     cfg: YamConfig | None = None,
     *,
@@ -308,6 +326,40 @@ def test_step_continues_when_no_end_signal() -> None:
     assert emb.num_steps == 1
 
 
+def test_defer_operator_end_is_duck_typed_and_skips_poll() -> None:
+    emb, _, _ = _build()
+    polls: list[bool] = []
+
+    def _poll_end() -> bool:
+        polls.append(True)
+        return True
+
+    emb._poll_end = _poll_end
+    hook = getattr(emb, "defer_operator_end", None)
+    assert callable(hook)
+    hook()
+    emb.reset(Scene(id="s", instruction="x"))
+
+    result = emb.step(Action(data=np.zeros(14)))
+
+    assert result.terminated is False
+    assert polls == []
+
+
+def test_defer_operator_end_survives_resets() -> None:
+    emb, _, _ = _build()
+    polls: list[bool] = []
+    emb._poll_end = lambda: polls.append(True) or True
+    emb.defer_operator_end()
+    scene = Scene(id="s", instruction="x")
+
+    for _ in range(2):
+        emb.reset(scene)
+        assert emb.step(Action(data=np.zeros(14))).terminated is False
+
+    assert polls == []
+
+
 def test_pacing_sleeps_to_control_rate() -> None:
     emb, _, sleeps = _build()  # control_hz=10 -> period 0.1, clock constant 0 -> sleep ~0.1
     emb.reset(Scene(id="s", instruction="x"))
@@ -451,6 +503,40 @@ def test_auto_start_drains_stdin_before_episode(monkeypatch: pytest.MonkeyPatch)
     emb.reset(Scene(id="s", instruction="x"))
     assert drains == [True]  # wait_ready's drain is replaced, not dropped
     assert prompts == []
+
+
+def test_deferred_auto_start_leaves_stdin_for_console(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: True)
+    drains: list[bool] = []
+    monkeypatch.setattr(embodiment_module, "_drain_stdin", lambda: drains.append(True))
+    emb, _, _ = _build(YamConfig(auto_start=True))
+    emb.defer_operator_end()
+
+    emb.reset(Scene(id="s", instruction="x"))
+
+    assert drains == []
+
+
+@pytest.mark.parametrize(
+    ("deferred", "expected_controls"),
+    [
+        (False, [(True, False), (True, False)]),
+        (True, [(False, True), (False, True)]),
+    ],
+)
+def test_reset_gates_follow_stdin_ownership(
+    deferred: bool, expected_controls: list[tuple[bool, bool]]
+) -> None:
+    operator = _RecordingOperator()
+    emb, _, _ = _build(operator=operator)
+    if deferred:
+        emb.defer_operator_end()
+
+    emb.reset(Scene(id="s", instruction="x"))
+
+    assert [(drain, flush) for _, drain, flush in operator.wait_calls] == expected_controls
 
 
 def test_auto_start_requires_interactive_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -918,6 +1004,18 @@ def _running_status(status: list[str | None]) -> str:
     ]
     assert len(matches) == 1
     return matches[0]
+
+
+def test_deferred_status_explains_console_feedback_with_horizon() -> None:
+    emb, status = _build_with_status()
+    emb.bind_task(_Envelope(name="adhoc", max_steps=1200))
+    emb.defer_operator_end()
+
+    emb.reset(Scene(id="s", instruction="x"))
+
+    assert _running_status(status) == (
+        "Running: Enter ends the episode; type a message + Enter to send feedback. Max 120s."
+    )
 
 
 def test_bind_task_drives_the_countdown_horizon() -> None:

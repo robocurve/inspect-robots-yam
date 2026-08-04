@@ -1203,6 +1203,7 @@ class YAMEmbodiment:
         )
         self._operator = operator if operator is not None else OperatorIO()
         self._poll_end: Callable[[], bool] = poll_end or default_poll_end
+        self._deferred_operator_end = False
         self._sleep: Callable[[float], None] = sleep_fn or time.sleep
         self._clock: Callable[[], float] = clock or time.perf_counter
         self._status: Callable[[str | None], None] = status_fn or _default_status
@@ -1322,6 +1323,17 @@ class YAMEmbodiment:
 
     # -- lifecycle ---------------------------------------------------------
 
+    def defer_operator_end(self) -> None:
+        """Yield stdin and episode termination to the framework console.
+
+        Inspect Robots calls this hook when its operator console owns stdin for
+        the run. Afterward this embodiment never reads stdin again: it performs
+        no end-of-episode poll or drains, and the framework terminates trials
+        with ``operator_end`` itself. The setting persists across resets because
+        every trial in the run belongs to the same console.
+        """
+        self._deferred_operator_end = True
+
     def bind_task(self, envelope: TaskEnvelopeLike) -> None:
         """Store the framework's rollout horizon for the operator countdown.
 
@@ -1408,7 +1420,9 @@ class YAMEmbodiment:
                 )
             else:
                 self._operator.wait_ready(
-                    "Arms will move to the home pose - stand clear, then press Enter..."
+                    "Arms will move to the home pose - stand clear, then press Enter...",
+                    drain=not self._deferred_operator_end,
+                    flush_first=self._deferred_operator_end,
                 )
             self._home_gate_confirmed = True
         if not self._cfg.unattended:
@@ -1442,12 +1456,24 @@ class YAMEmbodiment:
                 # wait_ready() owns the stdin drain; skipping the gate must not
                 # skip the drain, or a buffered newline ends the episode on the
                 # first default_poll_end() check.
-                _drain_stdin()
+                # When deferred, pending lines belong to the console, which drains
+                # after reset returns.
+                if not self._deferred_operator_end:
+                    _drain_stdin()
             else:
-                self._operator.wait_ready()
+                self._operator.wait_ready(
+                    drain=not self._deferred_operator_end,
+                    flush_first=self._deferred_operator_end,
+                )
             horizon = self._horizon_secs()
             limit = f" Max {horizon:.0f}s." if horizon is not None else ""
-            self._status(f"Running: press any key to end the episode and grade it.{limit}")
+            if self._deferred_operator_end:
+                self._status(
+                    "Running: Enter ends the episode; type a message + Enter to send "
+                    f"feedback.{limit}"
+                )
+            else:
+                self._status(f"Running: press any key to end the episode and grade it.{limit}")
         self.num_steps = 0
         self._t_last = self._clock()
         return self._observe(scene.instruction)
@@ -1478,7 +1504,7 @@ class YAMEmbodiment:
         obs = self._observe(self._instruction)
         # Unattended runs have no operator: skip the end poll entirely; the
         # episode runs to the framework's max_steps.
-        if not self._cfg.unattended and self._poll_end():
+        if not self._cfg.unattended and not self._deferred_operator_end and self._poll_end():
             self._status(None)  # close the status line before control returns
             # The operator only signals *that* the episode is over. The verdict,
             # partial/skip, and grader notes belong to the framework's single
