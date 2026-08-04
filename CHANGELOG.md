@@ -45,6 +45,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`False`): runs configured outside the wizard keep the prompt-gated flow,
   and the wizard still writes an explicit true/false answer.
 
+### Fixed
+
+- A camera reader that drops a frame and returns `None` for one key now raises
+  the same camera-named `ValueError` as any other malformed frame, in both
+  `YAMEmbodiment._observe()` and `MolmoAct2Policy.act()`, instead of a bare
+  `AttributeError: 'NoneType' object has no attribute 'shape'` (#61).
+
 ### Added
 - `ActServerPolicy.server_url` and `remedy` connection-failure hint attributes,
   plus the CLI-settable `ActServerConfig.remedy` recovery instruction (#97,

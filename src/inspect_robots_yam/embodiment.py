@@ -1901,6 +1901,10 @@ class YAMEmbodiment:
         images = dict(self._camera_reader(self._cfg))
         expected_shape = (self._cfg.cam_height, self._cfg.cam_width, 3)
         for name, img in images.items():
+            # A dropped frame violates the ImageMap contract, but name the camera
+            # rather than letting it surface as a bare AttributeError on .shape.
+            if img is None:
+                raise ValueError(f"camera {name!r} returned no frame, expected {expected_shape}")
             if img.shape != expected_shape:
                 raise ValueError(
                     f"camera {name!r} returned shape {img.shape}, expected {expected_shape}"
