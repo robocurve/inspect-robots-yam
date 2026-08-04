@@ -1166,3 +1166,14 @@ def test_observe_validates_camera_shape() -> None:
     emb._camera_reader = _bad_cameras
     with pytest.raises(ValueError, match="camera 'top_cam' returned shape"):
         emb.reset(Scene(id="s", instruction="x"))
+
+
+def test_observe_names_the_camera_that_dropped_a_frame() -> None:
+    def _dropped_frame(cfg):
+        img = np.zeros((cfg.cam_height, cfg.cam_width, 3), dtype=np.uint8)
+        return {"top_cam": img, "left_cam": None, "right_cam": img}
+
+    emb, _, _ = _build()
+    emb._camera_reader = _dropped_frame
+    with pytest.raises(ValueError, match="camera 'left_cam' returned no frame"):
+        emb.reset(Scene(id="s", instruction="x"))
