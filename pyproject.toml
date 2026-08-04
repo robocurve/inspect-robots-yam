@@ -20,7 +20,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "inspect-robots>=0.31",  # embodiment guardrail contributions and public delta rewind
+    "inspect-robots>=0.38",  # INSPECT_ROBOTS_CONFIG pin (needs >=0.37; 0.38 = rig standard)
     "numpy>=1.24",
     "requests>=2.31",
     "json-numpy>=2.1",

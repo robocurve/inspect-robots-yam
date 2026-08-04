@@ -164,14 +164,20 @@ inspect-robots-yam-health \
   --right-cam /dev/v4l/by-id/...-right
 ```
 
+Like `inspect-robots` itself, both `inspect-robots-yam-health` and
+`inspect-robots-yam-holdcheck` honor the working directory's `.env` before
+resolving wizard configuration, including an `INSPECT_ROBOTS_CONFIG` pin for
+selecting the current rig. Pass `--no-config` to either command to bypass the
+wizard configuration; holdcheck then requires a raw CAN channel instead of
+`left` or `right`.
+
 The command writes a labeled montage to `health.jpg`. Use `--out PATH` to
 change the destination, `--json` for a machine-readable report, or
 `--skip-cameras` and `--skip-motors` to run one section. Camera devices can
 also be supplied with `-E top_cam_device=...`, `-E left_cam_device=...`, and
 `-E right_cam_device=...`. Explicit flags and `-E` values override the wizard
-config one camera slot at a time. Use `--no-config` to bypass the wizard file
-entirely, including when it is malformed, and recover the previous flag-only
-behavior.
+config one camera slot at a time. For health, the `--no-config` bypass also
+applies when the wizard file is malformed and restores flag-only behavior.
 
 > [!NOTE]
 > The health tool can check and watch only V4L2 `*_cam_device` sources. It

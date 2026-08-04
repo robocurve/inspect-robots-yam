@@ -47,6 +47,8 @@ READ_ADVANCE_S = 0.05
 @pytest.fixture(autouse=True)
 def isolate_user_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Keep tests that do not opt into a config isolated from the developer's rig."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("INSPECT_ROBOTS_CONFIG", raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
 

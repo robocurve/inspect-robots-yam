@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -41,19 +42,33 @@ CAMERA_ARGS = [
 ]
 
 
+def write_config_file(
+    path: Path,
+    values: Mapping[str, str],
+    *,
+    owner: str = "yam_arms",
+) -> Path:
+    """Write one wizard-style embodiment config at an explicit path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    args = "\n".join(f"{key} = {value}" for key, value in values.items())
+    path.write_text(
+        f"[defaults]\nembodiment = {owner}\n[embodiment.args]\n{args}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def write_config(
     tmp_path: Path,
     values: Mapping[str, str],
     *,
     owner: str = "yam_arms",
 ) -> tuple[dict[str, str], Path]:
-    """Write one wizard-style embodiment config and return its isolated env and path."""
-    path = tmp_path / "inspect-robots" / "config.ini"
-    path.parent.mkdir()
-    args = "\n".join(f"{key} = {value}" for key, value in values.items())
-    path.write_text(
-        f"[defaults]\nembodiment = {owner}\n[embodiment.args]\n{args}\n",
-        encoding="utf-8",
+    """Write one XDG-discoverable config and return its isolated env and path."""
+    path = write_config_file(
+        tmp_path / "inspect-robots" / "config.ini",
+        values,
+        owner=owner,
     )
     return {"XDG_CONFIG_HOME": str(tmp_path)}, path
 
@@ -508,6 +523,124 @@ def test_extra_camera_device_values_stay_strings() -> None:
         "1",
         "2",
     )
+
+
+def test_cwd_dotenv_pins_config_for_real_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pinned_path = write_config_file(tmp_path / "pinned" / "config.ini", CAMERA_KWARGS)
+    (tmp_path / ".env").write_text(
+        f"INSPECT_ROBOTS_CONFIG={pinned_path}\n",
+        encoding="utf-8",
+    )
+    copied_environ = dict(os.environ)
+    monkeypatch.setattr(os, "environ", copied_environ)
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return HealthReport((), False, (), True, None)
+
+    assert main(["--skip-motors"], run=capture) == 0
+
+    assert _camera_devices(seen[0]) == (
+        ("top_cam", "/dev/top"),
+        ("left_cam", "/dev/left"),
+        ("right_cam", "/dev/right"),
+    )
+    assert capsys.readouterr().err.startswith(
+        f"devices: from {pinned_path} (embodiment yam_arms)\n"
+    )
+
+
+def test_exported_config_pin_precedes_cwd_dotenv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    dotenv_path = write_config_file(
+        tmp_path / "pinned-dotenv" / "config.ini",
+        {
+            "top_cam_device": "/dev/dotenv-top",
+            "left_cam_device": "/dev/dotenv-left",
+            "right_cam_device": "/dev/dotenv-right",
+        },
+    )
+    exported_path = write_config_file(
+        tmp_path / "pinned-exported" / "config.ini",
+        {
+            "top_cam_device": "/dev/exported-top",
+            "left_cam_device": "/dev/exported-left",
+            "right_cam_device": "/dev/exported-right",
+        },
+    )
+    (tmp_path / ".env").write_text(
+        f"INSPECT_ROBOTS_CONFIG={dotenv_path}\n",
+        encoding="utf-8",
+    )
+    copied_environ = dict(os.environ)
+    copied_environ["INSPECT_ROBOTS_CONFIG"] = str(exported_path)
+    monkeypatch.setattr(os, "environ", copied_environ)
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return HealthReport((), False, (), True, None)
+
+    assert main(["--skip-motors"], run=capture) == 0
+
+    assert seen[0].top_cam_device == "/dev/exported-top"
+    assert capsys.readouterr().err.startswith(
+        f"devices: from {exported_path} (embodiment yam_arms)\n"
+    )
+
+
+def test_explicit_env_bypasses_cwd_dotenv_without_mutating_process_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dotenv_path = write_config_file(
+        tmp_path / "pinned-dotenv" / "config.ini",
+        {
+            "top_cam_device": "/dev/dotenv-top",
+            "left_cam_device": "/dev/dotenv-left",
+            "right_cam_device": "/dev/dotenv-right",
+        },
+    )
+    explicit_path = write_config_file(
+        tmp_path / "pinned-explicit" / "config.ini",
+        {
+            "top_cam_device": "/dev/explicit-top",
+            "left_cam_device": "/dev/explicit-left",
+            "right_cam_device": "/dev/explicit-right",
+        },
+    )
+    (tmp_path / ".env").write_text(
+        f"INSPECT_ROBOTS_CONFIG={dotenv_path}\n",
+        encoding="utf-8",
+    )
+    copied_environ = dict(os.environ)
+    monkeypatch.setattr(os, "environ", copied_environ)
+    environ_before = copied_environ.copy()
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return HealthReport((), False, (), True, None)
+
+    assert (
+        main(
+            ["--skip-motors"],
+            env={"INSPECT_ROBOTS_CONFIG": str(explicit_path)},
+            run=capture,
+        )
+        == 0
+    )
+
+    assert seen[0].top_cam_device == "/dev/explicit-top"
+    assert copied_environ == environ_before
 
 
 def test_bare_invocation_uses_rgb_wizard_devices_and_attributes_them(

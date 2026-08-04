@@ -5,11 +5,13 @@ Connecting and then closing the driver drops motor torque. This is not the
 mid-workspace setup used by holdcheck.
 
 The one-shot CLI exits 0 when every executed check passes and 1 when any
-hardware check reports a fault. A bare invocation checks the wizard-configured
-rig; ``--no-config`` restores flag-only behavior and bypasses even malformed
-config files. Depth-configured slots are reported as unchecked because this
-tool checks only V4L2 colour devices; an all-depth rig still checks motors but
-skips cameras, and cannot use ``--watch`` because it has no servable devices.
+hardware check reports a fault. Like the core ``inspect-robots`` CLI, a bare
+invocation honors the working directory's ``.env``, including an
+``INSPECT_ROBOTS_CONFIG`` pin, and checks the wizard-configured rig;
+``--no-config`` restores flag-only behavior and bypasses even malformed config
+files. Depth-configured slots are reported as unchecked because this tool checks
+only V4L2 colour devices; an all-depth rig still checks motors but skips cameras,
+and cannot use ``--watch`` because it has no servable devices.
 
 The CLI exits 2 for bad flags, a partial camera set, an unknown ``-E`` key, a
 camera device set by both a flag and ``-E``, ``--skip-cameras`` with an explicit
@@ -40,6 +42,9 @@ from typing import Any, Protocol, cast
 
 import numpy as np
 import numpy.typing as npt
+
+# Mirror core CLI dotenv parsing through its helper so a duplicated parser cannot drift.
+from inspect_robots._dotenv import init_dotenv
 
 from inspect_robots_yam import embodiment, packing
 from inspect_robots_yam._user_config import YamDefaults, load_yam_defaults
@@ -356,6 +361,9 @@ def main(
     run: RunHealth = run_health,
 ) -> int:
     """Run the CLI, returning 0 for healthy, 1 for faults, or exiting 2 on usage errors."""
+    if env is None:
+        init_dotenv(os.environ)
+
     parser = argparse.ArgumentParser(
         prog="inspect-robots-yam-health",
         description="Check the idle rig once or serve configured cameras for aiming.",
