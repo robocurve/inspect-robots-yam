@@ -6,13 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
-### Changed
+### Fixed
 
 - `inspect-robots-yam-health` and `inspect-robots-yam-holdcheck` now honor the
   working directory's `.env` before resolving wizard configuration, including
   `INSPECT_ROBOTS_CONFIG` pins, with exported values retaining precedence and
   `--no-config` retaining the bypass. Requires inspect-robots 0.38 (the new
   dependency floor) (#107).
+
+### Changed
+
 - Operator console support via `YAMEmbodiment.defer_operator_end()` lets the
   framework own stdin, deliver typed feedback, and terminate trials without
   competing with YAM's legacy keypress reader (#102).
