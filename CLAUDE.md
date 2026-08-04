@@ -64,6 +64,9 @@ gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
 - The end-episode keypress terminates with `termination_reason="operator_end"`;
   the framework prompt then records `operator_judgement`, which is what
   judgement-reading scorers (`operator`, KitchenBench `task_success`) score.
+  When the framework console owns stdin, yam never reads the keypress. The
+  console terminates the trial and may carry a verdict that suppresses the
+  prompt.
   `success_at_end` counts only embodiment-detected `"success"` terminations,
   which stock yam never emits.
 - `control_hz` is the step rate only while `settle_tolerance` is `None`, which
