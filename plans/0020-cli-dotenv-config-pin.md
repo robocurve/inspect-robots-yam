@@ -137,13 +137,13 @@ hermeticity gap Task 0 closes).
 
 ## Task 2: holdcheck CLI honors the CWD .env
 
-- [ ] **Step 1: failing test.** Same `.env`-pin shape as Task 1 against
+- [x] **Step 1: failing test.** Same `.env`-pin shape as Task 1 against
   `hold_check.main`'s `env is None` path, asserting the pinned config's
   values are consulted.
-- [ ] **Step 2: implement.** Same two lines. Docstring: unlike health.py,
+- [x] **Step 2: implement.** Same two lines. Docstring: unlike health.py,
   hold_check.py's module docstring has no config paragraph — ADD a
   sentence rather than editing one.
-- [ ] **Step 3: gates green, commit.**
+- [x] **Step 3: gates green, commit.**
 
 ## Task 3: docs and changelog sweep
 

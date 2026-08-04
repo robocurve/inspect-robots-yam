@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -10,14 +11,18 @@ import pytest
 from inspect_robots_yam.hold_check import HoldResult, main, run_hold_check
 
 
-def _write_config(tmp_path: Path, values: dict[str, str]) -> dict[str, str]:
-    path = tmp_path / "inspect-robots" / "config.ini"
-    path.parent.mkdir()
+def _write_config_file(path: Path, values: dict[str, str]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     args = "\n".join(f"{key} = {value}" for key, value in values.items())
     path.write_text(
         f"[defaults]\nembodiment = yam_arms\n[embodiment.args]\n{args}\n",
         encoding="utf-8",
     )
+    return path
+
+
+def _write_config(tmp_path: Path, values: dict[str, str]) -> dict[str, str]:
+    _write_config_file(tmp_path / "inspect-robots" / "config.ini", values)
     return {"XDG_CONFIG_HOME": str(tmp_path)}
 
 
@@ -155,6 +160,39 @@ def test_main_resolves_wizard_side_and_prints_resolved_channel(
     )
     assert calls == [(resolved, False)]
     assert lines[0] == f"{resolved} ({side}) zero_gravity=false: watching for 0s"
+
+
+def test_main_loads_cwd_dotenv_config_pin_for_wizard_side(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pinned_path = _write_config_file(
+        tmp_path / "pinned" / "config.ini",
+        {"left_channel": "can_pinned_left"},
+    )
+    (tmp_path / ".env").write_text(
+        f"INSPECT_ROBOTS_CONFIG={pinned_path}\n",
+        encoding="utf-8",
+    )
+    copied_environ = dict(os.environ)
+    assert "INSPECT_ROBOTS_CONFIG" not in copied_environ
+    monkeypatch.setattr(os, "environ", copied_environ)
+    calls: list[tuple[str, bool]] = []
+
+    def factory(channel: str, zero_gravity: bool) -> _FakeArm:
+        calls.append((channel, zero_gravity))
+        return _FakeArm()
+
+    assert (
+        main(
+            ["left", "--zero-gravity", "false", "--duration-s", "0"],
+            robot_factory=factory,
+            sleep_fn=lambda _seconds: None,
+            emit=lambda _line: None,
+        )
+        == 0
+    )
+    assert calls == [("can_pinned_left", False)]
 
 
 def test_raw_channel_never_loads_a_malformed_config(tmp_path: Path) -> None:
