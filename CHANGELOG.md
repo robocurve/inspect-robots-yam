@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+
+- The setup wizard now suggests **no** for its `collision_guardrail` question
+  (previously yes). A fresh setup has no measured `collision_*_base_pos`
+  geometry, and the guardrail's library-default offsets can false-positive
+  hold until `max_steps` — a silent livelock that scores the episode 0. The
+  `YamConfig` runtime default is unchanged (`True`), and a config that
+  already sets the key keeps its stored value as the wizard suggestion
+  (#109).
+
 ### Fixed
 
 - `inspect-robots-yam-health` and `inspect-robots-yam-holdcheck` now honor the

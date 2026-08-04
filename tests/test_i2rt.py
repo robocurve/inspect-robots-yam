@@ -383,15 +383,26 @@ def test_auto_start_wizard_default_diverges_from_config_default() -> None:
     assert YamConfig().auto_start is False
 
 
-def test_collision_guardrail_option_matches_default_on_config() -> None:
+def test_collision_guardrail_wizard_default_diverges_from_config_default() -> None:
+    """The wizard suggests no while the config default stays on.
+
+    Deliberate divergence, the mirror of auto_start: configs written
+    outside setup keep the protective runtime default, but a fresh
+    interactive setup has no measured collision_*_base_pos geometry, and
+    the library-default offsets can false-positive hold until max_steps
+    (#109). The wizard therefore suggests off until the operator measures
+    the rig; an existing config's stored value stays the suggestion on
+    re-runs, so measured rigs that opted in are not nudged back out.
+    """
     collision_slot = next(
         option for option in YAMEmbodiment.OPTION_SLOTS if option.arg == "collision_guardrail"
     )
 
     assert collision_slot.label == (
-        "Block predicted arm collisions before they happen (collision_guardrail)"
+        "Block predicted arm collisions before they happen "
+        "(collision_guardrail; measure collision_*_base_pos first)"
     )
-    assert collision_slot.default is True
+    assert collision_slot.default is False
     assert YamConfig().collision_guardrail is True
 
 

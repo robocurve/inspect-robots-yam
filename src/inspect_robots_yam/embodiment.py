@@ -1115,9 +1115,13 @@ class YAMEmbodiment:
     # The setup wizard offers these as yes/no questions (core OPTION_SLOTS
     # protocol, inspect-robots#222) and writes the answers to config.ini.
     # The behavior contract lives on the matching YamConfig field. The wizard
-    # suggestion may diverge from the YamConfig default: the config default
-    # stays conservative for runs configured outside setup, while the wizard
-    # nudges interactive operators toward the zero-touch flow.
+    # suggestion may diverge from the YamConfig default in either direction:
+    # auto_start stays conservative at runtime but the wizard nudges toward
+    # zero-touch starts, while collision_guardrail stays protective at
+    # runtime but the wizard suggests off, because a fresh setup has no
+    # measured collision_*_base_pos geometry and the library-default offsets
+    # can false-positive hold until max_steps (#109). An existing config's
+    # stored value replaces the suggestion on re-runs.
     OPTION_SLOTS: ClassVar[tuple[OptionSlot, ...]] = (
         OptionSlot(
             arg="auto_start",
@@ -1126,8 +1130,9 @@ class YAMEmbodiment:
         ),
         OptionSlot(
             arg="collision_guardrail",
-            label="Block predicted arm collisions before they happen (collision_guardrail)",
-            default=True,
+            label="Block predicted arm collisions before they happen "
+            "(collision_guardrail; measure collision_*_base_pos first)",
+            default=False,
         ),
     )
 
