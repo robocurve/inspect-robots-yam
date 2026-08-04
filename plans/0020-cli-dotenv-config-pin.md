@@ -147,13 +147,13 @@ hermeticity gap Task 0 closes).
 
 ## Task 3: docs and changelog sweep
 
-- [ ] **Step 1:** README/docs mention of the health or holdcheck CLIs:
+- [x] **Step 1:** README/docs mention of the health or holdcheck CLIs:
   state that both honor the working directory's `.env`
   (`INSPECT_ROBOTS_CONFIG` pin included) exactly like `inspect-robots`
   itself, and that `--no-config` remains the bypass.
-- [ ] **Step 2:** `CHANGELOG.md` Unreleased entry (Keep a Changelog style,
+- [x] **Step 2:** `CHANGELOG.md` Unreleased entry (Keep a Changelog style,
   matching the existing #102/#99/#95 entries): the `.env` fix referencing
   #107, with the core floor bump embedded in the same entry per the
   existing convention ("Requires inspect-robots 0.38 (the new dependency
   floor)", as the #90 entry did for 0.30).
-- [ ] **Step 3: gates green, commit.**
+- [x] **Step 3: gates green, commit.**
