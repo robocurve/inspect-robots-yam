@@ -25,12 +25,15 @@ the parser would drift (state the rationale in a comment at the import).
 
 **Dependency floor (load-bearing):** `INSPECT_ROBOTS_CONFIG` does not exist
 in core before 0.37 (`config_path` in 0.31-0.36 derives only from
-`XDG_CONFIG_HOME`/`HOME`), and the current pin is `inspect-robots>=0.31`
-with `uv.lock` resolving exactly 0.31.0 — against which this fix would load
-a variable core silently ignores. Task 0 bumps the floor to
-`inspect-robots>=0.38` (0.38 rather than 0.37 for `--config` parity with
-the per-rig workflow in #107) and re-locks. `init_dotenv` itself is
-signature-identical from 0.31 through 0.38, so the import needs no guard.
+`XDG_CONFIG_HOME`/`HOME`; both the env var and the `--config` flag first
+appear in 0.37.0 via core PR #276), and the current pin is
+`inspect-robots>=0.31` with `uv.lock` resolving exactly 0.31.0 — against
+which this fix would load a variable core silently ignores. Task 0 bumps
+the floor to `inspect-robots>=0.38`: 0.37 is the technical minimum, but
+the per-rig concurrent workflow this issue exists for also relies on
+0.38's per-rig `rerun_port` and cross-process device claim guard, and
+0.38.0 is what the rigs run. `init_dotenv` itself is signature-identical
+from 0.31 through 0.38, so the import needs no guard.
 
 **Tech stack:** stdlib only. pytest with `tmp_path` + `monkeypatch.chdir`
 (new to this suite: no existing test changes cwd, which is exactly the
@@ -82,24 +85,37 @@ hermeticity gap Task 0 closes).
 ## Task 0: dependency floor and test hermeticity
 
 - [ ] **Step 1: bump the core floor.** `pyproject.toml`: `inspect-robots>=
-  0.38`; run `uv lock` and `uv sync` so the worktree venv actually carries
-  a core that honors `INSPECT_ROBOTS_CONFIG`. Confirm
-  `python -c "from inspect_robots.defaults import _ENV_CONFIG"` succeeds.
+  0.38`; run `uv lock` and `uv sync --extra dev` (dev tooling is a project
+  extra, not a group — bare `uv sync` strips pytest/mypy/ruff; CI uses
+  `--extra dev` too). Confirm
+  `uv run python -c "from inspect_robots.defaults import _ENV_CONFIG"`
+  succeeds.
 - [ ] **Step 2: harden the autouse fixture.** Extend `isolate_user_config`
-  (`tests/conftest.py:47-50`) with `monkeypatch.chdir(tmp_path)` so no
-  test — existing `env=None` callers included — can see a developer-local
-  repo-root `.env`. Run the full suite; fix any test that turns out to
-  depend on the repo-root cwd (none are known; if one appears, it was
-  latently broken and gets a `tmp_path`-relative fixture).
+  (`tests/conftest.py:47-50`) with `monkeypatch.chdir(tmp_path)` AND
+  `monkeypatch.delenv("INSPECT_ROBOTS_CONFIG", raising=False)` — after
+  the floor bump, a developer's exported `INSPECT_ROBOTS_CONFIG` (the
+  exact workflow #107 promotes) outranks the fixture's `XDG_CONFIG_HOME`
+  and would inject real rig devices into every `env=None` test. The
+  delenv is safe against the environ-leak hazard in Global Constraints
+  precisely because, after `chdir(tmp_path)`, no cwd `.env` exists for
+  `init_dotenv` to setdefault the key back from. Run the full suite; fix
+  any test that turns out to depend on the repo-root cwd (none are known;
+  if one appears, it was latently broken and gets a `tmp_path`-relative
+  fixture).
 - [ ] **Step 3: gates green, commit** (message: floor bump + hermeticity,
   reference #107).
 
 ## Task 1: health CLI honors the CWD .env
 
 - [ ] **Step 1: failing tests.** In a `tmp_path` cwd containing `.env` with
-  `INSPECT_ROBOTS_CONFIG=<tmp config.ini>` (write a minimal wizard-style
-  config whose `[embodiment.args]`-equivalent section carries a camera
-  device; copy the shape from existing `load_yam_defaults` tests), invoke
+  `INSPECT_ROBOTS_CONFIG=<pinned config path>`, where the pinned config
+  lives OUTSIDE the XDG-discoverable location — e.g.
+  `tmp_path/"pinned"/config.ini`, NOT the `tmp_path/"inspect-robots"/
+  config.ini` that `write_config` (`tests/test_health.py:44`) uses,
+  because the autouse fixture points `XDG_CONFIG_HOME` at `tmp_path` and
+  a config there is found WITHOUT the fix, making the red step vacuously
+  green (copy `write_config`'s file shape, not its location; the config
+  carries a camera device). Invoke
   `health.main` with `env=None`, a `run=` capture stub, and
   `--skip-motors` (mirroring `tests/test_health.py:564` so no hardware is
   touched) and assert the pinned config's devices are used (the
@@ -129,8 +145,9 @@ hermeticity gap Task 0 closes).
   state that both honor the working directory's `.env`
   (`INSPECT_ROBOTS_CONFIG` pin included) exactly like `inspect-robots`
   itself, and that `--no-config` remains the bypass.
-- [ ] **Step 2:** `CHANGELOG.md` Unreleased entries (Keep a Changelog
-  style, matching the existing #102/#99/#95 entries): the `.env` fix
-  referencing #107, and the core floor bump to >=0.38 as its own
-  user-visible line.
+- [ ] **Step 2:** `CHANGELOG.md` Unreleased entry (Keep a Changelog style,
+  matching the existing #102/#99/#95 entries): the `.env` fix referencing
+  #107, with the core floor bump embedded in the same entry per the
+  existing convention ("Requires inspect-robots 0.38 (the new dependency
+  floor)", as the #90 entry did for 0.30).
 - [ ] **Step 3: gates green, commit.**
