@@ -406,6 +406,44 @@ def test_collision_guardrail_wizard_default_diverges_from_config_default() -> No
     assert YamConfig().collision_guardrail is True
 
 
+def test_collision_guardrail_carried_config_value_overrides_wizard_default() -> None:
+    """Re-running setup keeps a measured rig's stored opt-in as the suggestion.
+
+    The README/CHANGELOG safety story leans on core's carried-value override;
+    pin it here so a core regression cannot silently gut it (#109).
+    """
+    from inspect_robots._setup import _options_section
+
+    collision_slot = next(
+        option for option in YAMEmbodiment.OPTION_SLOTS if option.arg == "collision_guardrail"
+    )
+    answers = _options_section(
+        (collision_slot,),
+        {"embodiment.args": {"collision_guardrail": "true"}},
+        input_fn=lambda _prompt: "",
+        out=io.StringIO(),
+    )
+
+    assert answers == {"collision_guardrail": "true"}
+
+
+def test_collision_guardrail_fresh_setup_enter_accept_writes_false() -> None:
+    """A fresh setup's Enter-accept writes the new off suggestion (#109)."""
+    from inspect_robots._setup import _options_section
+
+    collision_slot = next(
+        option for option in YAMEmbodiment.OPTION_SLOTS if option.arg == "collision_guardrail"
+    )
+    answers = _options_section(
+        (collision_slot,),
+        {},
+        input_fn=lambda _prompt: "",
+        out=io.StringIO(),
+    )
+
+    assert answers == {"collision_guardrail": "false"}
+
+
 def test_collision_guardrail_wizard_writer_round_trips_false(tmp_path) -> None:
     from inspect_robots._setup import _options_section, _render_config
     from inspect_robots.defaults import load_defaults

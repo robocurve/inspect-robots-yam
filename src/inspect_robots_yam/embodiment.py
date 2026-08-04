@@ -1284,7 +1284,15 @@ class YAMEmbodiment:
     def contribute_guardrails(self, action_space: Box) -> GuardrailContribution:
         """Contribute collision holds when absolute joint checking is available."""
         if not self._cfg.collision_guardrail:
-            return GuardrailContribution()
+            # Every other skip path warns; the wizard now suggests off for
+            # unmeasured rigs (#109), so the opt-out must be visible in run
+            # logs rather than indistinguishable from a missing guardrail.
+            return GuardrailContribution(
+                warnings=(
+                    "collision guardrail disabled by config; set collision_guardrail=true "
+                    "after measuring collision_*_base_pos",
+                )
+            )
         if self._cfg.control_interface != "joints" or self._cfg.joints_are_delta:
             return GuardrailContribution(
                 warnings=("collision guardrail skipped: absolute joints mode only (plan 0011 v1)",)

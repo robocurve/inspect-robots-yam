@@ -121,8 +121,10 @@ recorded policy metadata matches that checkpoint.
 > The shim's startup checks validate the packed layout and units ranges, but
 > joint polarity and absolute-vs-delta semantics cannot be detected from
 > dataset statistics. For the first runs with a new checkpoint family, run
-> `inspect-robots-yam-preflight`, leave guardrails on, and keep an operator at
-> the e-stop.
+> `inspect-robots-yam-preflight`, leave guardrails on (the bounds clamp and
+> per-step delta limit are always active; add the collision guardrail once
+> the rig's `collision_*_base_pos` geometry is measured), and keep an
+> operator at the e-stop.
 
 ## Preflight: prove compatibility before any motion
 
@@ -508,7 +510,11 @@ geometry below is measured: on unmeasured geometry the guardrail can
 false-positive hold, and a policy that repeats the blocked target livelocks
 to `max_steps`. Answer yes (or set the key to `true`) once the base positions
 are measured; a config that already sets the key keeps its value as the
-wizard suggestion. If MuJoCo is unavailable, the run continues with
+wizard suggestion. If your config sets the geometry keys but relies on the
+runtime default instead of writing `collision_guardrail = true`, set the key
+explicitly before re-running setup — otherwise the wizard suggests off and an
+Enter-accept would disable an already-measured guardrail. If MuJoCo is
+unavailable, the run continues with
 a warning that includes this install command:
 
 ```bash
