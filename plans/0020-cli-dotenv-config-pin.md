@@ -122,9 +122,13 @@ hermeticity gap Task 0 closes).
   `devices: from <tmp config.ini>` stderr line). The `env=None` path must
   run against a swapped-in copy of `os.environ` per the Global Constraint.
   Second test: `INSPECT_ROBOTS_CONFIG` already present in the (copied)
-  environment beats a conflicting `.env` line. Third test: explicit `env=`
-  mapping bypasses dotenv entirely (no `.env` read even when one exists in
-  cwd).
+  environment beats a conflicting `.env` line (a precedence guard; green
+  before the fix too, that is fine). Third test: explicit `env=` mapping
+  bypasses dotenv entirely — AND assert the swapped `os.environ` copy is
+  unmutated after the call, which is what makes the `env is None` gate
+  falsifiable (an unconditional `init_dotenv(os.environ)` implementation
+  fails this assertion; without it the test cannot fail at all). Only the
+  first test is the red driver.
 - [ ] **Step 2: implement.** At the top of `health.main`, when `env is
   None`, call `init_dotenv(os.environ)` (import with the rationale
   comment). Update the module docstring's config paragraph to say the CWD
@@ -136,7 +140,9 @@ hermeticity gap Task 0 closes).
 - [ ] **Step 1: failing test.** Same `.env`-pin shape as Task 1 against
   `hold_check.main`'s `env is None` path, asserting the pinned config's
   values are consulted.
-- [ ] **Step 2: implement.** Same two lines, same docstring touch.
+- [ ] **Step 2: implement.** Same two lines. Docstring: unlike health.py,
+  hold_check.py's module docstring has no config paragraph — ADD a
+  sentence rather than editing one.
 - [ ] **Step 3: gates green, commit.**
 
 ## Task 3: docs and changelog sweep
