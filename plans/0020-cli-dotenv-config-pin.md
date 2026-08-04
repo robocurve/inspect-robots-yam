@@ -107,7 +107,7 @@ hermeticity gap Task 0 closes).
 
 ## Task 1: health CLI honors the CWD .env
 
-- [ ] **Step 1: failing tests.** In a `tmp_path` cwd containing `.env` with
+- [x] **Step 1: failing tests.** In a `tmp_path` cwd containing `.env` with
   `INSPECT_ROBOTS_CONFIG=<pinned config path>`, where the pinned config
   lives OUTSIDE the XDG-discoverable location — e.g.
   `tmp_path/"pinned"/config.ini`, NOT the `tmp_path/"inspect-robots"/
@@ -129,11 +129,11 @@ hermeticity gap Task 0 closes).
   falsifiable (an unconditional `init_dotenv(os.environ)` implementation
   fails this assertion; without it the test cannot fail at all). Only the
   first test is the red driver.
-- [ ] **Step 2: implement.** At the top of `health.main`, when `env is
+- [x] **Step 2: implement.** At the top of `health.main`, when `env is
   None`, call `init_dotenv(os.environ)` (import with the rationale
   comment). Update the module docstring's config paragraph to say the CWD
   `.env` is honored like the core CLI.
-- [ ] **Step 3: gates green, commit.**
+- [x] **Step 3: gates green, commit.**
 
 ## Task 2: holdcheck CLI honors the CWD .env
 
