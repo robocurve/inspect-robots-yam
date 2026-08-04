@@ -107,6 +107,47 @@ def test_gripper_max_step_nonfinite_product_or_result_declines_to_declare() -> N
     assert YamConfig(gripper_stroke_s=smallest_positive, control_hz=1.0).gripper_max_step is None
 
 
+def test_load_framework_embodiment_args(tmp_path, monkeypatch) -> None:
+    from inspect_robots_yam.config import (
+        get_framework_config_path,
+        load_framework_embodiment_args,
+    )
+
+    # Missing file returns empty dict
+    missing_file = tmp_path / "nonexistent.ini"
+    assert load_framework_embodiment_args(missing_file) == {}
+
+    # Malformed INI file returns empty dict
+    bad_ini = tmp_path / "bad.ini"
+    bad_ini.write_text("[section\nbad_key_no_val", encoding="utf-8")
+    assert load_framework_embodiment_args(bad_ini) == {}
+
+    # File without [embodiment.args] section returns empty dict
+    no_sec_ini = tmp_path / "no_section.ini"
+    no_sec_ini.write_text("[other.args]\nfoo = bar\n", encoding="utf-8")
+    assert load_framework_embodiment_args(no_sec_ini) == {}
+
+    # File with [embodiment.args] section
+    ini_file = tmp_path / "config.ini"
+    ini_file.write_text(
+        "[embodiment.args]\ntop_cam_device = /dev/v4l/by-id/top\nleft_channel = can_test0\n",
+        encoding="utf-8",
+    )
+    args = load_framework_embodiment_args(ini_file)
+    assert args == {
+        "top_cam_device": "/dev/v4l/by-id/top",
+        "left_channel": "can_test0",
+    }
+
+    # Test environment variable XDG_CONFIG_HOME override for get_framework_config_path
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert get_framework_config_path() == tmp_path / "inspect-robots" / "config.ini"
+
+    # Default fallback path when XDG_CONFIG_HOME is unset
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert "inspect-robots" in str(get_framework_config_path())
+
+
 def test_from_kwargs_rejects_unknown() -> None:
     with pytest.raises(TypeError, match="unexpected config keys"):
         MolmoActConfig.from_kwargs(nope=1)

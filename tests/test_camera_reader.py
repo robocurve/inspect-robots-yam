@@ -127,9 +127,13 @@ def test_partial_open_failure_releases_what_opened_and_retries_everything() -> N
     assert caps["/dev/cam0"].released
     assert not caps["/dev/cam2"].released  # never opened, so nothing to release
 
+    # Retries /dev/cam1 5 times before giving up on the first call
+    expected_first_run = ["/dev/cam0"] + ["/dev/cam1"] * 5
+    assert cv2.opened == expected_first_run
+
     caps["/dev/cam1"] = FakeCapture()
     reader(YamConfig())
-    assert cv2.opened == ["/dev/cam0", "/dev/cam1", "/dev/cam0", "/dev/cam1", "/dev/cam2"]
+    assert cv2.opened == [*expected_first_run, "/dev/cam0", "/dev/cam1", "/dev/cam2"]
 
 
 def test_reader_returns_the_newest_drained_frame() -> None:
