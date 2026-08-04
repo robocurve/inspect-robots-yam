@@ -121,8 +121,10 @@ recorded policy metadata matches that checkpoint.
 > The shim's startup checks validate the packed layout and units ranges, but
 > joint polarity and absolute-vs-delta semantics cannot be detected from
 > dataset statistics. For the first runs with a new checkpoint family, run
-> `inspect-robots-yam-preflight`, leave guardrails on, and keep an operator at
-> the e-stop.
+> `inspect-robots-yam-preflight`, leave guardrails on (the bounds clamp and
+> per-step delta limit are always active; add the collision guardrail once
+> the rig's `collision_*_base_pos` geometry is measured), and keep an
+> operator at the e-stop.
 
 ## Preflight: prove compatibility before any motion
 
@@ -502,7 +504,17 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
 `YamConfig.collision_guardrail` defaults to `True`. In absolute joint mode,
 `YAMEmbodiment` contributes a predictive MuJoCo guardrail automatically. A
 blocked target becomes a hold at the last safe commanded pose and is marked in
-the recorded action metadata. If MuJoCo is unavailable, the run continues with
+the recorded action metadata. The setup wizard suggests answering **no** to
+its `collision_guardrail` question until the rig's `collision_*_base_pos`
+geometry below is measured: on unmeasured geometry the guardrail can
+false-positive hold, and a policy that repeats the blocked target livelocks
+to `max_steps`. Answer yes (or set the key to `true`) once the base positions
+are measured; a config that already sets the key keeps its value as the
+wizard suggestion. If your config sets the geometry keys but relies on the
+runtime default instead of writing `collision_guardrail = true`, set the key
+explicitly before re-running setup — otherwise the wizard suggests off and an
+Enter-accept would disable an already-measured guardrail. If MuJoCo is
+unavailable, the run continues with
 a warning that includes this install command:
 
 ```bash
@@ -669,7 +681,9 @@ at the first reset before torque is released),
 `unattended` (default `False`; skip operator prompts),
 `auto_start` (default `False`; skip both operator Enter gates but keep the
 attended episode flow; needs a TTY; `unattended` takes precedence),
-`collision_guardrail` (default `True`; predictive holds in absolute joint mode),
+`collision_guardrail` (default `True`; predictive holds in absolute joint
+mode; the setup wizard suggests `false` until the base positions below are
+measured),
 `collision_left_base_pos`, `collision_right_base_pos`,
 `collision_left_base_yaw`, `collision_right_base_yaw` (optional measured rig
 geometry), `collision_table` (default `True`; set `False` for no table plane),

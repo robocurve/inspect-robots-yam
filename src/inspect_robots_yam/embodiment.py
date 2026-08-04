@@ -1115,9 +1115,13 @@ class YAMEmbodiment:
     # The setup wizard offers these as yes/no questions (core OPTION_SLOTS
     # protocol, inspect-robots#222) and writes the answers to config.ini.
     # The behavior contract lives on the matching YamConfig field. The wizard
-    # suggestion may diverge from the YamConfig default: the config default
-    # stays conservative for runs configured outside setup, while the wizard
-    # nudges interactive operators toward the zero-touch flow.
+    # suggestion may diverge from the YamConfig default in either direction:
+    # auto_start stays conservative at runtime but the wizard nudges toward
+    # zero-touch starts, while collision_guardrail stays protective at
+    # runtime but the wizard suggests off, because a fresh setup has no
+    # measured collision_*_base_pos geometry and the library-default offsets
+    # can false-positive hold until max_steps (#109). An existing config's
+    # stored value replaces the suggestion on re-runs.
     OPTION_SLOTS: ClassVar[tuple[OptionSlot, ...]] = (
         OptionSlot(
             arg="auto_start",
@@ -1126,8 +1130,9 @@ class YAMEmbodiment:
         ),
         OptionSlot(
             arg="collision_guardrail",
-            label="Block predicted arm collisions before they happen (collision_guardrail)",
-            default=True,
+            label="Block predicted arm collisions before they happen "
+            "(collision_guardrail; measure collision_*_base_pos first)",
+            default=False,
         ),
     )
 
@@ -1279,7 +1284,15 @@ class YAMEmbodiment:
     def contribute_guardrails(self, action_space: Box) -> GuardrailContribution:
         """Contribute collision holds when absolute joint checking is available."""
         if not self._cfg.collision_guardrail:
-            return GuardrailContribution()
+            # Every other skip path warns; the wizard now suggests off for
+            # unmeasured rigs (#109), so the opt-out must be visible in run
+            # logs rather than indistinguishable from a missing guardrail.
+            return GuardrailContribution(
+                warnings=(
+                    "collision guardrail disabled by config; set collision_guardrail=true "
+                    "after measuring collision_*_base_pos",
+                )
+            )
         if self._cfg.control_interface != "joints" or self._cfg.joints_are_delta:
             return GuardrailContribution(
                 warnings=("collision guardrail skipped: absolute joints mode only (plan 0011 v1)",)
