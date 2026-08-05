@@ -250,13 +250,9 @@ class YamConfig(_FromKwargs):
         # unvalidated None here would read as a silent opt-out of a safety
         # gate (or silently remove the table plane) instead of the
         # "library default" that `none` means everywhere else.
-        for flag in ("collision_guardrail", "collision_table"):
+        for flag in ("collision_guardrail", "collision_table", "report_joint_eff"):
             if flag in flat and not isinstance(flat[flag], bool):
                 raise ValueError(f"{flag} must be true or false, got {flat[flag]!r}")
-        if "report_joint_eff" in flat and not isinstance(flat["report_joint_eff"], bool):
-            raise ValueError(
-                f"report_joint_eff must be true or false, got {flat['report_joint_eff']!r}"
-            )
         if "collision_table_height" in flat and flat["collision_table_height"] is None:
             raise ValueError(
                 "collision_table_height cannot be none; use collision_table=false "
