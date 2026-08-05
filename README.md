@@ -681,6 +681,9 @@ at the first reset before torque is released),
 `unattended` (default `False`; skip operator prompts),
 `auto_start` (default `False`; skip both operator Enter gates but keep the
 attended episode flow; needs a TTY; `unattended` takes precedence),
+`report_joint_eff` (default `False`; add the optional `joint_eff` observation
+state with sign-corrected estimated torque in raw N·m, including the gripper
+slots),
 `collision_guardrail` (default `True`; predictive holds in absolute joint
 mode; the setup wizard suggests `false` until the base positions below are
 measured),

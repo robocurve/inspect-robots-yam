@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import itertools
+import warnings
 from dataclasses import dataclass
-from typing import NoReturn
+from typing import NoReturn, cast
 
 import numpy as np
 import pytest
@@ -19,18 +20,26 @@ from inspect_robots_yam.config import (
     DEFAULT_REST_POSE,
     YamConfig,
 )
-from inspect_robots_yam.embodiment import YAMEmbodiment
+from inspect_robots_yam.embodiment import BimanualDriver, YAMEmbodiment
 from inspect_robots_yam.operator import OperatorIO
 
 
 class FakeDriver:
-    def __init__(self, state: np.ndarray | None = None) -> None:
+    def __init__(
+        self,
+        state: np.ndarray | None = None,
+        effort: np.ndarray | None = None,
+    ) -> None:
         self.state = np.zeros(14) if state is None else state
+        self.effort = np.zeros(14) if effort is None else effort
         self.commands: list[np.ndarray] = []
         self.closed = False
 
     def get_joint_pos(self) -> np.ndarray:
         return self.state.copy()
+
+    def get_joint_eff(self) -> np.ndarray:
+        return self.effort.copy()
 
     def command_joint_pos(self, target: np.ndarray) -> None:
         self.commands.append(np.asarray(target, dtype=float).copy())
@@ -137,6 +146,70 @@ def test_reset_returns_observation_and_homes() -> None:
     assert home_cmd[0] == pytest.approx(0.1)
     assert home_cmd[6] == pytest.approx(19.0)  # 20 + 0.1 * (10 - 20)
     assert home_cmd[13] == pytest.approx(19.0)
+
+
+def test_joint_eff_is_absent_by_default() -> None:
+    emb, _, _ = _build()
+
+    observation = emb.reset(Scene(id="s", instruction="inspect"))
+
+    assert "joint_eff" not in observation.state
+
+
+def test_joint_eff_passes_through_raw_driver_values() -> None:
+    effort = np.asarray([1, 2, 3, 4, 5, 6, 73, -1, -2, -3, -4, -5, -6, -91])
+    driver = FakeDriver(effort=effort)
+    emb, _, _ = _build(YamConfig(report_joint_eff=True), driver=driver)
+
+    observation = emb.reset(Scene(id="s", instruction="inspect"))
+    reported = observation.state["joint_eff"]
+
+    assert reported.shape == (14,)
+    assert reported.dtype == np.float64
+    assert reported == pytest.approx(effort)
+    assert reported[[6, 13]] == pytest.approx((73, -91))
+    assert "joint_eff" not in emb.info.observation_space.state_keys
+
+
+def test_joint_eff_survives_full_reset_step_cycle_without_warnings() -> None:
+    emb, _, _ = _build(YamConfig(report_joint_eff=True))
+
+    with warnings.catch_warnings(record=True) as caught:
+        observation = emb.reset(Scene(id="s", instruction="inspect"))
+        result = emb.step(Action(data=np.zeros(14)))
+
+    assert observation.state["joint_eff"].shape == (14,)
+    assert result.observation.state["joint_eff"].shape == (14,)
+    assert caught == []
+
+
+def test_joint_eff_requires_updated_injected_driver() -> None:
+    class LegacyDriver:
+        def get_joint_pos(self) -> np.ndarray:
+            return np.zeros(14)
+
+        def command_joint_pos(self, target: np.ndarray) -> None:
+            del target
+
+        def close(self) -> None:
+            pass
+
+    driver = LegacyDriver()
+    emb = YAMEmbodiment(
+        YamConfig(cam_height=4, cam_width=4, report_joint_eff=True),
+        driver_factory=lambda _cfg: cast(BimanualDriver, driver),
+        camera_reader=_cameras,
+        operator=_operator(),
+        poll_end=lambda: False,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"report_joint_eff=true.*get_joint_eff\(\)",
+    ):
+        emb.reset(Scene(id="s", instruction="inspect"))
 
 
 def test_reset_without_home_pose_ramps_to_factory_joint_home() -> None:

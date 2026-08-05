@@ -21,6 +21,10 @@ Both declare the **same 14-D `joint_pos` contract** (2 arms × [6 joints +
 gripper], cameras `top/left/right`, packed `joint_pos` state). That makes
 `inspect_robots.compat.check_compatibility` pass with zero errors **and** zero warnings
 — the property `tests/test_compat.py` locks down.
+`YamConfig.report_joint_eff=True` additionally emits an optional packed 14-D
+`joint_eff` runtime state key with sign-corrected raw N·m values, including raw
+gripper effort. It is intentionally absent from the declared observation space
+because absolute joint conformance permits only one 14-D state field.
 
 ## Layout
 

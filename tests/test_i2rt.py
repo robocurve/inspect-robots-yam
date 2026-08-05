@@ -363,7 +363,11 @@ def test_option_slots_declare_boolean_config_args() -> None:
     config_fields = {f.name for f in fields(YamConfig)}
     assert all(isinstance(option, OptionSlot) for option in options)
     assert all(option.arg in config_fields for option in options)
-    assert {option.arg for option in options} == {"auto_start", "collision_guardrail"}
+    assert {option.arg for option in options} == {
+        "auto_start",
+        "collision_guardrail",
+        "report_joint_eff",
+    }
 
 
 def test_auto_start_wizard_default_diverges_from_config_default() -> None:
@@ -381,6 +385,16 @@ def test_auto_start_wizard_default_diverges_from_config_default() -> None:
 
     assert auto_start_slot.default is True
     assert YamConfig().auto_start is False
+
+
+def test_report_joint_eff_wizard_default_matches_config_default() -> None:
+    """Fresh wizard and direct configs both keep effort reporting opt-in."""
+    report_slot = next(
+        option for option in YAMEmbodiment.OPTION_SLOTS if option.arg == "report_joint_eff"
+    )
+
+    assert report_slot.default is False
+    assert YamConfig().report_joint_eff is False
 
 
 def test_collision_guardrail_wizard_default_diverges_from_config_default() -> None:

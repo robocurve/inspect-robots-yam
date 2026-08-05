@@ -232,10 +232,13 @@ class YamConfig(_FromKwargs):
     # but devices only accept their discrete rates (D435/D405: 6/15/30/60/90);
     # an unsupported rate fails at camera open with the librealsense error.
     depth_fps: int = 30
+    # Opt-in raw estimated torque state. Kept off by default because adding a
+    # runtime observation key changes the policy-facing contract.
+    report_joint_eff: bool = False
 
     @classmethod
     def from_kwargs(cls, **flat: Any) -> YamConfig:
-        """Build CLI configuration while keeping the table off-state explicit."""
+        """Build CLI configuration while keeping boolean off-states explicit."""
         for slot in ("top", "left", "right"):
             field = f"{slot}_depth_serial"
             if isinstance(flat.get(field), int):
@@ -244,10 +247,11 @@ class YamConfig(_FromKwargs):
                     "numeric values are int-coerced and lose leading zeros"
                 )
         # The CLI parses the literal `none` to Python None, which is falsy: an
-        # unvalidated None here would read as a silent opt-out of a safety
-        # gate (or silently remove the table plane) instead of the
-        # "library default" that `none` means everywhere else.
-        for flag in ("collision_guardrail", "collision_table"):
+        # unvalidated None here would silently flip a boolean off (opting out
+        # of a safety gate, removing the table plane, or dropping the effort
+        # report) instead of the "library default" that `none` means
+        # everywhere else.
+        for flag in ("collision_guardrail", "collision_table", "report_joint_eff"):
             if flag in flat and not isinstance(flat[flag], bool):
                 raise ValueError(f"{flag} must be true or false, got {flat[flag]!r}")
         if "collision_table_height" in flat and flat["collision_table_height"] is None:

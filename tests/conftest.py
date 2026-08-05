@@ -481,6 +481,10 @@ class SettleDriver:
                 self.state = self._target + self.offset
         return self.state.copy()
 
+    def get_joint_eff(self) -> np.ndarray:
+        """Report a canned packed effort vector."""
+        return np.zeros(14)
+
     def command_joint_pos(self, target: np.ndarray) -> None:
         """Record the target and restart the convergence countdown."""
         self.commands.append(np.asarray(target, dtype=float).copy())
