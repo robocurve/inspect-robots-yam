@@ -297,13 +297,13 @@ Then tell the robot what to do:
 inspect-robots "place the fork on the plate"
 ```
 
-The attended flow: position the scene, press Enter to start, press any key to
-end the episode, then grade it at the prompt that follows. The status line
-counts up against the run's real step limit (`t = 42s / 120s`) with no
-configuration needed (requires inspect-robots newer than 0.8.1; on older cores
-set `max_steps_hint`).
-With inspect-robots' operator console, the framework owns stdin and typing sends
-feedback.
+The attended flow has two terminal modes. When the framework connects its
+operator session, press Enter at either readiness gate, then use a bare Enter
+to end the episode; other typed lines become policy feedback or logged notes.
+On the never-connected legacy path, press Enter at the gates and press any key
+to end the episode. In both modes the status counts up against the run's real
+step limit (`t = 42s / 120s`) with no configuration needed (requires
+inspect-robots newer than 0.8.1; on older cores set `max_steps_hint`).
 
 To skip both Enter gates, set `auto_start=true` (CLI: `-E auto_start=true`,
 persistently via `[embodiment.args]` in config.ini, or accept the suggested
@@ -313,7 +313,7 @@ homing ramp, so stage the scene before launching the run. The same holds
 between episodes of a multi-episode run: the next episode starts as soon as
 the arms re-home, so restage while answering the grading prompt, not after.
 Everything else about the attended flow stays: the status line, the
-press-any-key end, and operator grading, which is also why `auto_start`
+active mode's end control, and operator grading, which is also why `auto_start`
 refuses to run without an interactive terminal.
 
 For exotic camera stacks (or full programmatic control), the Python API takes

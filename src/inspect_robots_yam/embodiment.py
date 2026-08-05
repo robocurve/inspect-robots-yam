@@ -147,6 +147,22 @@ class TaskEnvelopeLike(Protocol):
         ...
 
 
+class OperatorSessionLike(Protocol):
+    """Terminal surface required to yield all attended interaction to the framework."""
+
+    def status(self, line: str | None) -> None:
+        """Replace the current status line, or close it idempotently with ``None``."""
+        ...
+
+    def write_line(self, text: str) -> None:
+        """Append one durable line without disrupting the replaceable status."""
+        ...
+
+    def gate(self, prompt: str, *, hint: str | None = None) -> None:
+        """Block for readiness while the framework retains stdin ownership."""
+        ...
+
+
 @runtime_checkable
 class BimanualDriver(Protocol):
     """The minimal 14-D joint-position and effort driver the embodiment needs."""
@@ -1226,6 +1242,7 @@ class YAMEmbodiment:
         self._operator = operator if operator is not None else OperatorIO()
         self._poll_end: Callable[[], bool] = poll_end or default_poll_end
         self._deferred_operator_end = False
+        self._session: OperatorSessionLike | None = None
         self._sleep: Callable[[float], None] = sleep_fn or time.sleep
         self._clock: Callable[[], float] = clock or time.perf_counter
         self._status: Callable[[str | None], None] = status_fn or _default_status
@@ -1372,8 +1389,24 @@ class YAMEmbodiment:
         no end-of-episode poll or drains, and the framework terminates trials
         with ``operator_end`` itself. The setting persists across resets because
         every trial in the run belongs to the same console.
+
+        Newer cores should call :meth:`connect_operator_session` instead.
         """
         self._deferred_operator_end = True
+
+    def connect_operator_session(self, session: OperatorSessionLike) -> None:
+        """Yield terminal ownership to a framework session for the rest of the run.
+
+        This is a stand-down promise: after connection the embodiment never
+        reads stdin or writes status independently. The session replaces any
+        constructor-injected ``status_fn`` because the terminal must have one
+        owner. It outlives the embodiment, and ``session.status(None)`` is
+        idempotent, so teardown needs no special-casing and parking can continue
+        to render through the session.
+        """
+        self._deferred_operator_end = True
+        self._session = session
+        self._status = session.status
 
     def bind_task(self, envelope: TaskEnvelopeLike) -> None:
         """Store the framework's rollout horizon for the operator countdown.
@@ -1456,8 +1489,16 @@ class YAMEmbodiment:
                 # Non-blocking replacement for the stand-clear gate: the
                 # operator opted into zero-touch starts, but still gets one
                 # line of warning before the first motion of the connection.
-                self._operator.output_fn(
-                    "auto_start: arms will move to the home pose - stand clear."
+                notice = "auto_start: arms will move to the home pose - stand clear."
+                if self._session is not None:
+                    self._session.write_line(notice)
+                else:
+                    self._operator.output_fn(notice)
+            elif self._session is not None:
+                self._session.gate(
+                    "Arms will move to the home pose - stand clear, then press Enter...",
+                    hint="Set YamConfig(unattended=True) (CLI: -E unattended=true) "
+                    "to skip operator prompts.",
                 )
             else:
                 self._operator.wait_ready(
@@ -1501,6 +1542,12 @@ class YAMEmbodiment:
                 # after reset returns.
                 if not self._deferred_operator_end:
                     _drain_stdin()
+            elif self._session is not None:
+                self._session.gate(
+                    "Position the scene, then press Enter to start...",
+                    hint="Set YamConfig(unattended=True) (CLI: -E unattended=true) "
+                    "to skip operator prompts.",
+                )
             else:
                 self._operator.wait_ready(
                     drain=not self._deferred_operator_end,
@@ -1820,7 +1867,10 @@ class YAMEmbodiment:
         elapsed = self.num_steps / hz
         horizon = self._horizon_secs()
         span = f"{elapsed:.0f}s / {horizon:.0f}s" if horizon is not None else f"{elapsed:.0f}s"
-        self._status(f"t = {span} | any key ends the episode")
+        end_instruction = (
+            "Enter ends the episode" if self._deferred_operator_end else "any key ends the episode"
+        )
+        self._status(f"t = {span} | {end_instruction}")
 
     def _require_driver(self) -> BimanualDriver:
         # Reachable: step() before the first reset(), or after close().
