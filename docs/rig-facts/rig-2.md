@@ -80,7 +80,8 @@ measured at the rig.
 - Position moves undershoot: a `move_joints` call tracks only partway to
   the target and stalls near contact (gravity-loaded j1/j3 sag 0.05–0.1
   rad). Re-issue the same target, or command slightly beyond it, to
-  converge.
+  converge. Undershoot grows when carrying a load — expect lifts with an
+  object in the gripper to need more re-issues or stronger targets.
 - Larger commands are clamped by a per-step delta limit
   (`delta_clamped` in the move result) and each call reports only a few
   steps. Nothing is broken — re-issue, or command 0.1–0.2 rad beyond the
@@ -99,13 +100,16 @@ measured at the rig.
   actively pressing into the surface — back off.
 - Grasp verification: command the gripper fully closed (0.0) and read the
   residual — it settles at the grasped object's thickness in gripper
-  units, and gripper effort reads high (≈1.0–1.3) around an object versus
+  units, and gripper effort reads high (≈1.0–2.0) around an object versus
   low (≈0.1) when empty. Never test a grasp by commanding a partial
   close; that readback is ambiguous for thin objects.
 - High effort alone does not confirm a good grasp: the residual must also
   match the expected thickness of the part you meant to grip. A residual
   several times too large with high effort means you clamped something
-  bulky or at an angle, and it will slip during transport — regrasp.
+  bulky or at an angle, and it will slip during transport — regrasp. A
+  near-zero residual (≈0.01) on a rigid object is the opposite failure: a
+  shallow edge pinch that will slip — regrasp deeper so more material
+  sits between the jaws.
 - A grasped object touching down reads as stopped descent plus rising
   effort on the wrist joints — use it to time release when placing.
 
@@ -118,5 +122,11 @@ measured at the rig.
   grasp point. Plan the release around where the object's extent will
   land, not where the gripper is, and verify placement in the overhead
   frame after release before declaring the task done.
+- A carried object hangs and pivots below the grasp point, and wrist roll
+  shifts where its center sits relative to the gripper — adjust roll
+  after grasping so the load hangs where you want it before transporting.
+- Failed close attempts drag the object. After any failed grasp, re-find
+  the object's actual position in the overhead frame before retrying —
+  don't assume it is where it was.
 - The idle arm's wrist camera is a useful second viewpoint, but keep that
   arm retracted — it can collide with the working arm if brought close.
