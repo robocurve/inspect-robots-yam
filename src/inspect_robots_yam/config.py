@@ -232,10 +232,13 @@ class YamConfig(_FromKwargs):
     # but devices only accept their discrete rates (D435/D405: 6/15/30/60/90);
     # an unsupported rate fails at camera open with the librealsense error.
     depth_fps: int = 30
+    # Opt-in raw estimated torque state. Kept off by default because adding a
+    # runtime observation key changes the policy-facing contract.
+    report_joint_eff: bool = False
 
     @classmethod
     def from_kwargs(cls, **flat: Any) -> YamConfig:
-        """Build CLI configuration while keeping the table off-state explicit."""
+        """Build CLI configuration while keeping boolean off-states explicit."""
         for slot in ("top", "left", "right"):
             field = f"{slot}_depth_serial"
             if isinstance(flat.get(field), int):
@@ -250,6 +253,10 @@ class YamConfig(_FromKwargs):
         for flag in ("collision_guardrail", "collision_table"):
             if flag in flat and not isinstance(flat[flag], bool):
                 raise ValueError(f"{flag} must be true or false, got {flat[flag]!r}")
+        if "report_joint_eff" in flat and not isinstance(flat["report_joint_eff"], bool):
+            raise ValueError(
+                f"report_joint_eff must be true or false, got {flat['report_joint_eff']!r}"
+            )
         if "collision_table_height" in flat and flat["collision_table_height"] is None:
             raise ValueError(
                 "collision_table_height cannot be none; use collision_table=false "

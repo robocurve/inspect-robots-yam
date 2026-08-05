@@ -149,10 +149,14 @@ class TaskEnvelopeLike(Protocol):
 
 @runtime_checkable
 class BimanualDriver(Protocol):
-    """The minimal 14-D joint-position driver the embodiment needs."""
+    """The minimal 14-D joint-position and effort driver the embodiment needs."""
 
     def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]:
         """Read both arm poses in radians and driver-native gripper units."""
+        ...
+
+    def get_joint_eff(self) -> npt.NDArray[np.floating[Any]]:
+        """Read packed arm and gripper estimated torque in raw N·m."""
         ...
 
     def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None:
@@ -259,6 +263,13 @@ def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cov
     class _Real:
         def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]:
             return packing.pack(left.get_joint_pos(), right.get_joint_pos())
+
+        def get_joint_eff(self) -> npt.NDArray[np.floating[Any]]:
+            left_obs = left.get_observations()
+            right_obs = right.get_observations()
+            left_eff = np.append(left_obs["joint_eff"], left_obs["gripper_eff"])
+            right_eff = np.append(right_obs["joint_eff"], right_obs["gripper_eff"])
+            return packing.pack(left_eff, right_eff)
 
         def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None:
             lo, ro = packing.split(target)
@@ -1121,7 +1132,8 @@ class YAMEmbodiment:
     # runtime but the wizard suggests off, because a fresh setup has no
     # measured collision_*_base_pos geometry and the library-default offsets
     # can false-positive hold until max_steps (#109). An existing config's
-    # stored value replaces the suggestion on re-runs.
+    # stored value replaces the suggestion on re-runs. Joint effort reporting
+    # is opt-in in both places because it changes the observation contract.
     OPTION_SLOTS: ClassVar[tuple[OptionSlot, ...]] = (
         OptionSlot(
             arg="auto_start",
@@ -1132,6 +1144,11 @@ class YAMEmbodiment:
             arg="collision_guardrail",
             label="Block predicted arm collisions before they happen "
             "(collision_guardrail; measure collision_*_base_pos first)",
+            default=False,
+        ),
+        OptionSlot(
+            arg="report_joint_eff",
+            label="Report estimated joint effort in observations (report_joint_eff)",
             default=False,
         ),
     )
@@ -1237,6 +1254,17 @@ class YAMEmbodiment:
         docs_extra = self._cfg.docs_extra.strip()
         if docs_extra:
             docs += "\n\n" + docs_extra
+        if self._cfg.report_joint_eff:
+            docs += (
+                '\n\nJoint effort: ``observation.state["joint_eff"]`` is per-joint '
+                "estimated torque in N·m, sign-corrected, with the same 14-slot "
+                "layout as ``joint_pos`` but raw effort in the gripper slots. The "
+                "values include gravity load, so compare against a moving baseline. "
+                "Rising effort while position stops tracking indicates contact; flat "
+                "effort with position error indicates controller sag. ``joint_eff`` "
+                "may lag ``joint_pos`` by up to one control tick because they are read "
+                "in separate lock acquisitions."
+            )
         if self._builtin_realsense_reader is not None:
             depth_cameras = ", ".join(sorted(depth_serials))
             docs += (
@@ -1928,6 +1956,14 @@ class YAMEmbodiment:
                 gripper=float(state[13]),
             )
             values["eef_state"] = np.concatenate((left, right))
+        if self._cfg.report_joint_eff:
+            get_joint_eff = getattr(driver, "get_joint_eff", None)
+            if not callable(get_joint_eff):
+                raise RuntimeError(
+                    "report_joint_eff=true requires the injected driver to implement "
+                    "get_joint_eff()"
+                )
+            values["joint_eff"] = packing.validate_dim(get_joint_eff())
         if self._builtin_realsense_reader is None and self._depth_reader is None:
             return Observation(images=images, state=values, instruction=instruction)
         extra: dict[str, Any] = {}

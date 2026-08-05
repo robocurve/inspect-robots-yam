@@ -51,6 +51,15 @@ def test_default_docs_equal_mode_builtin(control_interface: str, built_in: str) 
     assert info.docs == built_in
 
 
+@pytest.mark.parametrize("report_joint_eff", (False, True))
+def test_joint_eff_docs_paragraph_is_opt_in(report_joint_eff: bool) -> None:
+    """Effort semantics appear exactly when the runtime state key is enabled."""
+    docs = YAMEmbodiment(report_joint_eff=report_joint_eff).info.docs
+    assert ('observation.state["joint_eff"]' in docs) is report_joint_eff
+    assert ("moving baseline" in docs) is report_joint_eff
+    assert ("up to one control tick" in docs) is report_joint_eff
+
+
 def test_docs_extra_is_stripped_and_appended_verbatim_after_one_blank_line() -> None:
     """Scalar kwargs append brace-containing rig notes with one blank separator."""
     info = YAMEmbodiment(docs_extra="  rig note {with braces}\n").info

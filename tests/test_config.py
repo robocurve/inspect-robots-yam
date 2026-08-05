@@ -499,6 +499,17 @@ def test_auto_start_defaults_off_and_binds_via_kwargs() -> None:
     assert YamConfig.from_kwargs(auto_start=True).auto_start is True
 
 
+def test_report_joint_eff_defaults_off_and_binds_via_kwargs() -> None:
+    assert YamConfig().report_joint_eff is False
+    assert YamConfig.from_kwargs(report_joint_eff=True).report_joint_eff is True
+
+
+@pytest.mark.parametrize("value", [None, "yes", 1])
+def test_report_joint_eff_rejects_non_bool_values(value: object) -> None:
+    with pytest.raises(ValueError, match="report_joint_eff must be true or false"):
+        YamConfig.from_kwargs(report_joint_eff=value)
+
+
 def test_collision_guardrail_defaults_on_and_binds_via_kwargs() -> None:
     assert YamConfig().collision_guardrail is True
     assert YamConfig.from_kwargs(collision_guardrail=False).collision_guardrail is False

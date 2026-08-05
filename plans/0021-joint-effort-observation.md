@@ -96,7 +96,8 @@ One opt-in config key; one new driver-protocol method; one new
   sign-corrected, same 14-slot layout as `joint_pos` but gripper slots raw;
   includes gravity load, so compare against a moving baseline; rising
   effort while position stops tracking = contact, flat effort with position
-  error = controller sag.
+  error = controller sag; may lag `joint_pos` by up to one control tick
+  (read in separate lock acquisitions).
 
 ## Tests
 

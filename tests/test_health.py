@@ -136,6 +136,9 @@ class FakeDriver:
             raise self.read_error
         return self.positions.copy()
 
+    def get_joint_eff(self) -> np.ndarray:
+        return np.zeros(14)
+
     def close(self) -> None:
         self.closed += 1
 

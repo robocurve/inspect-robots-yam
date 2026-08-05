@@ -886,6 +886,9 @@ def driver_factory(_config: YamConfig) -> Any:
         def get_joint_pos(self) -> np.ndarray:
             return np.zeros(14)
 
+        def get_joint_eff(self) -> np.ndarray:
+            return np.zeros(14)
+
         def command_joint_pos(self, target: np.ndarray) -> None:
             del target
 
