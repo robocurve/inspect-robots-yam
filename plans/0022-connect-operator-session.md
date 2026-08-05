@@ -211,8 +211,8 @@ test file if fixtures live there)
 **Files:** `pyproject.toml`, `src/inspect_robots_yam/CLAUDE.md`, `CHANGELOG.md`,
 `README.md` (wording sweep)
 
-- [ ] `inspect-robots>=0.42` with the pin-comment convention; `uv lock` if a lockfile
-  is tracked; `uv sync` still resolves.
+- [ ] `inspect-robots>=0.42` with the pin-comment convention; run `uv lock` and commit
+  the lockfile; `uv sync` still resolves.
 - [ ] CLAUDE.md rows: `embodiment.py` (hook + routing), `operator.py` (explicitly the
   never-connected fallback).
 - [ ] CHANGELOG under Unreleased: Added (the hook; ticker + gates through the
