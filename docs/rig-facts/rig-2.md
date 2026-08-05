@@ -29,8 +29,13 @@ measured at the rig.
 - Overhead frame orientation: arm-forward = image-up, arm-right =
   image-right. Both arm bases sit just below the bottom edge of the frame;
   a folded gripper shows as a dark blob near the bottom-left/bottom-right
-  corner. The bases are ~180 px apart in the top frame, which at 0.584 m
-  spacing gives ≈3.1 px/cm at base depth.
+  corner.
+- The top camera is mounted 0.72 m above the tabletop. Scale at table
+  level is ≈3.1 px/cm (the 0.584 m base spacing spans ~180 px in the
+  frame). For an object h metres above the table, multiply by
+  0.72/(0.72 − h): a gripper carrying at 10 cm reads ~15% larger than it
+  will at table level, so expect things to shrink slightly as you lower
+  them.
 - In each wrist image the grasp point (where the jaws meet) projects at
   (x≈115, y≈200) in the 224-px frame, just off the bottom edge —
   independent of wrist roll. To re-calibrate: briefly close the empty
