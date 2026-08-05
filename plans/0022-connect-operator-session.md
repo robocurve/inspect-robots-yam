@@ -43,8 +43,9 @@ for cores that predate the session.
 - Set up the worktree venv with `uv sync --extra dev --python 3.11` before running
   mypy: 3.12+ venvs produce ~118 phantom NumPy-stub errors in this repo.
 - **Version floor bump:** `pyproject.toml` dependency becomes `inspect-robots>=0.42`
-  (the release that ships `OperatorSession` and calls the hook). Keep the comment style
-  of the existing pin line. Run `uv lock` if the repo tracks a lockfile (check first).
+  (v0.42.0 is tagged and released — core commit 6c022ead ships `OperatorSession` and
+  the CLI hook caller). Keep the comment style of the existing pin line. The repo
+  tracks `uv.lock`: run `uv lock` and commit it.
 - Zero behavior change when the hook is never called: every existing test passes
   untouched. The legacy `default_poll_end` path and `defer_operator_end()` are kept.
 - Worktree: `.claude/worktrees/operator-session-hook`; run everything via `uv run ...`
@@ -99,12 +100,22 @@ for cores that predate the session.
    combinations, three of them meaningless.
 2. **Route the ticker by rebinding `self._status`, not by editing call sites.** The
    constructor already treats `self._status` as an injectable seam (`status_fn or
-   _default_status`); the hook assigns `self._status = session.status`. All fourteen
-   `_status(...)` call sites (homing, settling, running, ticker, parking, close) route
-   through the session with zero diff noise. A caller-supplied `status_fn` is
+   _default_status`); the hook assigns `self._status = session.status`. All nine
+   `_status(...)` call sites (`:1470`, `:1479`, `:1483`, `:1512`, `:1517`, `:1549`,
+   `:1599`, `:1606`, `:1823` — homing, settling, running, ticker, parking, close)
+   route through the session with zero diff noise. A caller-supplied `status_fn` is
    overridden by connection — document in the hook docstring that the framework
    session wins because the terminal must have one owner (the injectable seam remains
    test-visible: tests inject a recording *session*, not a `status_fn`).
+
+   **2a. One print site bypasses the `_status` seam and must be routed explicitly:**
+   the auto_start stand-clear notice at `:1459` goes through
+   `self._operator.output_fn(...)` (default `print`), not `self._status`. On a
+   connected run that raw print would write over the session's status line and break
+   the stand-down promise the core Protocol docstring makes binding. When connected,
+   this notice goes through `session.write_line(...)` (it is scrollback, not a status
+   rewrite — this is why `write_line` is in the `OperatorSessionLike` Protocol);
+   never-connected and deferred-only runs keep `output_fn` exactly as today.
 3. **Gates route to `session.gate` with a yam-specific hint.** When `self._session`
    is set, both `wait_ready` call sites become
    `self._session.gate(prompt, hint="Set YamConfig(unattended=True) (CLI: -E
@@ -114,6 +125,16 @@ for cores that predate the session.
    carries today. `OperatorIO.wait_ready` keeps serving the never-connected path
    unchanged; the deferred-but-not-connected combination (old-core `defer_operator_end`
    runs) keeps today's `wait_ready(drain=False, flush_first=True)` behavior exactly.
+   The start gate passes no explicit prompt today — its text is `wait_ready`'s
+   *default*, `"Position the scene, then press Enter to start..."` (operator.py:43).
+   The `session.gate` call site therefore spells that string out explicitly, and the
+   test pins it verbatim so the two cannot drift.
+
+   **3a. The auto_start dead-stdin fail-fast (`:1428-1436`) stays unchanged when
+   connected.** On the CLI path it is inert (`_attended` implies a TTY); a Python-API
+   caller who connects a session without a TTY gets the same pre-motion fault deferred
+   runs get today, and its message stays directionally true (the framework console
+   reads the same fd). No session branch there — do not improvise one.
 4. **Session-aware ticker wording.** `_emit_status` ends with
    `"Enter ends the episode"` when `self._deferred_operator_end` is true (both the
    session and the old-core console mean "a bare Enter ends it"; "any key" is wrong
@@ -155,7 +176,11 @@ module top and mypy stays strict without a hard version coupling. Sets
   set; every subsequent `_status` text (homing, running, ticker, parking) lands on the
   fake session in order; a constructor-injected `status_fn` stops receiving after
   connection; `step()` never calls the injected `poll_end` after connection; reset's
-  auto_start path never calls `_drain_stdin` (monkeypatch-record) after connection.
+  auto_start path never calls `_drain_stdin` (monkeypatch-record) after connection;
+  connected + `auto_start=true` lands the stand-clear notice on the fake session's
+  `write_line` and never calls `self._operator.output_fn` (decision 2a — mirror the
+  fixture at tests/test_embodiment.py:549), while never-connected auto_start keeps
+  `output_fn` receiving it.
 - [ ] **Step 2: run, confirm FAIL. Step 3: implement. Step 4: green.**
 
 ### Task 2: gates through `session.gate`
