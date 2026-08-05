@@ -33,11 +33,12 @@ measured at the rig.
   toward the arm's base. Rolling the wrist rotates the scene in the image
   but the jaws always close along image-x, so roll until the target's
   long axis looks vertical in the image to align a grasp across it.
-- Wrist-cam scale near table level: ≈10–12 px/cm with the hand ~10 cm up,
-  so the 224-px frame spans only ~20 cm and a hand-sized object fills it.
-  Cheapest calibration is one small pure-j0 nudge: the lateral pixel
-  shift corresponds to r·Δj0 metres of travel, giving px/cm in a single
-  call.
+- Wrist-cam scale varies strongly with height and pose: measured values
+  within ~10 cm of the table ranged from ~3 to ~12 px/cm across runs, so
+  never trust a remembered scale — close to the table the 224-px frame
+  may span only a few tens of centimetres, and a hand-sized object can
+  fill it. Calibrate in a single call with one small pure-j0 nudge: the
+  lateral pixel shift corresponds to r·Δj0 metres of travel.
 - Radial (depth) distance cannot be eyeballed from the top-down wrist
   view. Do an early calibrated test move: translate a known 3 cm and
   measure the pixel shift; expect first estimates to be off by 5–10 cm
@@ -56,11 +57,21 @@ measured at the rig.
 
 - Arm bases are 0.584 m (23 in) apart, mounted parallel (facing the same
   way).
-- Table plane: fingertips contact the tabletop when model forward
-  kinematics puts the fingertip at z ≈ +0.08 m above the mounting plane
-  (consistent across radii). Treat that value, not z = 0, as the table in
-  model coordinates; the offset between model and reality is not yet
-  attributed, so approach the last few centimetres slowly.
+- Table plane: the tabletop coincides with the arm mounting plane — true
+  fingertip z = 0 at table contact (verified by replaying contact poses
+  through the framework's grasp-site forward kinematics). If you estimate
+  height with the planar approximation below, the table will appear at
+  z ≈ +0.08, not 0 — that offset is the approximation's bias, not the
+  table's height.
+- Planar FK approximation: in the radial–vertical plane, upper-arm angle
+  A = π − j1, forearm B = j2 − j1, fingertip axis C = B + j3, and
+  fingertip ≈ (0, 0.114) + 0.264·(cos A, sin A) + 0.245·(cos B, sin B)
+  + 0.101·(cos C, sin C); gripper-down is C = −π/2. In the gripper-down
+  working envelope (r ≈ 0.3–0.5 m) this reads ~3–4 cm short in r and
+  ~9 cm high in z, with the bias nearly constant — so relative moves and
+  its local Jacobian are accurate, but calibrate absolute height with one
+  table touch. Outside that envelope (arm folded) the approximation
+  degrades sharply.
 - With the gripper pointing straight down, reach caps at ~0.51 m wrist
   radius; pitching the gripper 30–45° forward buys another 10–20 cm.
 
@@ -88,12 +99,21 @@ measured at the rig.
   actively pressing into the surface — back off.
 - Grasp verification: command the gripper fully closed (0.0) and read the
   residual — it settles at the grasped object's thickness in gripper
-  units, and gripper effort reads high (≈1.0) around an object versus low
-  (≈0.1) when empty. Never test a grasp by commanding a partial close;
-  that readback is ambiguous for thin objects.
+  units, and gripper effort reads high (≈1.0–1.3) around an object versus
+  low (≈0.1) when empty. Never test a grasp by commanding a partial
+  close; that readback is ambiguous for thin objects.
+- High effort alone does not confirm a good grasp: the residual must also
+  match the expected thickness of the part you meant to grip. A residual
+  several times too large with high effort means you clamped something
+  bulky or at an angle, and it will slip during transport — regrasp.
+- A grasped object touching down reads as stopped descent plus rising
+  effort on the wrist joints — use it to time release when placing.
 
 ## Manipulation practice
 
+- For thin objects lying on a surface, lower the open gripper until joint
+  effort confirms fingertip–table contact, then close — closing at an
+  unverified height is the main cause of angled, slip-prone grasps.
 - When grasping near an object's end, the object extends well beyond the
   grasp point. Plan the release around where the object's extent will
   land, not where the gripper is, and verify placement in the overhead
