@@ -1938,6 +1938,17 @@ class YAMEmbodiment:
         # exact units STATE_SPEC declares (and _send() accepts) — the inverse of
         # the de-normalization applied to outgoing commands.
         state = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+        # Read effort back-to-back with position so the documented skew bound
+        # (at most one control tick) holds regardless of camera/FK wall time.
+        joint_eff: npt.NDArray[np.float64] | None = None
+        if self._cfg.report_joint_eff:
+            get_joint_eff = getattr(driver, "get_joint_eff", None)
+            if not callable(get_joint_eff):
+                raise RuntimeError(
+                    "report_joint_eff=true requires the injected driver to implement "
+                    "get_joint_eff()"
+                )
+            joint_eff = packing.validate_dim(get_joint_eff())
 
         images = dict(self._camera_reader(self._cfg))
         expected_shape = (self._cfg.cam_height, self._cfg.cam_width, 3)
@@ -1956,14 +1967,8 @@ class YAMEmbodiment:
                 gripper=float(state[13]),
             )
             values["eef_state"] = np.concatenate((left, right))
-        if self._cfg.report_joint_eff:
-            get_joint_eff = getattr(driver, "get_joint_eff", None)
-            if not callable(get_joint_eff):
-                raise RuntimeError(
-                    "report_joint_eff=true requires the injected driver to implement "
-                    "get_joint_eff()"
-                )
-            values["joint_eff"] = packing.validate_dim(get_joint_eff())
+        if joint_eff is not None:
+            values["joint_eff"] = joint_eff
         if self._builtin_realsense_reader is None and self._depth_reader is None:
             return Observation(images=images, state=values, instruction=instruction)
         extra: dict[str, Any] = {}

@@ -70,7 +70,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - Opt-in `YamConfig.report_joint_eff` reporting of sign-corrected estimated
   torque under `observation.state["joint_eff"]`, using the same packed 14-slot
-  arm and gripper layout as `joint_pos` with raw N·m gripper values.
+  arm and gripper layout as `joint_pos` with raw N·m gripper values (#112).
 - `ActServerPolicy.server_url` and `remedy` connection-failure hint attributes,
   plus the CLI-settable `ActServerConfig.remedy` recovery instruction (#97,
   robocurve/inspect-robots#219).

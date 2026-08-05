@@ -247,9 +247,10 @@ class YamConfig(_FromKwargs):
                     "numeric values are int-coerced and lose leading zeros"
                 )
         # The CLI parses the literal `none` to Python None, which is falsy: an
-        # unvalidated None here would read as a silent opt-out of a safety
-        # gate (or silently remove the table plane) instead of the
-        # "library default" that `none` means everywhere else.
+        # unvalidated None here would silently flip a boolean off (opting out
+        # of a safety gate, removing the table plane, or dropping the effort
+        # report) instead of the "library default" that `none` means
+        # everywhere else.
         for flag in ("collision_guardrail", "collision_table", "report_joint_eff"):
             if flag in flat and not isinstance(flat[flag], bool):
                 raise ValueError(f"{flag} must be true or false, got {flat[flag]!r}")
