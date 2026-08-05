@@ -13,6 +13,12 @@ measured at the rig.
 - Wrist pitch axis to fingertip midpoint: 0.101 m (gripper flange to
   fingertip: 0.057 m, stock linear gripper). Contact happens at the
   fingertips, and this offset rotates with wrist pitch.
+- Gripper stroke is ~9.5 cm jaw-to-jaw fully open, and gripper commands/
+  readings are the normalized fraction of that: residual × 9.5 cm ≈
+  grasped thickness (e.g. a reading of 0.04 ≈ 4 mm — a thin handle), and
+  anything wider than ~9 cm cannot be grasped across.
+- Episodes start with both arms folded near all-zero joints and grippers
+  fully open (reading ≈ 1.0).
 
 ## Cameras
 
