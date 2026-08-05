@@ -24,7 +24,8 @@ measured at the rig.
 
 - `top` is a fixed overhead camera. `left` and `right` are wrist cameras
   mounted on the rolling gripper body of the same-named arm, tilted
-  forward of the finger axis.
+  forward of the finger axis; the mounting is identical on both arms, so
+  the wrist-image facts below apply to either.
 - Overhead frame orientation: arm-forward = image-up, arm-right =
   image-right. Both arm bases sit just below the bottom edge of the frame;
   a folded gripper shows as a dark blob near the bottom-left/bottom-right
