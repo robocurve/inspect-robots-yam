@@ -88,6 +88,30 @@ class _RecordingOperator(OperatorIO):
         self.wait_calls.append((prompt, drain, flush_first))
 
 
+class _RecordingSession:
+    """Record the terminal operations owned by a framework operator session."""
+
+    def __init__(self, gate_error: Exception | None = None) -> None:
+        self.statuses: list[str | None] = []
+        self.lines: list[str] = []
+        self.gates: list[tuple[str, str | None]] = []
+        self._gate_error = gate_error
+
+    def status(self, line: str | None) -> None:
+        """Record a replaceable status line or its closing marker."""
+        self.statuses.append(line)
+
+    def write_line(self, text: str) -> None:
+        """Record one durable scrollback line."""
+        self.lines.append(text)
+
+    def gate(self, prompt: str, *, hint: str | None = None) -> None:
+        """Record one readiness gate and raise its configured fault."""
+        self.gates.append((prompt, hint))
+        if self._gate_error is not None:
+            raise self._gate_error
+
+
 def _build(
     cfg: YamConfig | None = None,
     *,
@@ -433,6 +457,44 @@ def test_defer_operator_end_survives_resets() -> None:
     assert polls == []
 
 
+def test_connect_operator_session_owns_status_and_episode_end() -> None:
+    session = _RecordingSession()
+    constructor_status: list[str | None] = []
+    polls: list[bool] = []
+    driver = FakeDriver()
+    emb = YAMEmbodiment(
+        YamConfig(cam_height=4, cam_width=4, control_hz=1.0),
+        driver_factory=lambda _cfg: driver,
+        camera_reader=_cameras,
+        operator=_operator(),
+        poll_end=lambda: polls.append(True) or True,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+        status_fn=constructor_status.append,
+    )
+
+    emb.connect_operator_session(session)
+
+    assert emb._deferred_operator_end is True
+    emb.reset(Scene(id="s", instruction="x"))
+    result = emb.step(Action(data=np.zeros(14)))
+    emb.close()
+
+    assert result.terminated is False
+    assert polls == []
+    assert constructor_status == []
+    assert session.statuses[0:3] == [
+        "homing: ramping arms to start pose",
+        None,
+        "Running: Enter ends the episode; type a message + Enter to send feedback.",
+    ]
+    assert session.statuses[3].startswith("t = 1s | ")
+    assert session.statuses[4:] == [
+        "parking: ramping arms back before torque-off",
+        None,
+    ]
+
+
 def test_pacing_sleeps_to_control_rate() -> None:
     emb, _, sleeps = _build()  # control_hz=10 -> period 0.1, clock constant 0 -> sleep ~0.1
     emb.reset(Scene(id="s", instruction="x"))
@@ -592,6 +654,25 @@ def test_deferred_auto_start_leaves_stdin_for_console(
     assert drains == []
 
 
+def test_connected_auto_start_routes_notice_and_leaves_stdin_for_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: True)
+    drains: list[bool] = []
+    monkeypatch.setattr(embodiment_module, "_drain_stdin", lambda: drains.append(True))
+    output_lines: list[str] = []
+    operator = OperatorIO(input_fn=lambda _prompt: "", output_fn=output_lines.append)
+    session = _RecordingSession()
+    emb, _, _ = _build(YamConfig(auto_start=True), operator=operator)
+    emb.connect_operator_session(session)
+
+    emb.reset(Scene(id="s", instruction="x"))
+
+    assert drains == []
+    assert session.lines == ["auto_start: arms will move to the home pose - stand clear."]
+    assert output_lines == []
+
+
 @pytest.mark.parametrize(
     ("deferred", "expected_controls"),
     [
@@ -610,6 +691,40 @@ def test_reset_gates_follow_stdin_ownership(
     emb.reset(Scene(id="s", instruction="x"))
 
     assert [(drain, flush) for _, drain, flush in operator.wait_calls] == expected_controls
+
+
+def test_connected_reset_routes_both_exact_gates_through_session() -> None:
+    operator = _RecordingOperator()
+    session = _RecordingSession()
+    emb, _, _ = _build(operator=operator)
+    emb.connect_operator_session(session)
+
+    emb.reset(Scene(id="s", instruction="x"))
+
+    hint = "Set YamConfig(unattended=True) (CLI: -E unattended=true) to skip operator prompts."
+    assert session.gates == [
+        (
+            "Arms will move to the home pose - stand clear, then press Enter...",
+            hint,
+        ),
+        ("Position the scene, then press Enter to start...", hint),
+    ]
+    assert operator.wait_calls == []
+
+
+def test_connected_gate_fault_propagates_unwrapped() -> None:
+    fault = EmbodimentFault("session gate failed")
+    session = _RecordingSession(gate_error=fault)
+    operator = _RecordingOperator()
+    emb, driver, _ = _build(operator=operator)
+    emb.connect_operator_session(session)
+
+    with pytest.raises(EmbodimentFault) as caught:
+        emb.reset(Scene(id="s", instruction="x"))
+
+    assert caught.value is fault
+    assert operator.wait_calls == []
+    assert driver.commands == []
 
 
 def test_auto_start_requires_interactive_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1029,10 +1144,27 @@ def test_status_line_updates_once_per_second_with_horizon() -> None:
     for _ in range(25):  # 2.5 s at 10 Hz
         emb.step(Action(data=np.zeros(14)))
     updates = [m for m in status[reset_entries:] if m is not None]
-    assert len(updates) == 2  # at steps 10 and 20
-    assert "1s / 120s" in updates[0]
-    assert "2s / 120s" in updates[1]
-    assert "any key" in updates[0]  # instructions ride along
+    assert updates == [
+        "t = 1s / 120s | any key ends the episode",
+        "t = 2s / 120s | any key ends the episode",
+    ]
+
+
+@pytest.mark.parametrize("connected", [False, True])
+def test_deferred_ticker_says_enter_ends_the_episode(connected: bool) -> None:
+    emb, status = _build_with_status(YamConfig(control_hz=1.0))
+    if connected:
+        session = _RecordingSession()
+        emb.connect_operator_session(session)
+        status = session.statuses
+    else:
+        emb.defer_operator_end()
+
+    emb.reset(Scene(id="s", instruction="x"))
+    reset_entries = len(status)
+    emb.step(Action(data=np.zeros(14)))
+
+    assert status[reset_entries:] == ["t = 1s | Enter ends the episode"]
 
 
 def test_status_line_without_hint_shows_elapsed_only() -> None:

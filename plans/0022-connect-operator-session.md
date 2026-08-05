@@ -172,7 +172,7 @@ module top and mypy stays strict without a hard version coupling. Sets
 `self._status = session.status`. D1 docstring: stand-down promise, seam override
 (decision 2), teardown note (decision 6).
 
-- [ ] **Step 1: failing tests.** Connect with a recording fake session: deferred flag
+- [x] **Step 1: failing tests.** Connect with a recording fake session: deferred flag
   set; every subsequent `_status` text (homing, running, ticker, parking) lands on the
   fake session in order; a constructor-injected `status_fn` stops receiving after
   connection; `step()` never calls the injected `poll_end` after connection; reset's
@@ -181,30 +181,30 @@ module top and mypy stays strict without a hard version coupling. Sets
   `write_line` and never calls `self._operator.output_fn` (decision 2a — mirror the
   fixture at tests/test_embodiment.py:549), while never-connected auto_start keeps
   `output_fn` receiving it.
-- [ ] **Step 2: run, confirm FAIL. Step 3: implement. Step 4: green.**
+- [x] **Step 2: run, confirm FAIL. Step 3: implement. Step 4: green.**
 
 ### Task 2: gates through `session.gate`
 
 **Files:** `src/inspect_robots_yam/embodiment.py`, same test file (+ the operator IO
 test file if fixtures live there)
 
-- [ ] **Step 1: failing tests.** Connected: both gates (home gate, start gate) call
+- [x] **Step 1: failing tests.** Connected: both gates (home gate, start gate) call
   `session.gate` with the exact prompts `wait_ready` passes today and the decision-3
   hint; `OperatorIO.wait_ready` is never called; a fake session whose `gate` raises
   `EmbodimentFault` propagates it (no wrapping, no swallow). Not connected: existing
   `wait_ready` tests untouched and passing, including the deferred-not-connected
   combination (`defer_operator_end()` alone keeps `drain=False, flush_first=True`).
-- [ ] **Step 2-4: fail → implement → green.**
+- [x] **Step 2-4: fail → implement → green.**
 
 ### Task 3: session-aware ticker wording
 
 **Files:** `src/inspect_robots_yam/embodiment.py`, the `_emit_status` test file
 (`grep -rln "_emit_status\|any key" tests/`)
 
-- [ ] **Step 1: failing tests.** Deferred (either hook): ticker text ends with
+- [x] **Step 1: failing tests.** Deferred (either hook): ticker text ends with
   `"Enter ends the episode"`; legacy: `"any key ends the episode"` unchanged;
   unattended: no ticker at all (existing test).
-- [ ] **Step 2-4: fail → implement → green.**
+- [x] **Step 2-4: fail → implement → green.**
 
 ### Task 4: floor bump, docs, changelog
 
@@ -213,13 +213,13 @@ test file if fixtures live there)
 
 - [ ] `inspect-robots>=0.42` with the pin-comment convention; run `uv lock` and commit
   the lockfile; `uv sync` still resolves.
-- [ ] CLAUDE.md rows: `embodiment.py` (hook + routing), `operator.py` (explicitly the
+- [x] CLAUDE.md rows: `embodiment.py` (hook + routing), `operator.py` (explicitly the
   never-connected fallback).
-- [ ] CHANGELOG under Unreleased: Added (the hook; ticker + gates through the
+- [x] CHANGELOG under Unreleased: Added (the hook; ticker + gates through the
   framework session), Changed (session-connected runs end episodes with Enter, not
   any key; typed lines become policy feedback or logged notes), reference this plan
   and the tracking issue. No em dashes.
-- [ ] README sweep for "press any key" / end-episode wording: describe both modes in
+- [x] README sweep for "press any key" / end-episode wording: describe both modes in
   one short paragraph.
-- [ ] **Full gates** (with the 3.11 venv): `uv run ruff check . && uv run ruff format
+- [x] **Full gates** (with the 3.11 venv): `uv run ruff check . && uv run ruff format
   --check . && uv run mypy && uv run pytest --cov -q` — 100%.

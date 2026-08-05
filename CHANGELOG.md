@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Session-connected runs now use a bare Enter to end an episode. Other typed
+  lines become policy feedback or logged notes, while never-connected runs
+  retain the legacy any-key ending (plan 0022, #114).
 - The setup wizard now suggests **no** for its `collision_guardrail` question
   (previously yes). A fresh setup has no measured `collision_*_base_pos`
   geometry, and the guardrail's library-default offsets can false-positive
@@ -68,6 +71,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the wizard still writes an explicit true/false answer.
 
 ### Added
+- `YAMEmbodiment.connect_operator_session()` gives the framework session sole
+  terminal ownership, including readiness gates, durable notices, and the
+  replaceable running ticker (plan 0022, #114).
 - Opt-in `YamConfig.report_joint_eff` reporting of sign-corrected estimated
   torque under `observation.state["joint_eff"]`, using the same packed 14-slot
   arm and gripper layout as `joint_pos` with raw N·m gripper values (#112).
