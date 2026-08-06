@@ -61,12 +61,14 @@ should expose a `close()`, which the embodiment calls during teardown.
 ```bash
 uv venv && source .venv/bin/activate
 uv pip install inspect-robots-yam
-# The i2rt driver is git-only and not on PyPI. Install it directly.
+# The i2rt driver is git-only and not on PyPI. Install it directly. The commit is
+# the one the rigs run: it defaults enable_auto_recovery=False, so a motor error
+# fails fast rather than being cleaned and re-enabled inside the control loop.
 # The build-constraints file works around a build failure in i2rt's ruckig
 # dependency (source-only releases that no longer build under scikit-build-core
 # 1.0; the pin below 0.10 matches i2rt's own in-repo workaround):
 echo 'scikit-build-core<0.10' > build-constraints.txt
-uv pip install --build-constraints build-constraints.txt "i2rt @ git+https://github.com/i2rt-robotics/i2rt@db582eaa70b6a057a1e2981da6219dfa6c29422a"
+uv pip install --build-constraints build-constraints.txt "i2rt @ git+https://github.com/i2rt-robotics/i2rt@ac096928d6899ddf852a71c5e8fbaa6055cd9745"
 ```
 
 The base package includes the `/act` transport and builtin OpenCV camera reader.
