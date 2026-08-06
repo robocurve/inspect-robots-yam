@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The documented `i2rt` pin now matches the commit the rigs run
+  (`ac096928`, was `db582eaa`), in both the README and
+  `I2RT_INSTALL_COMMAND`, the remedy string a missing driver surfaces. The newer
+  commit defaults `enable_auto_recovery=False`, so a motor error fails the
+  episode fast instead of the driver cleaning and re-enabling the motor inside
+  the control loop. A rig installed from the old pin ran the self-healing
+  behavior no rig has actually been operated with (#118).
+
 - Session-connected runs now use a bare Enter to end an episode. Other typed
   lines become policy feedback or logged notes, while never-connected runs
   retain the legacy any-key ending (plan 0022, #114).
