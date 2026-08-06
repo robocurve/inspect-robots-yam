@@ -89,6 +89,8 @@ def test_lazy_loader_has_guided_install_error(monkeypatch: pytest.MonkeyPatch) -
         ({"sweep_resolution": 0.0}, "sweep_resolution"),
         ({"sweep_resolution": np.nan}, "sweep_resolution"),
         ({"gripper_qpos": "command"}, "not supported"),
+        ({"hold_limit": -1}, "hold_limit"),
+        ({"hold_limit": "50"}, "hold_limit"),
     ],
 )
 def test_collision_config_rejects_unsound_values(
@@ -325,6 +327,8 @@ def test_approver_rejects_bad_mode_start_shape_nonfinite_and_collision(
     bad[0] = np.nan
     with pytest.raises(ValueError, match="finite"):
         CollisionApprover(checker, bad, action_space=joint_space)
+    with pytest.raises(ValueError, match="hold_limit"):
+        CollisionApprover(checker, HOME, action_space=joint_space, hold_limit=-1)
     with pytest.raises(
         ValueError,
         match=r"already in collision.*collision_guardrail=false.*collision_\* geometry",
@@ -411,6 +415,84 @@ def test_strict_mode_and_nonfinite_action_abort(
     bad[1] = np.inf
     with pytest.raises(SafetyAbort, match="non-finite"):
         strict.review(Action(bad), {})
+
+
+def test_consecutive_collision_hold_limit_abort(
+    checker: CollisionChecker,
+    joint_space: Box,
+) -> None:
+    approver = CollisionApprover(
+        checker,
+        HOME,
+        action_space=joint_space,
+        hold_limit=3,
+    )
+    store: dict[str, Any] = {}
+    action = Action(REACH_DOWN)
+
+    # First blocked action -> count 1
+    h1 = approver.review(action, store)
+    assert h1.meta["collision_blocked"] is True
+    assert store["yam_collision:blocked_count"] == 1
+
+    # Second blocked action -> count 2
+    h2 = approver.review(action, store)
+    assert h2.meta["collision_blocked"] is True
+    assert store["yam_collision:blocked_count"] == 2
+
+    # Third blocked action -> reaches hold_limit=3 and raises SafetyAbort
+    with pytest.raises(
+        SafetyAbort,
+        match=r"CollisionApprover reached consecutive hold limit \(3/3\)",
+    ):
+        approver.review(action, store)
+
+
+def test_consecutive_collision_hold_counter_resets_on_safe_action(
+    checker: CollisionChecker,
+    joint_space: Box,
+) -> None:
+    approver = CollisionApprover(
+        checker,
+        HOME,
+        action_space=joint_space,
+        hold_limit=3,
+    )
+    store: dict[str, Any] = {}
+    colliding = Action(REACH_DOWN)
+    safe = Action(_pose(left_j0=0.01))
+
+    # Hold 2 times
+    approver.review(colliding, store)
+    approver.review(colliding, store)
+    assert store["yam_collision:blocked_count"] == 2
+
+    # Safe action resets counter
+    approver.review(safe, store)
+    assert store["yam_collision:blocked_count"] == 0
+
+    # Hold 2 times again without aborting
+    approver.review(colliding, store)
+    approver.review(colliding, store)
+    assert store["yam_collision:blocked_count"] == 2
+
+
+def test_disabled_collision_hold_limit_allows_indefinite_holds(
+    checker: CollisionChecker,
+    joint_space: Box,
+) -> None:
+    for limit in (None, 0):
+        approver = CollisionApprover(
+            checker,
+            HOME,
+            action_space=joint_space,
+            hold_limit=limit,
+        )
+        store: dict[str, Any] = {}
+        colliding = Action(REACH_DOWN)
+        for _ in range(10):
+            held = approver.review(colliding, store)
+            assert held.meta["collision_blocked"] is True
 
 
 def test_resolution_derived_substeps_clamp_at_one_and_sixty_four(

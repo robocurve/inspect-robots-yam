@@ -35,6 +35,7 @@ ViolationMode = Literal["hold", "abort"]
 
 _INSTALL_COMMAND = 'pip install "inspect-robots-yam[collision]"'
 _LAST_SAFE_KEY = "yam_collision:last_safe"
+_BLOCKED_COUNT_KEY = "yam_collision:blocked_count"
 _SIDES = ("left", "right")
 _ACTION_TO_MODEL_JOINT: tuple[tuple[str, str], ...] = tuple(
     (f"{side}_j{index}", f"{side}_joint{index + 1}") for side in _SIDES for index in range(ARM_DOF)
@@ -78,6 +79,7 @@ class CollisionConfig:
     penetration_threshold: float = 1e-3
     sweep_resolution: float = 0.05
     gripper_qpos: Literal["open", "command"] = "open"
+    hold_limit: int | None = 50
 
     def __post_init__(self) -> None:
         """Reject geometry or query settings that cannot produce sound checks."""
@@ -99,6 +101,12 @@ class CollisionConfig:
                 "gripper_qpos='command' is not supported by collision guardrail v1; "
                 "only 'open' is available"
             )
+        if self.hold_limit is not None and (
+            not isinstance(self.hold_limit, int)
+            or isinstance(self.hold_limit, bool)
+            or self.hold_limit < 0
+        ):
+            raise ValueError("hold_limit must be a non-negative integer or None")
 
 
 _DEFAULT_COLLISION_CONFIG = CollisionConfig()
@@ -261,10 +269,18 @@ class CollisionApprover:
         *,
         action_space: Box,
         on_violation: ViolationMode = "hold",
+        hold_limit: int | None = None,
     ) -> None:
         _validate_action_space(action_space)
         if on_violation not in ("hold", "abort"):
             raise ValueError("on_violation must be 'hold' or 'abort'")
+        effective_limit = hold_limit if hold_limit is not None else checker.config.hold_limit
+        if effective_limit is not None and (
+            not isinstance(effective_limit, int)
+            or isinstance(effective_limit, bool)
+            or effective_limit < 0
+        ):
+            raise ValueError("hold_limit must be a non-negative integer or None")
         self._checker = checker
         self._start_pose = validate_dim(start_pose, TOTAL_DIM).copy()
         if not bool(np.all(np.isfinite(self._start_pose))):
@@ -277,6 +293,7 @@ class CollisionApprover:
                 "to opt out, or correct the collision_* geometry fields."
             )
         self._on_violation = on_violation
+        self._hold_limit = effective_limit
 
     def review(self, action: Action, store: dict[str, Any]) -> Action:
         """Approve a safe sweep while preserving identity, or reject it visibly."""
@@ -292,6 +309,17 @@ class CollisionApprover:
                 detail = f"{self._report_pair(report)}@{step}/{substeps}"
                 if self._on_violation == "abort":
                     raise SafetyAbort(f"CollisionApprover blocked predicted collision: {detail}")
+                consecutive = store.get(_BLOCKED_COUNT_KEY, 0) + 1
+                store[_BLOCKED_COUNT_KEY] = consecutive
+                if (
+                    self._hold_limit is not None
+                    and self._hold_limit > 0
+                    and consecutive >= self._hold_limit
+                ):
+                    raise SafetyAbort(
+                        "CollisionApprover reached consecutive hold limit "
+                        f"({consecutive}/{self._hold_limit}): {detail}"
+                    )
                 meta = dict(action.meta)
                 meta.pop("clamped", None)
                 meta.pop("delta_clamped", None)
@@ -304,6 +332,7 @@ class CollisionApprover:
                 DeltaLimitApprover.rewind_reference(store, last)
                 return replace(action, data=last.copy(), meta=meta)
         store[_LAST_SAFE_KEY] = target.copy()
+        store[_BLOCKED_COUNT_KEY] = 0
         return action
 
     def _substep_count(self, start: Vec, target: Vec) -> int:
@@ -328,6 +357,7 @@ def _config_from_yam(yam_config: YamConfig) -> CollisionConfig:
         value = getattr(yam_config, yam_name)
         if value is not None:
             set_fields[collision_name] = value
+    set_fields["hold_limit"] = yam_config.collision_hold_limit
     if not yam_config.collision_table:
         set_fields["table_height"] = None
     elif yam_config.collision_table_height is not None:
@@ -350,14 +380,14 @@ def _collision_approver(
         yam_config.low,
         yam_config.high,
     )
-    checker = CollisionChecker(
-        _config_from_yam(yam_config) if collision_config is None else collision_config
-    )
+    cfg = _config_from_yam(yam_config) if collision_config is None else collision_config
+    checker = CollisionChecker(cfg)
     return CollisionApprover(
         checker,
         start_pose,
         action_space=action_space,
         on_violation=on_violation,
+        hold_limit=cfg.hold_limit,
     )
 
 
