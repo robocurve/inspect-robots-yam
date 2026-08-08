@@ -20,7 +20,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "inspect-robots>=0.47",  # Esc//stop episode-end gesture the deferred-mode status text describes
+    "inspect-robots>=0.47",  # Esc or /stop episode-end gesture the deferred-mode status text describes
     "numpy>=1.24",
     "requests>=2.31",
     "json-numpy>=2.1",
