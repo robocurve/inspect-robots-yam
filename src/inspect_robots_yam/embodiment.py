@@ -1556,8 +1556,9 @@ class YAMEmbodiment:
             horizon = self._horizon_secs()
             limit = f" Max {horizon:.0f}s." if horizon is not None else ""
             if self._session is not None:
-                # Rig facts only: the connected session owns all console prose
-                # (end gesture, message affordance) and composes it per policy.
+                # Rig facts only: console prose (end gesture, message
+                # affordance) belongs to the connected session. This banner
+                # renders pre-footer, so the hint first appears on the ticker.
                 self._status(f"Running.{limit}")
             elif self._deferred_operator_end:
                 self._status(

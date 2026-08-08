@@ -1238,6 +1238,7 @@ def test_connected_banner_carries_rig_facts_only() -> None:
     # No console prose: the session owns the end gesture and knows per policy
     # whether typed messages are delivered, so yam claims neither.
     assert "Running. Max 120s." in session.statuses
+    assert not any(s is not None and "ends the episode" in s for s in session.statuses)
 
 
 def test_bind_task_drives_the_countdown_horizon() -> None:

@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   plan 0062), so this text can never drift again when the framework gesture
   changes. Defer-only and never-connected modes keep their own text: the
   session never sees those status lines. The `inspect-robots` floor rises to
-  the release carrying the session-owned hint (#122).
+  0.51, the release carrying the session-owned hint (#122).
 
 - The documented `i2rt` pin now matches the commit the rigs run
   (`ac096928`, was `db582eaa`), in both the README and
