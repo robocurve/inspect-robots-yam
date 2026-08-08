@@ -1555,7 +1555,12 @@ class YAMEmbodiment:
                 )
             horizon = self._horizon_secs()
             limit = f" Max {horizon:.0f}s." if horizon is not None else ""
-            if self._deferred_operator_end:
+            if self._session is not None:
+                # Rig facts only: console prose (end gesture, message
+                # affordance) belongs to the connected session. This banner
+                # renders pre-footer, so the hint first appears on the ticker.
+                self._status(f"Running.{limit}")
+            elif self._deferred_operator_end:
                 self._status(
                     "Running: Esc (or /stop) ends the episode; type a message + Enter to "
                     f"send feedback.{limit}"
@@ -1867,6 +1872,11 @@ class YAMEmbodiment:
         elapsed = self.num_steps / hz
         horizon = self._horizon_secs()
         span = f"{elapsed:.0f}s / {horizon:.0f}s" if horizon is not None else f"{elapsed:.0f}s"
+        if self._session is not None:
+            # The connected session appends the framework-owned end-gesture hint;
+            # sending our own copy would just be stripped and re-appended.
+            self._status(f"t = {span}")
+            return
         end_instruction = (
             "Esc ends the episode" if self._deferred_operator_end else "any key ends the episode"
         )

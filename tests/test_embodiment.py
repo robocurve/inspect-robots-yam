@@ -486,9 +486,9 @@ def test_connect_operator_session_owns_status_and_episode_end() -> None:
     assert session.statuses[0:3] == [
         "homing: ramping arms to start pose",
         None,
-        "Running: Esc (or /stop) ends the episode; type a message + Enter to send feedback.",
+        "Running.",
     ]
-    assert session.statuses[3].startswith("t = 1s | ")
+    assert session.statuses[3] == "t = 1s"
     assert session.statuses[4:] == [
         "parking: ramping arms back before torque-off",
         None,
@@ -1151,7 +1151,7 @@ def test_status_line_updates_once_per_second_with_horizon() -> None:
 
 
 @pytest.mark.parametrize("connected", [False, True])
-def test_deferred_ticker_says_esc_ends_the_episode(connected: bool) -> None:
+def test_ticker_gesture_prose_belongs_to_the_session_when_connected(connected: bool) -> None:
     emb, status = _build_with_status(YamConfig(control_hz=1.0))
     if connected:
         session = _RecordingSession()
@@ -1164,7 +1164,10 @@ def test_deferred_ticker_says_esc_ends_the_episode(connected: bool) -> None:
     reset_entries = len(status)
     emb.step(Action(data=np.zeros(14)))
 
-    assert status[reset_entries:] == ["t = 1s | Esc ends the episode"]
+    # Connected: rig state only, the session composes the end-gesture hint.
+    # Defer-only: the session never sees our status, so we keep our own hint.
+    expected = "t = 1s" if connected else "t = 1s | Esc ends the episode"
+    assert status[reset_entries:] == [expected]
 
 
 def test_status_line_without_hint_shows_elapsed_only() -> None:
@@ -1222,6 +1225,20 @@ def test_deferred_status_explains_console_feedback_with_horizon() -> None:
         "Running: Esc (or /stop) ends the episode; type a message + Enter to "
         "send feedback. Max 120s."
     )
+
+
+def test_connected_banner_carries_rig_facts_only() -> None:
+    emb, _ = _build_with_status()
+    emb.bind_task(_Envelope(name="adhoc", max_steps=1200))
+    session = _RecordingSession()
+    emb.connect_operator_session(session)
+
+    emb.reset(Scene(id="s", instruction="x"))
+
+    # No console prose: the session owns the end gesture and knows per policy
+    # whether typed messages are delivered, so yam claims neither.
+    assert "Running. Max 120s." in session.statuses
+    assert not any(s is not None and "ends the episode" in s for s in session.statuses)
 
 
 def test_bind_task_drives_the_countdown_horizon() -> None:
