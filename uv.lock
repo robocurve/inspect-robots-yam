@@ -313,10 +313,10 @@ wheels = [
 
 [package.optional-dependencies]
 epath = [
-    { name = "fsspec" },
-    { name = "importlib-resources" },
-    { name = "typing-extensions" },
-    { name = "zipp" },
+    { name = "fsspec", marker = "python_full_version < '3.11'" },
+    { name = "importlib-resources", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "zipp", marker = "python_full_version < '3.11'" },
 ]
 
 [[package]]
@@ -336,9 +336,9 @@ wheels = [
 
 [package.optional-dependencies]
 epath = [
-    { name = "fsspec" },
-    { name = "typing-extensions" },
-    { name = "zipp" },
+    { name = "fsspec", marker = "python_full_version >= '3.11'" },
+    { name = "typing-extensions", marker = "python_full_version >= '3.11'" },
+    { name = "zipp", marker = "python_full_version >= '3.11'" },
 ]
 
 [[package]]
@@ -346,7 +346,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -462,14 +462,14 @@ wheels = [
 
 [[package]]
 name = "inspect-robots"
-version = "0.42.0"
+version = "0.48.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cc/24/e1904bdc58cc8758a3eb8bb0f782e5b421a7211e058f667d28e0013ecd20/inspect_robots-0.42.0.tar.gz", hash = "sha256:df3d095a785c5d69c328a8acd6c6ca711069931cb28907215aefef18be1e790c", size = 403001, upload-time = "2026-08-05T01:23:15.31Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/58/16/9fd64e09b1dfba28fe0517cee4ea0f8f796f94b366bae3231f98db46df7a/inspect_robots-0.48.0.tar.gz", hash = "sha256:9d94a8aa13a689bafc17ab3df5736545eaac520d53fe8ff1c24e90e83daab16d", size = 455793, upload-time = "2026-08-07T23:31:34.553Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ee/28/e60007bed58f8acefaf79370cb05a010230c7d9a8e77861bd80d922bf627/inspect_robots-0.42.0-py3-none-any.whl", hash = "sha256:725b514bf48d8eee38e541d9b693a74c0921ca18a4d091219490839dc54fe810", size = 158842, upload-time = "2026-08-05T01:23:13.793Z" },
+    { url = "https://files.pythonhosted.org/packages/11/4f/1f4e6fe0d922ff935f41a7eb8f92588004936047fdae1118b99c163d90aa/inspect_robots-0.48.0-py3-none-any.whl", hash = "sha256:ee33d48cc20f17b7c5b2adbdaeb335aa0a523210b56db3e50d6573ee218e26d8", size = 175444, upload-time = "2026-08-07T23:31:33.068Z" },
 ]
 
 [[package]]
@@ -525,7 +525,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "inspect-robots", specifier = ">=0.42" },
+    { name = "inspect-robots", specifier = ">=0.47" },
     { name = "inspect-robots-agent", marker = "extra == 'dev'", specifier = ">=0.2.2" },
     { name = "json-numpy", specifier = ">=2.1" },
     { name = "json-numpy", marker = "extra == 'client'", specifier = ">=2.1" },

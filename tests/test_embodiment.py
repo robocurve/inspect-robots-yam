@@ -486,7 +486,7 @@ def test_connect_operator_session_owns_status_and_episode_end() -> None:
     assert session.statuses[0:3] == [
         "homing: ramping arms to start pose",
         None,
-        "Running: Enter ends the episode; type a message + Enter to send feedback.",
+        "Running: Esc (or /stop) ends the episode; type a message + Enter to send feedback.",
     ]
     assert session.statuses[3].startswith("t = 1s | ")
     assert session.statuses[4:] == [
@@ -1151,7 +1151,7 @@ def test_status_line_updates_once_per_second_with_horizon() -> None:
 
 
 @pytest.mark.parametrize("connected", [False, True])
-def test_deferred_ticker_says_enter_ends_the_episode(connected: bool) -> None:
+def test_deferred_ticker_says_esc_ends_the_episode(connected: bool) -> None:
     emb, status = _build_with_status(YamConfig(control_hz=1.0))
     if connected:
         session = _RecordingSession()
@@ -1164,7 +1164,7 @@ def test_deferred_ticker_says_enter_ends_the_episode(connected: bool) -> None:
     reset_entries = len(status)
     emb.step(Action(data=np.zeros(14)))
 
-    assert status[reset_entries:] == ["t = 1s | Enter ends the episode"]
+    assert status[reset_entries:] == ["t = 1s | Esc ends the episode"]
 
 
 def test_status_line_without_hint_shows_elapsed_only() -> None:
@@ -1219,7 +1219,8 @@ def test_deferred_status_explains_console_feedback_with_horizon() -> None:
     emb.reset(Scene(id="s", instruction="x"))
 
     assert _running_status(status) == (
-        "Running: Enter ends the episode; type a message + Enter to send feedback. Max 120s."
+        "Running: Esc (or /stop) ends the episode; type a message + Enter to "
+        "send feedback. Max 120s."
     )
 
 

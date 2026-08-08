@@ -300,8 +300,9 @@ inspect-robots "place the fork on the plate"
 ```
 
 The attended flow has two terminal modes. When the framework connects its
-operator session, press Enter at either readiness gate, then use a bare Enter
-to end the episode; other typed lines become policy feedback or logged notes.
+operator session, press Enter at either readiness gate, then press Esc (or
+type `/stop`) to end the episode; typed lines become policy feedback or
+logged notes.
 On the never-connected legacy path, press Enter at the gates and press any key
 to end the episode. In both modes the status counts up against the run's real
 step limit (`t = 42s / 120s`) with no configuration needed (requires
