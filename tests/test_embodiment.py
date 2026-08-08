@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import itertools
+import warnings
 from dataclasses import dataclass
-from typing import NoReturn
+from typing import NoReturn, cast
 
 import numpy as np
 import pytest
@@ -19,18 +20,26 @@ from inspect_robots_yam.config import (
     DEFAULT_REST_POSE,
     YamConfig,
 )
-from inspect_robots_yam.embodiment import YAMEmbodiment
+from inspect_robots_yam.embodiment import BimanualDriver, YAMEmbodiment
 from inspect_robots_yam.operator import OperatorIO
 
 
 class FakeDriver:
-    def __init__(self, state: np.ndarray | None = None) -> None:
+    def __init__(
+        self,
+        state: np.ndarray | None = None,
+        effort: np.ndarray | None = None,
+    ) -> None:
         self.state = np.zeros(14) if state is None else state
+        self.effort = np.zeros(14) if effort is None else effort
         self.commands: list[np.ndarray] = []
         self.closed = False
 
     def get_joint_pos(self) -> np.ndarray:
         return self.state.copy()
+
+    def get_joint_eff(self) -> np.ndarray:
+        return self.effort.copy()
 
     def command_joint_pos(self, target: np.ndarray) -> None:
         self.commands.append(np.asarray(target, dtype=float).copy())
@@ -59,6 +68,48 @@ def _operator(*, prompts: list[str] | None = None) -> OperatorIO:
         return ""
 
     return OperatorIO(input_fn=_input, output_fn=lambda _m: None)
+
+
+class _RecordingOperator(OperatorIO):
+    """Record readiness ownership controls without touching stdin."""
+
+    def __init__(self) -> None:
+        super().__init__(input_fn=lambda _prompt: "", output_fn=lambda _message: None)
+        self.wait_calls: list[tuple[str, bool, bool]] = []
+
+    def wait_ready(
+        self,
+        prompt: str = "Position the scene, then press Enter to start...",
+        *,
+        drain: bool = True,
+        flush_first: bool = False,
+    ) -> None:
+        """Record the prompt and stdin ownership controls."""
+        self.wait_calls.append((prompt, drain, flush_first))
+
+
+class _RecordingSession:
+    """Record the terminal operations owned by a framework operator session."""
+
+    def __init__(self, gate_error: Exception | None = None) -> None:
+        self.statuses: list[str | None] = []
+        self.lines: list[str] = []
+        self.gates: list[tuple[str, str | None]] = []
+        self._gate_error = gate_error
+
+    def status(self, line: str | None) -> None:
+        """Record a replaceable status line or its closing marker."""
+        self.statuses.append(line)
+
+    def write_line(self, text: str) -> None:
+        """Record one durable scrollback line."""
+        self.lines.append(text)
+
+    def gate(self, prompt: str, *, hint: str | None = None) -> None:
+        """Record one readiness gate and raise its configured fault."""
+        self.gates.append((prompt, hint))
+        if self._gate_error is not None:
+            raise self._gate_error
 
 
 def _build(
@@ -119,6 +170,70 @@ def test_reset_returns_observation_and_homes() -> None:
     assert home_cmd[0] == pytest.approx(0.1)
     assert home_cmd[6] == pytest.approx(19.0)  # 20 + 0.1 * (10 - 20)
     assert home_cmd[13] == pytest.approx(19.0)
+
+
+def test_joint_eff_is_absent_by_default() -> None:
+    emb, _, _ = _build()
+
+    observation = emb.reset(Scene(id="s", instruction="inspect"))
+
+    assert "joint_eff" not in observation.state
+
+
+def test_joint_eff_passes_through_raw_driver_values() -> None:
+    effort = np.asarray([1, 2, 3, 4, 5, 6, 73, -1, -2, -3, -4, -5, -6, -91])
+    driver = FakeDriver(effort=effort)
+    emb, _, _ = _build(YamConfig(report_joint_eff=True), driver=driver)
+
+    observation = emb.reset(Scene(id="s", instruction="inspect"))
+    reported = observation.state["joint_eff"]
+
+    assert reported.shape == (14,)
+    assert reported.dtype == np.float64
+    assert reported == pytest.approx(effort)
+    assert reported[[6, 13]] == pytest.approx((73, -91))
+    assert "joint_eff" not in emb.info.observation_space.state_keys
+
+
+def test_joint_eff_survives_full_reset_step_cycle_without_warnings() -> None:
+    emb, _, _ = _build(YamConfig(report_joint_eff=True))
+
+    with warnings.catch_warnings(record=True) as caught:
+        observation = emb.reset(Scene(id="s", instruction="inspect"))
+        result = emb.step(Action(data=np.zeros(14)))
+
+    assert observation.state["joint_eff"].shape == (14,)
+    assert result.observation.state["joint_eff"].shape == (14,)
+    assert caught == []
+
+
+def test_joint_eff_requires_updated_injected_driver() -> None:
+    class LegacyDriver:
+        def get_joint_pos(self) -> np.ndarray:
+            return np.zeros(14)
+
+        def command_joint_pos(self, target: np.ndarray) -> None:
+            del target
+
+        def close(self) -> None:
+            pass
+
+    driver = LegacyDriver()
+    emb = YAMEmbodiment(
+        YamConfig(cam_height=4, cam_width=4, report_joint_eff=True),
+        driver_factory=lambda _cfg: cast(BimanualDriver, driver),
+        camera_reader=_cameras,
+        operator=_operator(),
+        poll_end=lambda: False,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"report_joint_eff=true.*get_joint_eff\(\)",
+    ):
+        emb.reset(Scene(id="s", instruction="inspect"))
 
 
 def test_reset_without_home_pose_ramps_to_factory_joint_home() -> None:
@@ -308,6 +423,78 @@ def test_step_continues_when_no_end_signal() -> None:
     assert emb.num_steps == 1
 
 
+def test_defer_operator_end_is_duck_typed_and_skips_poll() -> None:
+    emb, _, _ = _build()
+    polls: list[bool] = []
+
+    def _poll_end() -> bool:
+        polls.append(True)
+        return True
+
+    emb._poll_end = _poll_end
+    hook = getattr(emb, "defer_operator_end", None)
+    assert callable(hook)
+    hook()
+    emb.reset(Scene(id="s", instruction="x"))
+
+    result = emb.step(Action(data=np.zeros(14)))
+
+    assert result.terminated is False
+    assert polls == []
+
+
+def test_defer_operator_end_survives_resets() -> None:
+    emb, _, _ = _build()
+    polls: list[bool] = []
+    emb._poll_end = lambda: polls.append(True) or True
+    emb.defer_operator_end()
+    scene = Scene(id="s", instruction="x")
+
+    for _ in range(2):
+        emb.reset(scene)
+        assert emb.step(Action(data=np.zeros(14))).terminated is False
+
+    assert polls == []
+
+
+def test_connect_operator_session_owns_status_and_episode_end() -> None:
+    session = _RecordingSession()
+    constructor_status: list[str | None] = []
+    polls: list[bool] = []
+    driver = FakeDriver()
+    emb = YAMEmbodiment(
+        YamConfig(cam_height=4, cam_width=4, control_hz=1.0),
+        driver_factory=lambda _cfg: driver,
+        camera_reader=_cameras,
+        operator=_operator(),
+        poll_end=lambda: polls.append(True) or True,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+        status_fn=constructor_status.append,
+    )
+
+    emb.connect_operator_session(session)
+
+    assert emb._deferred_operator_end is True
+    emb.reset(Scene(id="s", instruction="x"))
+    result = emb.step(Action(data=np.zeros(14)))
+    emb.close()
+
+    assert result.terminated is False
+    assert polls == []
+    assert constructor_status == []
+    assert session.statuses[0:3] == [
+        "homing: ramping arms to start pose",
+        None,
+        "Running.",
+    ]
+    assert session.statuses[3] == "t = 1s"
+    assert session.statuses[4:] == [
+        "parking: ramping arms back before torque-off",
+        None,
+    ]
+
+
 def test_pacing_sleeps_to_control_rate() -> None:
     emb, _, sleeps = _build()  # control_hz=10 -> period 0.1, clock constant 0 -> sleep ~0.1
     emb.reset(Scene(id="s", instruction="x"))
@@ -451,6 +638,93 @@ def test_auto_start_drains_stdin_before_episode(monkeypatch: pytest.MonkeyPatch)
     emb.reset(Scene(id="s", instruction="x"))
     assert drains == [True]  # wait_ready's drain is replaced, not dropped
     assert prompts == []
+
+
+def test_deferred_auto_start_leaves_stdin_for_console(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: True)
+    drains: list[bool] = []
+    monkeypatch.setattr(embodiment_module, "_drain_stdin", lambda: drains.append(True))
+    emb, _, _ = _build(YamConfig(auto_start=True))
+    emb.defer_operator_end()
+
+    emb.reset(Scene(id="s", instruction="x"))
+
+    assert drains == []
+
+
+def test_connected_auto_start_routes_notice_and_leaves_stdin_for_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(embodiment_module, "stdin_interactive", lambda: True)
+    drains: list[bool] = []
+    monkeypatch.setattr(embodiment_module, "_drain_stdin", lambda: drains.append(True))
+    output_lines: list[str] = []
+    operator = OperatorIO(input_fn=lambda _prompt: "", output_fn=output_lines.append)
+    session = _RecordingSession()
+    emb, _, _ = _build(YamConfig(auto_start=True), operator=operator)
+    emb.connect_operator_session(session)
+
+    emb.reset(Scene(id="s", instruction="x"))
+
+    assert drains == []
+    assert session.lines == ["auto_start: arms will move to the home pose - stand clear."]
+    assert output_lines == []
+
+
+@pytest.mark.parametrize(
+    ("deferred", "expected_controls"),
+    [
+        (False, [(True, False), (True, False)]),
+        (True, [(False, True), (False, True)]),
+    ],
+)
+def test_reset_gates_follow_stdin_ownership(
+    deferred: bool, expected_controls: list[tuple[bool, bool]]
+) -> None:
+    operator = _RecordingOperator()
+    emb, _, _ = _build(operator=operator)
+    if deferred:
+        emb.defer_operator_end()
+
+    emb.reset(Scene(id="s", instruction="x"))
+
+    assert [(drain, flush) for _, drain, flush in operator.wait_calls] == expected_controls
+
+
+def test_connected_reset_routes_both_exact_gates_through_session() -> None:
+    operator = _RecordingOperator()
+    session = _RecordingSession()
+    emb, _, _ = _build(operator=operator)
+    emb.connect_operator_session(session)
+
+    emb.reset(Scene(id="s", instruction="x"))
+
+    hint = "Set YamConfig(unattended=True) (CLI: -E unattended=true) to skip operator prompts."
+    assert session.gates == [
+        (
+            "Arms will move to the home pose - stand clear, then press Enter...",
+            hint,
+        ),
+        ("Position the scene, then press Enter to start...", hint),
+    ]
+    assert operator.wait_calls == []
+
+
+def test_connected_gate_fault_propagates_unwrapped() -> None:
+    fault = EmbodimentFault("session gate failed")
+    session = _RecordingSession(gate_error=fault)
+    operator = _RecordingOperator()
+    emb, driver, _ = _build(operator=operator)
+    emb.connect_operator_session(session)
+
+    with pytest.raises(EmbodimentFault) as caught:
+        emb.reset(Scene(id="s", instruction="x"))
+
+    assert caught.value is fault
+    assert operator.wait_calls == []
+    assert driver.commands == []
 
 
 def test_auto_start_requires_interactive_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -870,10 +1144,30 @@ def test_status_line_updates_once_per_second_with_horizon() -> None:
     for _ in range(25):  # 2.5 s at 10 Hz
         emb.step(Action(data=np.zeros(14)))
     updates = [m for m in status[reset_entries:] if m is not None]
-    assert len(updates) == 2  # at steps 10 and 20
-    assert "1s / 120s" in updates[0]
-    assert "2s / 120s" in updates[1]
-    assert "any key" in updates[0]  # instructions ride along
+    assert updates == [
+        "t = 1s / 120s | any key ends the episode",
+        "t = 2s / 120s | any key ends the episode",
+    ]
+
+
+@pytest.mark.parametrize("connected", [False, True])
+def test_ticker_gesture_prose_belongs_to_the_session_when_connected(connected: bool) -> None:
+    emb, status = _build_with_status(YamConfig(control_hz=1.0))
+    if connected:
+        session = _RecordingSession()
+        emb.connect_operator_session(session)
+        status = session.statuses
+    else:
+        emb.defer_operator_end()
+
+    emb.reset(Scene(id="s", instruction="x"))
+    reset_entries = len(status)
+    emb.step(Action(data=np.zeros(14)))
+
+    # Connected: rig state only, the session composes the end-gesture hint.
+    # Defer-only: the session never sees our status, so we keep our own hint.
+    expected = "t = 1s" if connected else "t = 1s | Esc ends the episode"
+    assert status[reset_entries:] == [expected]
 
 
 def test_status_line_without_hint_shows_elapsed_only() -> None:
@@ -918,6 +1212,33 @@ def _running_status(status: list[str | None]) -> str:
     ]
     assert len(matches) == 1
     return matches[0]
+
+
+def test_deferred_status_explains_console_feedback_with_horizon() -> None:
+    emb, status = _build_with_status()
+    emb.bind_task(_Envelope(name="adhoc", max_steps=1200))
+    emb.defer_operator_end()
+
+    emb.reset(Scene(id="s", instruction="x"))
+
+    assert _running_status(status) == (
+        "Running: Esc (or /stop) ends the episode; type a message + Enter to "
+        "send feedback. Max 120s."
+    )
+
+
+def test_connected_banner_carries_rig_facts_only() -> None:
+    emb, _ = _build_with_status()
+    emb.bind_task(_Envelope(name="adhoc", max_steps=1200))
+    session = _RecordingSession()
+    emb.connect_operator_session(session)
+
+    emb.reset(Scene(id="s", instruction="x"))
+
+    # No console prose: the session owns the end gesture and knows per policy
+    # whether typed messages are delivered, so yam claims neither.
+    assert "Running. Max 120s." in session.statuses
+    assert not any(s is not None and "ends the episode" in s for s in session.statuses)
 
 
 def test_bind_task_drives_the_countdown_horizon() -> None:

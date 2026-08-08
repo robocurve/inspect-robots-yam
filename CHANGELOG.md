@@ -8,6 +8,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Session-connected runs no longer author console prose: the running banner
+  becomes "Running." plus the horizon and the per-second ticker sends bare rig
+  state ("t = 4s / 120s"). The framework session appends its own
+  "Esc ends the episode" hint and replaces stale gesture clauses (inspect-robots
+  plan 0062), so this text can never drift again when the framework gesture
+  changes. Defer-only and never-connected modes keep their own text: the
+  session never sees those status lines. The `inspect-robots` floor rises to
+  0.51, the release carrying the session-owned hint (#122).
+
+- The documented `i2rt` pin now matches the commit the rigs run
+  (`ac096928`, was `db582eaa`), in both the README and
+  `I2RT_INSTALL_COMMAND`, the remedy string a missing driver surfaces. The newer
+  commit defaults `enable_auto_recovery=False`, so a motor error fails the
+  episode fast instead of the driver cleaning and re-enabling the motor inside
+  the control loop. A rig installed from the old pin ran the self-healing
+  behavior no rig has actually been operated with (#118).
+
+- Session-connected runs now delegate episode end to the framework console
+  gesture (Esc, or `/stop`, on inspect-robots 0.47+). Other typed lines become
+  policy feedback or logged notes, while never-connected runs retain the
+  legacy any-key ending (plan 0022, #114).
+- Deferred-mode status text now names the current end gesture: the running
+  banner says "Esc (or /stop) ends the episode" and the per-second ticker says
+  "Esc ends the episode" (both previously said Enter, which stopped being true
+  when inspect-robots 0.47 moved episode end off the Enter key). The
+  `inspect-robots` floor rises to 0.47 so the text matches the console behind
+  it (#120).
+- The setup wizard now suggests **no** for its `collision_guardrail` question
+  (previously yes). A fresh setup has no measured `collision_*_base_pos`
+  geometry, and the guardrail's library-default offsets can false-positive
+  hold until `max_steps` — a silent livelock that scores the episode 0. The
+  `YamConfig` runtime default is unchanged (`True`), and a config that
+  already sets the key keeps its stored value as the wizard suggestion.
+  Caveat for hand-written configs that set the geometry keys while relying
+  on the runtime default: write `collision_guardrail = true` explicitly
+  before re-running setup, or the wizard will suggest off. Disabling the
+  guardrail by config now emits a startup warning naming the re-enable path
+  (#109).
+
+### Fixed
+
+- `inspect-robots-yam-health` and `inspect-robots-yam-holdcheck` now honor the
+  working directory's `.env` before resolving wizard configuration, including
+  `INSPECT_ROBOTS_CONFIG` pins, with exported values retaining precedence and
+  `--no-config` retaining the bypass. Requires inspect-robots 0.38 (the new
+  dependency floor) (#107).
+
+### Changed
+
+- Operator console support via `YAMEmbodiment.defer_operator_end()` lets the
+  framework own stdin, deliver typed feedback, and terminate trials without
+  competing with YAM's legacy keypress reader (#102).
 - The connection-failure `remedy` now defaults to the policy entry's canonical
   server launch command plus a docs link — `host_server_yam.py` for
   `molmoact2`, `serve_gr00t_act.py` for `gr00t` — instead of an empty string,
@@ -43,6 +95,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the wizard still writes an explicit true/false answer.
 
 ### Added
+- `YAMEmbodiment.connect_operator_session()` gives the framework session sole
+  terminal ownership, including readiness gates, durable notices, and the
+  replaceable running ticker (plan 0022, #114).
+- Opt-in `YamConfig.report_joint_eff` reporting of sign-corrected estimated
+  torque under `observation.state["joint_eff"]`, using the same packed 14-slot
+  arm and gripper layout as `joint_pos` with raw N·m gripper values (#112).
 - `ActServerPolicy.server_url` and `remedy` connection-failure hint attributes,
   plus the CLI-settable `ActServerConfig.remedy` recovery instruction (#97,
   robocurve/inspect-robots#219).

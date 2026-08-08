@@ -335,6 +335,10 @@ class FakeDriver:
         """Never called by these tests."""
         raise AssertionError("not used")  # pragma: no cover - contract filler
 
+    def get_joint_eff(self) -> npt.NDArray[np.float64]:
+        """Never called by these tests."""
+        raise AssertionError("not used")  # pragma: no cover - contract filler
+
     def command_joint_pos(self, target: npt.NDArray[np.float64]) -> None:
         """Never called by these tests."""
         raise AssertionError("not used")  # pragma: no cover - contract filler

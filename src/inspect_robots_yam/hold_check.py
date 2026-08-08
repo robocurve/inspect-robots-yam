@@ -19,6 +19,10 @@ but stiff mode (``false``) holds, run agents with
 ``-E zero_gravity_mode=false``. If both drift, file an issue with the
 numbers: the embodiment needs a hold heartbeat.
 
+Like the core ``inspect-robots`` CLI, this command honors the working
+directory's ``.env``, including an ``INSPECT_ROBOTS_CONFIG`` pin used to
+resolve wizard-configured ``left`` and ``right`` channels.
+
 The robot handle, sleep, and output are injected so the whole module tests
 without hardware; the real i2rt connection is a pragma'd default.
 """
@@ -34,6 +38,9 @@ from typing import Any, Protocol
 
 import numpy as np
 import numpy.typing as npt
+
+# Mirror core CLI dotenv parsing through its helper so a duplicated parser cannot drift.
+from inspect_robots._dotenv import init_dotenv
 
 from inspect_robots_yam._i2rt import _load_i2rt
 from inspect_robots_yam._user_config import load_yam_defaults
@@ -166,6 +173,9 @@ def main(
     emit: EmitFn = _print_flushed,
 ) -> int:
     """CLI entry point. Exit 0 on PASS, 1 on FAIL."""
+    if env is None:
+        init_dotenv(os.environ)
+
     parser = argparse.ArgumentParser(
         prog="inspect-robots-yam-holdcheck",
         description="Verify the arm holds position between action chunks (item 6.4).",

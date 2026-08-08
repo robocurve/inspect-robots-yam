@@ -25,6 +25,9 @@ class _FakeDriver:
     def get_joint_pos(self) -> np.ndarray:
         return self.state.copy()
 
+    def get_joint_eff(self) -> np.ndarray:
+        return np.zeros(14)
+
     def command_joint_pos(self, target: np.ndarray) -> None:
         self.commands.append(np.asarray(target, dtype=float).copy())
         self.state = np.asarray(target, dtype=float)
