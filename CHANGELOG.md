@@ -16,9 +16,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the control loop. A rig installed from the old pin ran the self-healing
   behavior no rig has actually been operated with (#118).
 
-- Session-connected runs now use a bare Enter to end an episode. Other typed
-  lines become policy feedback or logged notes, while never-connected runs
-  retain the legacy any-key ending (plan 0022, #114).
+- Session-connected runs now delegate episode end to the framework console
+  gesture (Esc, or `/stop`, on inspect-robots 0.47+). Other typed lines become
+  policy feedback or logged notes, while never-connected runs retain the
+  legacy any-key ending (plan 0022, #114).
+- Deferred-mode status text now names the current end gesture: the running
+  banner says "Esc (or /stop) ends the episode" and the per-second ticker says
+  "Esc ends the episode" (both previously said Enter, which stopped being true
+  when inspect-robots 0.47 moved episode end off the Enter key). The
+  `inspect-robots` floor rises to 0.47 so the text matches the console behind
+  it (#120).
 - The setup wizard now suggests **no** for its `collision_guardrail` question
   (previously yes). A fresh setup has no measured `collision_*_base_pos`
   geometry, and the guardrail's library-default offsets can false-positive

@@ -1557,8 +1557,8 @@ class YAMEmbodiment:
             limit = f" Max {horizon:.0f}s." if horizon is not None else ""
             if self._deferred_operator_end:
                 self._status(
-                    "Running: Enter ends the episode; type a message + Enter to send "
-                    f"feedback.{limit}"
+                    "Running: Esc (or /stop) ends the episode; type a message + Enter to "
+                    f"send feedback.{limit}"
                 )
             else:
                 self._status(f"Running: press any key to end the episode and grade it.{limit}")
@@ -1868,7 +1868,7 @@ class YAMEmbodiment:
         horizon = self._horizon_secs()
         span = f"{elapsed:.0f}s / {horizon:.0f}s" if horizon is not None else f"{elapsed:.0f}s"
         end_instruction = (
-            "Enter ends the episode" if self._deferred_operator_end else "any key ends the episode"
+            "Esc ends the episode" if self._deferred_operator_end else "any key ends the episode"
         )
         self._status(f"t = {span} | {end_instruction}")
 
