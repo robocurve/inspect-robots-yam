@@ -530,13 +530,16 @@ def test_build_guardrails_uses_custom_home_and_integrates_chain(joint_space: Box
     assert chain.review(action, {}) is action
 
 
-def test_contribution_ladder_off_is_empty_without_warning(joint_space: Box) -> None:
+def test_contribution_ladder_off_warns_to_measure_geometry(joint_space: Box) -> None:
     embodiment = YAMEmbodiment(YamConfig(collision_guardrail=False))
 
     contribution = embodiment.contribute_guardrails(joint_space)
 
     assert contribution.approvers == ()
-    assert contribution.warnings == ()
+    assert contribution.warnings == (
+        "collision guardrail disabled by config; set collision_guardrail=true "
+        "after measuring collision_*_base_pos",
+    )
 
 
 @pytest.mark.parametrize(

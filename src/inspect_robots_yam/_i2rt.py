@@ -13,11 +13,17 @@ from typing import Any
 # dependency) is a source-only release that no longer builds under
 # scikit-build-core 1.0; drop it once ruckig ships the fix from pantor/ruckig#261
 # and i2rt moves off ruckig==0.15.3 (#47).
+# The commit is pinned to the one the rigs run, not to i2rt's newest release.
+# ac096928 defaults enable_auto_recovery=False, so a motor error fails the
+# episode fast instead of the driver cleaning and re-enabling the errored motor
+# inside the control loop. Every rig hour behind this plugin is on that behavior;
+# the previous pin (db582eaa, 2026-07-07) predates the change and self-heals
+# silently under load. Treat a bump as a rig-evaluation decision (#118).
 I2RT_INSTALL_COMMAND = (
     "echo 'scikit-build-core<0.10' > build-constraints.txt && "
     "uv pip install --build-constraints build-constraints.txt "
     '"i2rt @ git+https://github.com/i2rt-robotics/'
-    'i2rt@db582eaa70b6a057a1e2981da6219dfa6c29422a"'
+    'i2rt@ac096928d6899ddf852a71c5e8fbaa6055cd9745"'
 )
 _CONTROL_THREAD_JOIN_TIMEOUT = 5.0
 _CONTROL_THREAD_GRACE_PERIOD = 0.05
