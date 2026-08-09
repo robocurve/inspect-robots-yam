@@ -289,3 +289,17 @@ def test_act_validates_camera_shape() -> None:
     )
     with pytest.raises(ValueError, match="has shape \\(2, 2, 3\\)"):
         pol.act(obs)
+
+
+def test_act_names_the_camera_that_dropped_a_frame() -> None:
+    post, _ = _fake_post(np.zeros((1, 14)))
+    pol = MolmoAct2Policy(MolmoActConfig(cam_height=4, cam_width=4), post_fn=post)
+    pol.reset(Scene(id="s", instruction="x"))
+
+    img = np.zeros((4, 4, 3), np.uint8)
+    obs = Observation(
+        images={"top_cam": img, "left_cam": None, "right_cam": img},
+        state={"joint_pos": np.zeros(14)},
+    )
+    with pytest.raises(ValueError, match="camera 'left_cam' has no frame"):
+        pol.act(obs)
