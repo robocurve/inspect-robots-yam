@@ -1717,16 +1717,6 @@ class YAMEmbodiment:
             alpha = i / n
             sent = self._send((1.0 - alpha) * start + alpha * target, base=sent)
             self._sleep(1.0 / hz)
-        clamped_target = np.clip(target, self._cfg.low, self._cfg.high)
-        max_extra = 1000
-        extra = 0
-        while not np.allclose(sent, clamped_target, atol=1e-5) and extra < max_extra:
-            next_sent = self._send(clamped_target, base=sent)
-            if np.array_equal(next_sent, sent):
-                break
-            sent = next_sent
-            self._sleep(1.0 / hz)
-            extra += 1
         return sent
 
     # -- internals ---------------------------------------------------------

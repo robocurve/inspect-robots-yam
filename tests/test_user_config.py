@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
-
-import re
 
 from inspect_robots_yam import _user_config
 from inspect_robots_yam._user_config import YamDefaults, load_yam_defaults
