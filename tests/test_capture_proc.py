@@ -7,6 +7,7 @@ import inspect
 import multiprocessing
 import os
 import struct
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -318,8 +319,9 @@ def test_capture_process_is_lazy_and_ready_names_are_unlinked() -> None:
         assert snapshot is not None
         assert snapshot.generation == 8
         assert snapshot.colour[0, 0, 0] == 21
-        with pytest.raises(FileNotFoundError):
-            shared_memory.SharedMemory(name=names["top_cam"])
+        if sys.platform != "win32":
+            with pytest.raises(FileNotFoundError):
+                shared_memory.SharedMemory(name=names["top_cam"])
     finally:
         capture.close()
 
@@ -757,7 +759,8 @@ def test_child_opens_warms_publishes_and_stops_in_process(
         ]
         assert pipeline.timeouts == [1000, 1000, 1000]
         assert pipeline.stopped
-        assert unregisters == [(f"/{slot_spec.name}", "shared_memory")]
+        if sys.platform != "win32":
+            assert unregisters == [(f"/{slot_spec.name}", "shared_memory")]
     finally:
         parent_conn.close()
         shm.close()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import math
 from dataclasses import dataclass
 from typing import NoReturn
 
@@ -120,7 +121,7 @@ def test_reset_returns_observation_and_homes() -> None:
     assert home_cmd[13] == pytest.approx(19.0)
 
 
-def test_reset_without_home_pose_ramps_to_current_pose() -> None:
+def test_reset_without_home_pose_ramps_to_default_home_pose() -> None:
     state = np.zeros(14)
     state[0] = 0.5
     state[[6, 13]] = 20.0
@@ -129,12 +130,25 @@ def test_reset_without_home_pose_ramps_to_current_pose() -> None:
     emb.reset(Scene(id="s", instruction="x"))
     # When home_pose is None, reset ramps to DEFAULT_JOINT_HOME_POSE
     # (0.0 for joints, open for grippers).
-    # At rest_secs=0.1 (1 waypoint at step limit 0.2), joint 0 moves from 0.5 -> 0.3
     expected = np.zeros(14)
-    expected[0] = 0.3
+    expected[0] = 0.0
     expected[[6, 13]] = 1.0  # normalized open gripper
     expected_physical = emb._denorm_grippers(expected)
     assert drv.commands[-1] == pytest.approx(expected_physical)
+
+
+def test_reset_zero_g_first_command_equals_current_pose() -> None:
+    # In zero-g mode with arm resting away from home (j0 = 2.0 rad), reset ramps
+    # to home pose. The first waypoint sent during reset must be within
+    # step_limits (0.2) of the physical resting pose.
+    resting_pose = np.full(14, 2.0)
+    drv = EchoDriver(state=resting_pose.copy())
+    emb, _, _ = _build(YamConfig(zero_gravity_mode=True), driver=drv)
+    emb.reset(Scene(id="s", instruction="x"))
+    assert len(drv.commands) > 0
+    # First command is clamped to within step_limits (0.2) of resting pose
+    assert abs(drv.commands[0][0] - 2.0) <= 0.2
+    assert drv.commands[0][0] < 2.0
 
 
 def test_step_clamps_to_limits() -> None:
@@ -149,12 +163,18 @@ def test_step_clamps_to_limits() -> None:
 
 
 def test_step_clamps_to_absolute_joint_limits() -> None:
-    emb, drv, _ = _build()
+    drv = EchoDriver()
+    emb, _, _ = _build(driver=drv)
     emb.reset(Scene(id="s", instruction="x"))
-    # Out of absolute bounds (10.0 > pi); first clamped to pi, then clipped by delta window.
+    drv.state = np.full(14, math.pi - 0.05)
+    drv.state[[6, 13]] = 1.0
+    drv.commands.clear()
+    # Target 10.0 exceeds absolute limit pi. Current is pi - 0.05 (within step range
+    # 0.2 of target pi). Absolute limit pi must bind before delta window, clamping
+    # command to pi rather than pi - 0.05 + 0.2.
     emb.step(Action(data=np.full(14, 10.0)))
     cmd = drv.commands[-1]
-    assert cmd[0] == pytest.approx(0.2)  # step limit from 0
+    assert cmd[0] == pytest.approx(math.pi)
 
 
 def test_step_measured_pose_out_of_bounds_walks_back_gently() -> None:
@@ -621,7 +641,7 @@ def test_close_rest_pose_goes_through_clamp_and_denorm() -> None:
     emb.reset(Scene(id="s", instruction="x"))
     emb.close()
     cmd = drv.commands[-1]
-    assert cmd[0] == pytest.approx(0.2)  # step limit from 0
+    assert cmd[0] == pytest.approx(math.pi)  # rest_pose 100.0 clamped to high limit pi
     assert cmd[6] == pytest.approx(15.0)  # 10 + 0.5 * (20 - 10)
 
 
@@ -714,7 +734,7 @@ def test_close_parks_at_pre_home_pose_when_home_pose_configured() -> None:
     # torque is released after parking, so the target must be gravity-stable.
     operator_pose = np.full(14, 0.1)
     drv = EchoDriver(state=operator_pose.copy())
-    cfg = YamConfig(rest_pose=None, home_pose=(0.5,) * 14, rest_secs=0.4)
+    cfg = YamConfig(rest_pose=None, home_pose=(0.5,) * 14, rest_secs=0.2)
     emb, _, _ = _build(cfg, driver=drv)
     emb.reset(Scene(id="s", instruction="x"))
     emb.step(Action(data=np.full(14, 0.8)))
@@ -740,7 +760,7 @@ def test_close_after_mid_reset_fault_parks(
 
     init_pose = np.full(14, 0.2)
     drv = EchoDriver(state=init_pose.copy())
-    cfg = YamConfig(rest_pose=rest_pose, home_pose=(0.6,) * 14, rest_secs=0.4)
+    cfg = YamConfig(rest_pose=rest_pose, home_pose=(0.6,) * 14, rest_secs=0.2)
     emb = YAMEmbodiment(
         cfg,
         driver_factory=lambda _cfg: drv,

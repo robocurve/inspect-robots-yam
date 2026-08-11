@@ -8,6 +8,8 @@ from typing import Any
 
 import pytest
 
+import re
+
 from inspect_robots_yam import _user_config
 from inspect_robots_yam._user_config import YamDefaults, load_yam_defaults
 from inspect_robots_yam.embodiment import YAMEmbodiment
@@ -125,5 +127,5 @@ def test_yam_subclass_registered_under_another_name_is_accepted(
 def test_malformed_config_propagates_system_exit(tmp_path: Path) -> None:
     path = _write_config(tmp_path, "[defaults\nembodiment = yam_arms\n")
 
-    with pytest.raises(SystemExit, match=f"error in {path}"):
+    with pytest.raises(SystemExit, match=f"error in {re.escape(str(path))}"):
         load_yam_defaults(_env(tmp_path))

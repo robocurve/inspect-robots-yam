@@ -435,10 +435,12 @@ def _drain_child(
 
 def _parent_requested_stop(conn: Any) -> bool:
     """Return whether the parent sent a control message or closed its Pipe end."""
-    if not conn.poll():
-        return False
-    with contextlib.suppress(EOFError):
+    try:
+        if not conn.poll():
+            return False
         conn.recv()
+    except (EOFError, BrokenPipeError, OSError):
+        pass
     return True
 
 

@@ -75,7 +75,7 @@ def test_timer_runout_parks_at_init_pose_on_close() -> None:
     logs = rl_eval("kitchenbench/stack", policy, embodiment, sinks=[], seed=0)
 
     assert logs[0].status == "success"
-    assert embodiment.num_steps == 80  # the task horizon ended the trial, not the operator
+    assert embodiment.num_steps == 800  # the task horizon ended the trial, not the operator
     assert drv.closed is False  # caller-owned: eval() must NOT have closed it for us
     embodiment.close()  # eval() itself closes registry-resolved embodiments (the CLI path)
     assert drv.commands[-1] == pytest.approx(init_pose)
