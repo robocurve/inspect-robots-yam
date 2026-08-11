@@ -7,6 +7,7 @@ import inspect
 import multiprocessing
 import os
 import struct
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -318,8 +319,9 @@ def test_capture_process_is_lazy_and_ready_names_are_unlinked() -> None:
         assert snapshot is not None
         assert snapshot.generation == 8
         assert snapshot.colour[0, 0, 0] == 21
-        with pytest.raises(FileNotFoundError):
-            shared_memory.SharedMemory(name=names["top_cam"])
+        if sys.platform != "win32":
+            with pytest.raises(FileNotFoundError):
+                shared_memory.SharedMemory(name=names["top_cam"])
     finally:
         capture.close()
 
@@ -757,12 +759,11 @@ def test_child_opens_warms_publishes_and_stops_in_process(
         ]
         assert pipeline.timeouts == [1000, 1000, 1000]
         assert pipeline.stopped
-        # Same predicate as _attach_frame_slot: on Pythons whose SharedMemory
-        # supports track= (3.13+) the child attaches untracked, so there is
-        # nothing to unregister; older Pythons must unregister the parent's name.
         supports_track = "track" in inspect.signature(shared_memory.SharedMemory).parameters
         expected: list[tuple[str, str]] = (
-            [] if supports_track else [(f"/{slot_spec.name}", "shared_memory")]
+            []
+            if (supports_track or sys.platform == "win32")
+            else [(f"/{slot_spec.name}", "shared_memory")]
         )
         assert unregisters == expected
     finally:

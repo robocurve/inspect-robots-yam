@@ -44,7 +44,10 @@ def test_public_agent_policy_advertises_and_executes_guardrail_clean_eef_move() 
                                     "function": {
                                         "name": move_name,
                                         "arguments": json.dumps(
-                                            {"targets": {"left_x": 0.31, "right_y": 0.01}}
+                                            {
+                                                "targets": {"left_x": 0.31, "right_y": 0.01},
+                                                "note": "moving both arms",
+                                            }
                                         ),
                                     },
                                 }

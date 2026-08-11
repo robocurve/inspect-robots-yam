@@ -2,9 +2,11 @@
 
 Wraps the i2rt joint-position driver. Designed for real-robot reality:
 
-* **Safety backstop** — every command is clamped to the configured joint limits
-  inside :meth:`step`, *independently* of any Inspect Robots ``Approver`` (so unclamped
-  model outputs can never reach the motors).
+* **Safety backstop** — every command passes through absolute joint limits and per-step
+  delta limits inside :meth:`step`, *independently* of any Inspect Robots ``Approver``
+  (so erratic or unclamped model outputs can never command velocity or position jumps).
+  If the arm rests outside configured limits, the delta clamp gently walks it back
+  toward the valid range at no more than ``step_limits`` per tick.
 * **Operator-in-the-loop success** — there is no privileged success oracle; the
   operator's end-of-episode keypress returns
   ``StepResult(terminated=True, termination_reason="operator_end")`` and the
@@ -1698,16 +1700,22 @@ class YAMEmbodiment:
         Used for both homing (reset) and parking (close): a single raw jump to
         a distant pose is violent on real arms. Each waypoint goes through
         :meth:`_send`, so the joint-limit clamp and gripper de-normalization
-        apply to these motions exactly as they do to policy actions.
+        apply to these motions exactly as they do to policy actions. Step count
+        is derived to guarantee arrival at ``target`` without exceeding step limits.
         """
         driver = self._require_driver()
         start = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
         hz = self._cfg.control_hz if self._cfg.control_hz > 0 else 10.0
-        n = max(1, round(self._cfg.rest_secs * hz))
+        n_base = round(self._cfg.rest_secs * hz)
+        steps_needed = max(
+            math.ceil(abs(t - s) / limit)
+            for s, t, limit in zip(start, target, self._cfg.step_limits, strict=True)
+        )
+        n = max(1, n_base, steps_needed)
         sent = start
         for i in range(1, n + 1):
             alpha = i / n
-            sent = self._send((1.0 - alpha) * start + alpha * target)
+            sent = self._send((1.0 - alpha) * start + alpha * target, base=sent)
             self._sleep(1.0 / hz)
         return sent
 
@@ -1888,11 +1896,26 @@ class YAMEmbodiment:
             raise RuntimeError("step() called before reset() (or after close())")
         return self._driver
 
-    def _send(self, cmd: Vec) -> Vec:
-        """Clamp to joint limits (safety backstop) and de-normalize grippers."""
+    def _send(self, cmd: Vec, base: Vec | None = None) -> Vec:
+        """Apply absolute joint limits and per-step delta limits before sending.
+
+        Absolute limits are applied first, followed by the per-step delta clamp
+        relative to ``current`` (either ``base`` or the physical measured pose).
+        If the arm starts outside configured joint limits (e.g. in zero-g), the
+        delta clamp takes precedence so the command walks back toward the valid
+        range at no more than ``step_limits`` per tick rather than snapping to the
+        boundary in a single step.
+        """
+        driver = self._require_driver()
+        current = (
+            base
+            if base is not None
+            else self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+        )
         clamped = np.clip(cmd, self._cfg.low, self._cfg.high)
+        clamped = np.clip(clamped, current + self._cfg.delta_low, current + self._cfg.delta_high)
         physical = self._denorm_grippers(clamped)
-        self._require_driver().command_joint_pos(physical)
+        driver.command_joint_pos(physical)
         return clamped
 
     def _denorm_grippers(self, cmd: Vec) -> Vec:
