@@ -61,12 +61,14 @@ should expose a `close()`, which the embodiment calls during teardown.
 ```bash
 uv venv && source .venv/bin/activate
 uv pip install inspect-robots-yam
-# The i2rt driver is git-only and not on PyPI. Install it directly.
+# The i2rt driver is git-only and not on PyPI. Install it directly. The commit is
+# the one the rigs run: it defaults enable_auto_recovery=False, so a motor error
+# fails fast rather than being cleaned and re-enabled inside the control loop.
 # The build-constraints file works around a build failure in i2rt's ruckig
 # dependency (source-only releases that no longer build under scikit-build-core
 # 1.0; the pin below 0.10 matches i2rt's own in-repo workaround):
 echo 'scikit-build-core<0.10' > build-constraints.txt
-uv pip install --build-constraints build-constraints.txt "i2rt @ git+https://github.com/i2rt-robotics/i2rt@db582eaa70b6a057a1e2981da6219dfa6c29422a"
+uv pip install --build-constraints build-constraints.txt "i2rt @ git+https://github.com/i2rt-robotics/i2rt@ac096928d6899ddf852a71c5e8fbaa6055cd9745"
 ```
 
 The base package includes the `/act` transport and builtin OpenCV camera reader.
@@ -121,8 +123,10 @@ recorded policy metadata matches that checkpoint.
 > The shim's startup checks validate the packed layout and units ranges, but
 > joint polarity and absolute-vs-delta semantics cannot be detected from
 > dataset statistics. For the first runs with a new checkpoint family, run
-> `inspect-robots-yam-preflight`, leave guardrails on, and keep an operator at
-> the e-stop.
+> `inspect-robots-yam-preflight`, leave guardrails on (the bounds clamp and
+> per-step delta limit are always active; add the collision guardrail once
+> the rig's `collision_*_base_pos` geometry is measured), and keep an
+> operator at the e-stop.
 
 ## Preflight: prove compatibility before any motion
 
@@ -164,14 +168,20 @@ inspect-robots-yam-health \
   --right-cam /dev/v4l/by-id/...-right
 ```
 
+Like `inspect-robots` itself, both `inspect-robots-yam-health` and
+`inspect-robots-yam-holdcheck` honor the working directory's `.env` before
+resolving wizard configuration, including an `INSPECT_ROBOTS_CONFIG` pin for
+selecting the current rig. Pass `--no-config` to either command to bypass the
+wizard configuration; holdcheck then requires a raw CAN channel instead of
+`left` or `right`.
+
 The command writes a labeled montage to `health.jpg`. Use `--out PATH` to
 change the destination, `--json` for a machine-readable report, or
 `--skip-cameras` and `--skip-motors` to run one section. Camera devices can
 also be supplied with `-E top_cam_device=...`, `-E left_cam_device=...`, and
 `-E right_cam_device=...`. Explicit flags and `-E` values override the wizard
-config one camera slot at a time. Use `--no-config` to bypass the wizard file
-entirely, including when it is malformed, and recover the previous flag-only
-behavior.
+config one camera slot at a time. For health, the `--no-config` bypass also
+applies when the wizard file is malformed and restores flag-only behavior.
 
 > [!NOTE]
 > The health tool can check and watch only V4L2 `*_cam_device` sources. It
@@ -289,11 +299,14 @@ Then tell the robot what to do:
 inspect-robots "place the fork on the plate"
 ```
 
-The attended flow: position the scene, press Enter to start, press any key to
-end the episode, then grade it at the prompt that follows. The status line
-counts up against the run's real step limit (`t = 42s / 120s`) with no
-configuration needed (requires inspect-robots newer than 0.8.1; on older cores
-set `max_steps_hint`).
+The attended flow has two terminal modes. When the framework connects its
+operator session, press Enter at either readiness gate, then press Esc (or
+type `/stop`) to end the episode; typed lines become policy feedback or
+logged notes.
+On the never-connected legacy path, press Enter at the gates and press any key
+to end the episode. In both modes the status counts up against the run's real
+step limit (`t = 42s / 120s`) with no configuration needed (requires
+inspect-robots newer than 0.8.1; on older cores set `max_steps_hint`).
 
 To skip both Enter gates, set `auto_start=true` (CLI: `-E auto_start=true`,
 persistently via `[embodiment.args]` in config.ini, or accept the suggested
@@ -303,7 +316,7 @@ homing ramp, so stage the scene before launching the run. The same holds
 between episodes of a multi-episode run: the next episode starts as soon as
 the arms re-home, so restage while answering the grading prompt, not after.
 Everything else about the attended flow stays: the status line, the
-press-any-key end, and operator grading, which is also why `auto_start`
+active mode's end control, and operator grading, which is also why `auto_start`
 refuses to run without an interactive terminal.
 
 For exotic camera stacks (or full programmatic control), the Python API takes
@@ -494,7 +507,17 @@ must be paired with a delta-declaring policy (`-P joints_are_delta=true` for
 `YamConfig.collision_guardrail` defaults to `True`. In absolute joint mode,
 `YAMEmbodiment` contributes a predictive MuJoCo guardrail automatically. A
 blocked target becomes a hold at the last safe commanded pose and is marked in
-the recorded action metadata. If MuJoCo is unavailable, the run continues with
+the recorded action metadata. The setup wizard suggests answering **no** to
+its `collision_guardrail` question until the rig's `collision_*_base_pos`
+geometry below is measured: on unmeasured geometry the guardrail can
+false-positive hold, and a policy that repeats the blocked target livelocks
+to `max_steps`. Answer yes (or set the key to `true`) once the base positions
+are measured; a config that already sets the key keeps its value as the
+wizard suggestion. If your config sets the geometry keys but relies on the
+runtime default instead of writing `collision_guardrail = true`, set the key
+explicitly before re-running setup — otherwise the wizard suggests off and an
+Enter-accept would disable an already-measured guardrail. If MuJoCo is
+unavailable, the run continues with
 a warning that includes this install command:
 
 ```bash
@@ -661,7 +684,12 @@ at the first reset before torque is released),
 `unattended` (default `False`; skip operator prompts),
 `auto_start` (default `False`; skip both operator Enter gates but keep the
 attended episode flow; needs a TTY; `unattended` takes precedence),
-`collision_guardrail` (default `True`; predictive holds in absolute joint mode),
+`report_joint_eff` (default `False`; add the optional `joint_eff` observation
+state with sign-corrected estimated torque in raw N·m, including the gripper
+slots),
+`collision_guardrail` (default `True`; predictive holds in absolute joint
+mode; the setup wizard suggests `false` until the base positions below are
+measured),
 `collision_left_base_pos`, `collision_right_base_pos`,
 `collision_left_base_yaw`, `collision_right_base_yaw` (optional measured rig
 geometry), `collision_table` (default `True`; set `False` for no table plane),

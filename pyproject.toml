@@ -20,7 +20,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "inspect-robots>=0.31",  # embodiment guardrail contributions and public delta rewind
+    "inspect-robots>=0.51",  # session-owned end-gesture hint on footer statuses (plan 0062)
     "numpy>=1.24",
     "requests>=2.31",
     "json-numpy>=2.1",

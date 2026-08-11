@@ -759,8 +759,13 @@ def test_child_opens_warms_publishes_and_stops_in_process(
         ]
         assert pipeline.timeouts == [1000, 1000, 1000]
         assert pipeline.stopped
-        if sys.platform != "win32":
-            assert unregisters == [(f"/{slot_spec.name}", "shared_memory")]
+        supports_track = "track" in inspect.signature(shared_memory.SharedMemory).parameters
+        expected: list[tuple[str, str]] = (
+            []
+            if (supports_track or sys.platform == "win32")
+            else [(f"/{slot_spec.name}", "shared_memory")]
+        )
+        assert unregisters == expected
     finally:
         parent_conn.close()
         shm.close()

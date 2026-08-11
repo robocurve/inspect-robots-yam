@@ -67,6 +67,9 @@ class EchoDriver:
     def get_joint_pos(self) -> np.ndarray:
         return self.state.copy()
 
+    def get_joint_eff(self) -> np.ndarray:
+        return np.arange(14, dtype=float)
+
     def command_joint_pos(self, target: np.ndarray) -> None:
         command = np.asarray(target, dtype=float).copy()
         self.commands.append(command)
@@ -126,6 +129,24 @@ def test_default_eef_home_is_mandatory_when_home_pose_is_none() -> None:
     assert observation.state["eef_state"] == pytest.approx(
         (0.3, 0.0, 0.2, 0.0, 1.0, 0.3, 0.0, 0.2, 0.0, 1.0)
     )
+
+
+def test_eef_observation_coexists_with_opt_in_joint_effort() -> None:
+    cfg = YamConfig(
+        control_interface="eef_pos",
+        cam_height=4,
+        cam_width=4,
+        rest_secs=0.5,
+        unattended=True,
+        report_joint_eff=True,
+    )
+    emb, _, _, _ = _build(cfg)
+
+    observation = emb.reset(Scene(id="eef", instruction="move"))
+
+    assert set(observation.state) == {"joint_pos", "eef_state", "joint_eff"}
+    assert observation.state["joint_eff"] == pytest.approx(np.arange(14, dtype=float))
+    assert emb.info.observation_space.state_keys == frozenset({"joint_pos", "eef_state"})
 
 
 def test_eef_step_commands_both_arms_and_passes_grippers_outside_ik() -> None:

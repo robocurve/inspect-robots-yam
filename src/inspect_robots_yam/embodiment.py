@@ -149,12 +149,32 @@ class TaskEnvelopeLike(Protocol):
         ...
 
 
+class OperatorSessionLike(Protocol):
+    """Terminal surface required to yield all attended interaction to the framework."""
+
+    def status(self, line: str | None) -> None:
+        """Replace the current status line, or close it idempotently with ``None``."""
+        ...
+
+    def write_line(self, text: str) -> None:
+        """Append one durable line without disrupting the replaceable status."""
+        ...
+
+    def gate(self, prompt: str, *, hint: str | None = None) -> None:
+        """Block for readiness while the framework retains stdin ownership."""
+        ...
+
+
 @runtime_checkable
 class BimanualDriver(Protocol):
-    """The minimal 14-D joint-position driver the embodiment needs."""
+    """The minimal 14-D joint-position and effort driver the embodiment needs."""
 
     def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]:
         """Read both arm poses in radians and driver-native gripper units."""
+        ...
+
+    def get_joint_eff(self) -> npt.NDArray[np.floating[Any]]:
+        """Read packed arm and gripper estimated torque in raw N·m."""
         ...
 
     def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None:
@@ -261,6 +281,13 @@ def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cov
     class _Real:
         def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]:
             return packing.pack(left.get_joint_pos(), right.get_joint_pos())
+
+        def get_joint_eff(self) -> npt.NDArray[np.floating[Any]]:
+            left_obs = left.get_observations()
+            right_obs = right.get_observations()
+            left_eff = np.append(left_obs["joint_eff"], left_obs["gripper_eff"])
+            right_eff = np.append(right_obs["joint_eff"], right_obs["gripper_eff"])
+            return packing.pack(left_eff, right_eff)
 
         def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None:
             lo, ro = packing.split(target)
@@ -1117,9 +1144,14 @@ class YAMEmbodiment:
     # The setup wizard offers these as yes/no questions (core OPTION_SLOTS
     # protocol, inspect-robots#222) and writes the answers to config.ini.
     # The behavior contract lives on the matching YamConfig field. The wizard
-    # suggestion may diverge from the YamConfig default: the config default
-    # stays conservative for runs configured outside setup, while the wizard
-    # nudges interactive operators toward the zero-touch flow.
+    # suggestion may diverge from the YamConfig default in either direction:
+    # auto_start stays conservative at runtime but the wizard nudges toward
+    # zero-touch starts, while collision_guardrail stays protective at
+    # runtime but the wizard suggests off, because a fresh setup has no
+    # measured collision_*_base_pos geometry and the library-default offsets
+    # can false-positive hold until max_steps (#109). An existing config's
+    # stored value replaces the suggestion on re-runs. Joint effort reporting
+    # is opt-in in both places because it changes the observation contract.
     OPTION_SLOTS: ClassVar[tuple[OptionSlot, ...]] = (
         OptionSlot(
             arg="auto_start",
@@ -1128,8 +1160,14 @@ class YAMEmbodiment:
         ),
         OptionSlot(
             arg="collision_guardrail",
-            label="Block predicted arm collisions before they happen (collision_guardrail)",
-            default=True,
+            label="Block predicted arm collisions before they happen "
+            "(collision_guardrail; measure collision_*_base_pos first)",
+            default=False,
+        ),
+        OptionSlot(
+            arg="report_joint_eff",
+            label="Report estimated joint effort in observations (report_joint_eff)",
+            default=False,
         ),
     )
 
@@ -1205,6 +1243,8 @@ class YAMEmbodiment:
         )
         self._operator = operator if operator is not None else OperatorIO()
         self._poll_end: Callable[[], bool] = poll_end or default_poll_end
+        self._deferred_operator_end = False
+        self._session: OperatorSessionLike | None = None
         self._sleep: Callable[[float], None] = sleep_fn or time.sleep
         self._clock: Callable[[], float] = clock or time.perf_counter
         self._status: Callable[[str | None], None] = status_fn or _default_status
@@ -1233,6 +1273,17 @@ class YAMEmbodiment:
         docs_extra = self._cfg.docs_extra.strip()
         if docs_extra:
             docs += "\n\n" + docs_extra
+        if self._cfg.report_joint_eff:
+            docs += (
+                '\n\nJoint effort: ``observation.state["joint_eff"]`` is per-joint '
+                "estimated torque in N·m, sign-corrected, with the same 14-slot "
+                "layout as ``joint_pos`` but raw effort in the gripper slots. The "
+                "values include gravity load, so compare against a moving baseline. "
+                "Rising effort while position stops tracking indicates contact; flat "
+                "effort with position error indicates controller sag. ``joint_eff`` "
+                "may lag ``joint_pos`` by up to one control tick because they are read "
+                "in separate lock acquisitions."
+            )
         if self._builtin_realsense_reader is not None:
             depth_cameras = ", ".join(sorted(depth_serials))
             docs += (
@@ -1280,7 +1331,15 @@ class YAMEmbodiment:
     def contribute_guardrails(self, action_space: Box) -> GuardrailContribution:
         """Contribute collision holds when absolute joint checking is available."""
         if not self._cfg.collision_guardrail:
-            return GuardrailContribution()
+            # Every other skip path warns; the wizard now suggests off for
+            # unmeasured rigs (#109), so the opt-out must be visible in run
+            # logs rather than indistinguishable from a missing guardrail.
+            return GuardrailContribution(
+                warnings=(
+                    "collision guardrail disabled by config; set collision_guardrail=true "
+                    "after measuring collision_*_base_pos",
+                )
+            )
         if self._cfg.control_interface != "joints" or self._cfg.joints_are_delta:
             return GuardrailContribution(
                 warnings=("collision guardrail skipped: absolute joints mode only (plan 0011 v1)",)
@@ -1323,6 +1382,33 @@ class YAMEmbodiment:
         )
 
     # -- lifecycle ---------------------------------------------------------
+
+    def defer_operator_end(self) -> None:
+        """Yield stdin and episode termination to the framework console.
+
+        Inspect Robots calls this hook when its operator console owns stdin for
+        the run. Afterward this embodiment never reads stdin again: it performs
+        no end-of-episode poll or drains, and the framework terminates trials
+        with ``operator_end`` itself. The setting persists across resets because
+        every trial in the run belongs to the same console.
+
+        Newer cores should call :meth:`connect_operator_session` instead.
+        """
+        self._deferred_operator_end = True
+
+    def connect_operator_session(self, session: OperatorSessionLike) -> None:
+        """Yield terminal ownership to a framework session for the rest of the run.
+
+        This is a stand-down promise: after connection the embodiment never
+        reads stdin or writes status independently. The session replaces any
+        constructor-injected ``status_fn`` because the terminal must have one
+        owner. It outlives the embodiment, and ``session.status(None)`` is
+        idempotent, so teardown needs no special-casing and parking can continue
+        to render through the session.
+        """
+        self._deferred_operator_end = True
+        self._session = session
+        self._status = session.status
 
     def bind_task(self, envelope: TaskEnvelopeLike) -> None:
         """Store the framework's rollout horizon for the operator countdown.
@@ -1405,12 +1491,22 @@ class YAMEmbodiment:
                 # Non-blocking replacement for the stand-clear gate: the
                 # operator opted into zero-touch starts, but still gets one
                 # line of warning before the first motion of the connection.
-                self._operator.output_fn(
-                    "auto_start: arms will move to the home pose - stand clear."
+                notice = "auto_start: arms will move to the home pose - stand clear."
+                if self._session is not None:
+                    self._session.write_line(notice)
+                else:
+                    self._operator.output_fn(notice)
+            elif self._session is not None:
+                self._session.gate(
+                    "Arms will move to the home pose - stand clear, then press Enter...",
+                    hint="Set YamConfig(unattended=True) (CLI: -E unattended=true) "
+                    "to skip operator prompts.",
                 )
             else:
                 self._operator.wait_ready(
-                    "Arms will move to the home pose - stand clear, then press Enter..."
+                    "Arms will move to the home pose - stand clear, then press Enter...",
+                    drain=not self._deferred_operator_end,
+                    flush_first=self._deferred_operator_end,
                 )
             self._home_gate_confirmed = True
         if not self._cfg.unattended:
@@ -1444,12 +1540,35 @@ class YAMEmbodiment:
                 # wait_ready() owns the stdin drain; skipping the gate must not
                 # skip the drain, or a buffered newline ends the episode on the
                 # first default_poll_end() check.
-                _drain_stdin()
+                # When deferred, pending lines belong to the console, which drains
+                # after reset returns.
+                if not self._deferred_operator_end:
+                    _drain_stdin()
+            elif self._session is not None:
+                self._session.gate(
+                    "Position the scene, then press Enter to start...",
+                    hint="Set YamConfig(unattended=True) (CLI: -E unattended=true) "
+                    "to skip operator prompts.",
+                )
             else:
-                self._operator.wait_ready()
+                self._operator.wait_ready(
+                    drain=not self._deferred_operator_end,
+                    flush_first=self._deferred_operator_end,
+                )
             horizon = self._horizon_secs()
             limit = f" Max {horizon:.0f}s." if horizon is not None else ""
-            self._status(f"Running: press any key to end the episode and grade it.{limit}")
+            if self._session is not None:
+                # Rig facts only: console prose (end gesture, message
+                # affordance) belongs to the connected session. This banner
+                # renders pre-footer, so the hint first appears on the ticker.
+                self._status(f"Running.{limit}")
+            elif self._deferred_operator_end:
+                self._status(
+                    "Running: Esc (or /stop) ends the episode; type a message + Enter to "
+                    f"send feedback.{limit}"
+                )
+            else:
+                self._status(f"Running: press any key to end the episode and grade it.{limit}")
         self.num_steps = 0
         self._t_last = self._clock()
         return self._observe(scene.instruction)
@@ -1480,7 +1599,7 @@ class YAMEmbodiment:
         obs = self._observe(self._instruction)
         # Unattended runs have no operator: skip the end poll entirely; the
         # episode runs to the framework's max_steps.
-        if not self._cfg.unattended and self._poll_end():
+        if not self._cfg.unattended and not self._deferred_operator_end and self._poll_end():
             self._status(None)  # close the status line before control returns
             # The operator only signals *that* the episode is over. The verdict,
             # partial/skip, and grader notes belong to the framework's single
@@ -1771,7 +1890,15 @@ class YAMEmbodiment:
         elapsed = self.num_steps / hz
         horizon = self._horizon_secs()
         span = f"{elapsed:.0f}s / {horizon:.0f}s" if horizon is not None else f"{elapsed:.0f}s"
-        self._status(f"t = {span} | any key ends the episode")
+        if self._session is not None:
+            # The connected session appends the framework-owned end-gesture hint;
+            # sending our own copy would just be stripped and re-appended.
+            self._status(f"t = {span}")
+            return
+        end_instruction = (
+            "Esc ends the episode" if self._deferred_operator_end else "any key ends the episode"
+        )
+        self._status(f"t = {span} | {end_instruction}")
 
     def _require_driver(self) -> BimanualDriver:
         # Reachable: step() before the first reset(), or after close().
@@ -1904,10 +2031,25 @@ class YAMEmbodiment:
         # exact units STATE_SPEC declares (and _send() accepts) — the inverse of
         # the de-normalization applied to outgoing commands.
         state = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+        # Read effort back-to-back with position so the documented skew bound
+        # (at most one control tick) holds regardless of camera/FK wall time.
+        joint_eff: npt.NDArray[np.float64] | None = None
+        if self._cfg.report_joint_eff:
+            get_joint_eff = getattr(driver, "get_joint_eff", None)
+            if not callable(get_joint_eff):
+                raise RuntimeError(
+                    "report_joint_eff=true requires the injected driver to implement "
+                    "get_joint_eff()"
+                )
+            joint_eff = packing.validate_dim(get_joint_eff())
 
         images = dict(self._camera_reader(self._cfg))
         expected_shape = (self._cfg.cam_height, self._cfg.cam_width, 3)
         for name, img in images.items():
+            # A dropped frame violates the ImageMap contract, but name the camera
+            # rather than letting it surface as a bare AttributeError on .shape.
+            if img is None:
+                raise ValueError(f"camera {name!r} returned no frame, expected {expected_shape}")
             if img.shape != expected_shape:
                 raise ValueError(
                     f"camera {name!r} returned shape {img.shape}, expected {expected_shape}"
@@ -1922,6 +2064,8 @@ class YAMEmbodiment:
                 gripper=float(state[13]),
             )
             values["eef_state"] = np.concatenate((left, right))
+        if joint_eff is not None:
+            values["joint_eff"] = joint_eff
         if self._builtin_realsense_reader is None and self._depth_reader is None:
             return Observation(images=images, state=values, instruction=instruction)
         extra: dict[str, Any] = {}

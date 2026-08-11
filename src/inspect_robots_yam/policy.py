@@ -110,6 +110,10 @@ class ActServerPolicy:
 
         expected_shape = (cfg.cam_height, cfg.cam_width, 3)
         for cam, img in images.items():
+            # A dropped frame violates the ImageMap contract, but name the camera
+            # rather than letting it surface as a bare AttributeError on .shape.
+            if img is None:
+                raise ValueError(f"camera {cam!r} has no frame, expected {expected_shape}")
             if img.shape != expected_shape:
                 raise ValueError(f"camera {cam!r} has shape {img.shape}, expected {expected_shape}")
 
