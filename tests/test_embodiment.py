@@ -112,6 +112,28 @@ class _RecordingSession:
             raise self._gate_error
 
 
+class _PacedClock:
+    """Fake clock that only moves when someone sleeps, plus optional overrun.
+
+    A frozen clock cannot tell a step-count counter apart from a wall-clock
+    one, which is how #64 stayed invisible. This advances on the paced sleep
+    the way real time does, and ``overrun`` adds time the pacing never
+    accounts for, standing in for a settle or a slow camera read.
+    """
+
+    def __init__(self, overrun: float = 0.0) -> None:
+        self.now = 0.0
+        self.overrun = overrun
+
+    def __call__(self) -> float:
+        """Read the current fake time."""
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        """Advance time by the slept interval, then by any configured overrun."""
+        self.now += seconds + self.overrun
+
+
 def _build(
     cfg: YamConfig | None = None,
     *,
@@ -462,14 +484,15 @@ def test_connect_operator_session_owns_status_and_episode_end() -> None:
     constructor_status: list[str | None] = []
     polls: list[bool] = []
     driver = FakeDriver()
+    clock = _PacedClock()
     emb = YAMEmbodiment(
         YamConfig(cam_height=4, cam_width=4, control_hz=1.0),
         driver_factory=lambda _cfg: driver,
         camera_reader=_cameras,
         operator=_operator(),
         poll_end=lambda: polls.append(True) or True,
-        sleep_fn=lambda _seconds: None,
-        clock=lambda: 0.0,
+        sleep_fn=clock.sleep,
+        clock=clock,
         status_fn=constructor_status.append,
     )
 
@@ -1101,7 +1124,12 @@ def test_close_rest_pose_zero_hz_falls_back_to_10hz() -> None:
     assert len(drv.commands) == 20  # reset and close each use the 10 Hz fallback
 
 
-def _build_with_status(cfg: YamConfig | None = None, poll_end_seq: list[bool] | None = None):
+def _build_with_status(
+    cfg: YamConfig | None = None,
+    poll_end_seq: list[bool] | None = None,
+    *,
+    clock: _PacedClock | None = None,
+):
     import dataclasses
 
     cfg = cfg or YamConfig()
@@ -1109,14 +1137,15 @@ def _build_with_status(cfg: YamConfig | None = None, poll_end_seq: list[bool] | 
     drv = FakeDriver()
     polls = list(poll_end_seq or [False])
     status: list[str | None] = []
+    clock = clock or _PacedClock()
     emb = YAMEmbodiment(
         cfg,
         driver_factory=lambda _c: drv,
         camera_reader=_cameras,
         operator=_operator(),
         poll_end=lambda: polls.pop(0) if polls else False,
-        sleep_fn=lambda _s: None,
-        clock=lambda: 0.0,
+        sleep_fn=clock.sleep,
+        clock=clock,
         status_fn=status.append,
     )
     return emb, status
@@ -1145,8 +1174,8 @@ def test_status_line_updates_once_per_second_with_horizon() -> None:
         emb.step(Action(data=np.zeros(14)))
     updates = [m for m in status[reset_entries:] if m is not None]
     assert updates == [
-        "t = 1s / 120s | any key ends the episode",
-        "t = 2s / 120s | any key ends the episode",
+        "t = 1s / ~120s | any key ends the episode",
+        "t = 2s / ~120s | any key ends the episode",
     ]
 
 
@@ -1178,6 +1207,44 @@ def test_status_line_without_hint_shows_elapsed_only() -> None:
         emb.step(Action(data=np.zeros(14)))
     updates = [m for m in status[reset_entries:] if m is not None]
     assert updates and "1s" in updates[0] and "/" not in updates[0].split("|")[0]
+
+
+def test_elapsed_follows_the_wall_clock_when_steps_overrun_the_period() -> None:
+    # 10 Hz, but every step burns another period beyond the pace (a settle, or
+    # a slow camera read). Counting steps would report 1s at step 10; the
+    # operator has actually been standing there for 2s.
+    clock = _PacedClock(overrun=0.1)
+    with pytest.warns(FutureWarning, match="max_steps_hint"):
+        cfg = YamConfig(max_steps_hint=1200)
+    emb, status = _build_with_status(cfg, clock=clock)
+    emb.reset(Scene(id="s", instruction="x"))
+    reset_entries = len(status)
+    started = clock.now
+
+    for _ in range(10):
+        emb.step(Action(data=np.zeros(14)))
+
+    # 10 steps that a step-count counter would call 1s, and the clock agrees
+    # they took 2s. The reported elapsed follows the clock.
+    assert clock.now - started == pytest.approx(2.0)
+    updates = [m for m in status[reset_entries:] if m is not None]
+    assert updates == ["t = 2s / ~120s | any key ends the episode"]
+
+
+def test_homing_time_is_not_charged_to_the_episode() -> None:
+    # reset() ramps the arms home before handing over, and that ramp sleeps.
+    # The operator's counter starts when the episode does, not at reset entry.
+    clock = _PacedClock()
+    emb, status = _build_with_status(YamConfig(control_hz=1.0), clock=clock)
+    emb.reset(Scene(id="s", instruction="x"))
+    homing_elapsed = clock.now
+    reset_entries = len(status)
+
+    emb.step(Action(data=np.zeros(14)))
+
+    assert homing_elapsed > 0.0  # the ramp really did consume fake time
+    updates = [m for m in status[reset_entries:] if m is not None]
+    assert updates == ["t = 1s | any key ends the episode"]
 
 
 def test_status_finishes_with_none_when_operator_ends_episode() -> None:
@@ -1223,7 +1290,7 @@ def test_deferred_status_explains_console_feedback_with_horizon() -> None:
 
     assert _running_status(status) == (
         "Running: Esc (or /stop) ends the episode; type a message + Enter to "
-        "send feedback. Max 120s."
+        "send feedback. Max ~120s."
     )
 
 
@@ -1237,7 +1304,7 @@ def test_connected_banner_carries_rig_facts_only() -> None:
 
     # No console prose: the session owns the end gesture and knows per policy
     # whether typed messages are delivered, so yam claims neither.
-    assert "Running. Max 120s." in session.statuses
+    assert "Running. Max ~120s." in session.statuses
     assert not any(s is not None and "ends the episode" in s for s in session.statuses)
 
 
@@ -1245,23 +1312,23 @@ def test_bind_task_drives_the_countdown_horizon() -> None:
     emb, status = _build_with_status()
     emb.bind_task(_Envelope(name="adhoc", max_steps=1200))
     emb.reset(Scene(id="s", instruction="x"))
-    assert "Max 120s." in _running_status(status)
+    assert "Max ~120s." in _running_status(status)
     reset_entries = len(status)
     for _ in range(10):
         emb.step(Action(data=np.zeros(14)))
     updates = [m for m in status[reset_entries:] if m is not None]
-    assert updates and "1s / 120s" in updates[0]
+    assert updates and "1s / ~120s" in updates[0]
 
 
 def test_bound_horizon_wins_over_deprecated_hint() -> None:
     with pytest.warns(FutureWarning, match="max_steps_hint"):
-        cfg = YamConfig(max_steps_hint=100)  # would show "Max 10s."
+        cfg = YamConfig(max_steps_hint=100)  # would show "Max ~10s."
     emb, status = _build_with_status(cfg)
     emb.bind_task(_Envelope(name="adhoc", max_steps=1200))
     emb.reset(Scene(id="s", instruction="x"))
     running = _running_status(status)
-    assert "Max 120s." in running
-    assert "Max 10s." not in running
+    assert "Max ~120s." in running
+    assert "Max ~10s." not in running
 
 
 def test_rebind_latest_envelope_wins() -> None:
@@ -1269,7 +1336,7 @@ def test_rebind_latest_envelope_wins() -> None:
     emb.bind_task(_Envelope(name="first", max_steps=100))
     emb.bind_task(_Envelope(name="second", max_steps=1200))
     emb.reset(Scene(id="s", instruction="x"))
-    assert "Max 120s." in _running_status(status)
+    assert "Max ~120s." in _running_status(status)
 
 
 def test_close_clears_the_bound_horizon() -> None:
