@@ -1611,6 +1611,45 @@ class YAMEmbodiment:
             )
         return StepResult(observation=obs, terminated=False, info=settle_info)
 
+    def observe_parked(self) -> Observation | None:
+        """Park and capture the final grader view for a scored trial.
+
+        The framework calls this immediately before grading. It moves the arms
+        to the configured rest pose, or the pose captured by :meth:`reset`, and
+        returns a fresh observation without lazy extras. It declines with
+        ``None`` when :attr:`YamConfig.park_before_grade` is false or the
+        driver is not connected (never connected, or already closed), leaving
+        no park target.
+        """
+        if not self._cfg.park_before_grade or self._driver is None or self._init_pose is None:
+            return None
+        target = (
+            np.asarray(self._cfg.rest_pose, dtype=np.float64)
+            if self._cfg.rest_pose is not None
+            else self._init_pose
+        )
+        # close() keeps its own ramp: a later close parks from wherever the arms
+        # are, and ramping twice to the same target is a no-op ramp. The status
+        # line stays open through the settle, like reset()'s ramp, so an
+        # attended operator is not left staring at silence for the settle wait.
+        if not self._cfg.unattended:
+            self._status("parking for grading: ramping arms clear")
+        try:
+            sent = self._ramp_to(target)
+            self._settle(sent)
+        finally:
+            if not self._cfg.unattended:
+                self._status(None)
+        observation = self._observe(None)
+        # image_times/state_time are deliberately left at their defaults: the
+        # source observation never sets them today, and a future _observe that
+        # does should extend this rebuild rather than lose them silently.
+        return Observation(
+            images=observation.images,
+            state=observation.state,
+            instruction=None,
+        )
+
     def close(self) -> None:
         """Park the arms, then release the driver handles.
 

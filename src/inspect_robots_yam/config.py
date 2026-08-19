@@ -235,6 +235,11 @@ class YamConfig(_FromKwargs):
     # Opt-in raw estimated torque state. Kept off by default because adding a
     # runtime observation key changes the policy-facing contract.
     report_joint_eff: bool = False
+    # Parking before grading gives the grader an unobstructed final view, but it
+    # moves the arms. Rigs running tasks whose success state is the gripper
+    # holding an object must set this false; the framework then grades the last
+    # step's frames as before.
+    park_before_grade: bool = True
 
     @classmethod
     def from_kwargs(cls, **flat: Any) -> YamConfig:
@@ -248,10 +253,16 @@ class YamConfig(_FromKwargs):
                 )
         # The CLI parses the literal `none` to Python None, which is falsy: an
         # unvalidated None here would silently flip a boolean off (opting out
-        # of a safety gate, removing the table plane, or dropping the effort
-        # report) instead of the "library default" that `none` means
+        # of a safety gate, removing the table plane, dropping the effort
+        # report, or suppressing the pre-grade park) instead of the "library
+        # default" that `none` means
         # everywhere else.
-        for flag in ("collision_guardrail", "collision_table", "report_joint_eff"):
+        for flag in (
+            "collision_guardrail",
+            "collision_table",
+            "report_joint_eff",
+            "park_before_grade",
+        ):
             if flag in flat and not isinstance(flat[flag], bool):
                 raise ValueError(f"{flag} must be true or false, got {flat[flag]!r}")
         if "collision_table_height" in flat and flat["collision_table_height"] is None:

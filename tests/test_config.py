@@ -510,6 +510,17 @@ def test_report_joint_eff_rejects_non_bool_values(value: object) -> None:
         YamConfig.from_kwargs(report_joint_eff=value)
 
 
+@pytest.mark.parametrize("value", [True, False])
+def test_park_before_grade_accepts_explicit_bool(value: bool) -> None:
+    assert YamConfig.from_kwargs(park_before_grade=value).park_before_grade is value
+
+
+@pytest.mark.parametrize("value", [None, "yes", 1])
+def test_park_before_grade_rejects_non_bool_values(value: object) -> None:
+    with pytest.raises(ValueError, match="park_before_grade must be true or false"):
+        YamConfig.from_kwargs(park_before_grade=value)
+
+
 def test_collision_guardrail_defaults_on_and_binds_via_kwargs() -> None:
     assert YamConfig().collision_guardrail is True
     assert YamConfig.from_kwargs(collision_guardrail=False).collision_guardrail is False
