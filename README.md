@@ -611,6 +611,11 @@ motions, or replace the operator and physical e-stop.
   parks with both grippers open (wire 1), so parking releases anything still
   held during the ramp, wherever the arms happen to be. Rigs that must keep an
   object gripped at park should override `rest_pose` with gripper slots 0.0.
+  With `park_before_grade=true`, the arms also make the same motion as the
+  `close()` park at episode end, before grading. This is a new time for that
+  motion and there is no stand-clear gate. Tasks whose success state is the
+  gripper holding an object must set `park_before_grade=false` so the grader
+  uses the last step's frames instead.
   Override both `home_pose` and `rest_pose` on rigs whose joint limits exclude
   zero, since both targets are clamped through the same per-joint box as every
   command.
@@ -687,6 +692,9 @@ attended episode flow; needs a TTY; `unattended` takes precedence),
 `report_joint_eff` (default `False`; add the optional `joint_eff` observation
 state with sign-corrected estimated torque in raw N·m, including the gripper
 slots),
+`park_before_grade` (default `True`; park for an unobstructed final grader view;
+set `False` for tasks whose success state is the gripper holding an object so
+grading uses the last step's frames),
 `collision_guardrail` (default `True`; predictive holds in absolute joint
 mode; the setup wizard suggests `false` until the base positions below are
 measured),

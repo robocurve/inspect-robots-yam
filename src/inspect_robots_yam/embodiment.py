@@ -1611,6 +1611,39 @@ class YAMEmbodiment:
             )
         return StepResult(observation=obs, terminated=False, info=settle_info)
 
+    def observe_parked(self) -> Observation | None:
+        """Park and capture the final grader view for a scored trial.
+
+        The framework calls this immediately before grading. It moves the arms
+        to the configured rest pose, or the pose captured by :meth:`reset`, and
+        returns a fresh observation without lazy extras. It declines with
+        ``None`` when :attr:`YamConfig.park_before_grade` is false, the driver
+        was never connected, or no reset-captured park target exists.
+        """
+        if not self._cfg.park_before_grade or self._driver is None or self._init_pose is None:
+            return None
+        target = (
+            np.asarray(self._cfg.rest_pose, dtype=np.float64)
+            if self._cfg.rest_pose is not None
+            else self._init_pose
+        )
+        # close() keeps its own ramp: a later close parks from wherever the arms
+        # are, and ramping twice to the same target is a no-op ramp.
+        if not self._cfg.unattended:
+            self._status("parking for grading: ramping arms clear")
+        try:
+            sent = self._ramp_to(target)
+        finally:
+            if not self._cfg.unattended:
+                self._status(None)
+        self._settle(sent)
+        observation = self._observe(None)
+        return Observation(
+            images=observation.images,
+            state=observation.state,
+            instruction=None,
+        )
+
     def close(self) -> None:
         """Park the arms, then release the driver handles.
 
