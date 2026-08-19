@@ -1617,8 +1617,9 @@ class YAMEmbodiment:
         The framework calls this immediately before grading. It moves the arms
         to the configured rest pose, or the pose captured by :meth:`reset`, and
         returns a fresh observation without lazy extras. It declines with
-        ``None`` when :attr:`YamConfig.park_before_grade` is false, the driver
-        was never connected, or no reset-captured park target exists.
+        ``None`` when :attr:`YamConfig.park_before_grade` is false or the
+        driver is not connected (never connected, or already closed), leaving
+        no park target.
         """
         if not self._cfg.park_before_grade or self._driver is None or self._init_pose is None:
             return None
@@ -1628,16 +1629,21 @@ class YAMEmbodiment:
             else self._init_pose
         )
         # close() keeps its own ramp: a later close parks from wherever the arms
-        # are, and ramping twice to the same target is a no-op ramp.
+        # are, and ramping twice to the same target is a no-op ramp. The status
+        # line stays open through the settle, like reset()'s ramp, so an
+        # attended operator is not left staring at silence for the settle wait.
         if not self._cfg.unattended:
             self._status("parking for grading: ramping arms clear")
         try:
             sent = self._ramp_to(target)
+            self._settle(sent)
         finally:
             if not self._cfg.unattended:
                 self._status(None)
-        self._settle(sent)
         observation = self._observe(None)
+        # image_times/state_time are deliberately left at their defaults: the
+        # source observation never sets them today, and a future _observe that
+        # does should extend this rebuild rather than lose them silently.
         return Observation(
             images=observation.images,
             state=observation.state,
