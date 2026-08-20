@@ -71,8 +71,11 @@ as a verified pick-and-place.
   will slip (an empty closed gripper itself drifts up to ≈0.04) —
   regrasp deeper so more material sits between the jaws.
 - Failed close attempts drag the object. After any failed grasp, re-find
-  the object's actual position in the overhead frame before retrying —
-  don't assume it is where it was.
+  the object in the overhead frame before retrying — don't assume it is
+  where it was, and don't assume it is what you thought: the wrist view
+  alone can misidentify a target, and repeated empty closes on the same
+  apparent target usually mean you are approaching the wrong thing.
+  Cross-check the overhead view before spending more calls on it.
 
 ## Transport and placement
 
