@@ -8,7 +8,13 @@ Task-agnostic; shared by all YAM rigs.
 The fact sheet's numbers were measured on the rig you are driving —
 start the task using them directly rather than spending calls
 re-deriving them: a full upfront calibration pass costs about as much
-as a verified pick-and-place.
+as a verified pick-and-place. The exception is any number the sheet
+tags as carried over from a sibling rig rather than measured here:
+treat those as priors, and verify each one before the first action
+that depends on it (the z-bias before the first grasp, a camera scale
+before a long committed move) — trusting an inherited number over your
+own observations is how a gripper closes on empty air several times in
+a row.
 
 - Make your first task motion double as a sanity check: after the first
   sizeable move, compare the observed pixel shift and joint readback
@@ -48,8 +54,8 @@ as a verified pick-and-place.
   closes at a computed position usually miss and shove the object
   5–9 cm, forcing a re-find.
 - Never read depth from image-y alone: descend in 1–2 cm steps, keeping
-  the target column-aligned with the jaw gap (x≈115), and re-check
-  between steps.
+  the target column-aligned with the jaw gap (the sheet's grasp-point x,
+  re-located at your current pitch), and re-check between steps.
 
 ## Grasping
 

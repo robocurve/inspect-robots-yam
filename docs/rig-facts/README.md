@@ -3,9 +3,10 @@
 Agent-facing docs for agent-policy runs, split in three so each part can
 be included or dropped per run:
 
-- **Per-rig fact sheets** ([rig-2.md](rig-2.md), ...) — the measured and
-  derived truths about one physical rig: kinematic constants, camera
-  geometry, controller behavior, joint-effort signatures.
+- **Per-rig fact sheets** ([rig-1.md](rig-1.md), [rig-2.md](rig-2.md),
+  ...) — the measured and derived truths about one physical rig:
+  kinematic constants, camera geometry, controller behavior,
+  joint-effort signatures.
 - **[formulas.md](formulas.md)** — planar FK/IK for the YAM arm and the
   approximation's measured biases. Shared by all YAM rigs.
 - **[advice.md](advice.md)** — working practice distilled from episode
@@ -30,16 +31,22 @@ docs (e.g. VLAs) ignore it.
 
 Start by copying [rig-2.md](rig-2.md) and replacing every number you
 haven't verified on your own rig — wrong facts are worse than no facts,
-because agents trust this text over their own exploration. In particular
+because agents trust this text over their own exploration. A number you
+can't verify yet must be tagged *(rig-2 value — unverified here)* the
+way [rig-1.md](rig-1.md) does, so agents treat it as a prior to check
+rather than a measurement to trust; never ship another rig's sheet
+under your rig's name. In particular
 the overhead-camera scale is known to differ between identically built
 rigs; the fact sheets state ranges and agents are told to verify them
 against their first moves and recalibrate only on disagreement.
 `formulas.md` and `advice.md` should apply to any YAM rig as-is.
 
 Facts should be rig-specific but task-agnostic: nothing about particular
-objects or scenes, no internal provenance notes. If a fact only helps one
+objects or scenes, and no internal provenance notes beyond the
+verification-status tags above. If a fact only helps one
 task, it belongs in that task's metadata instead.
 
+- [rig-1](rig-1.md)
 - [rig-2](rig-2.md)
 - [formulas](formulas.md) (all YAM rigs)
 - [advice](advice.md) (all YAM rigs)
