@@ -116,9 +116,9 @@ def _build(
     return emb, drv, left_raw, right_raw
 
 
-def test_eef_info_uses_10d_space_and_dual_state_observation() -> None:
+def test_eef_info_uses_14d_space_and_dual_state_observation() -> None:
     emb, _, _, _ = _build()
-    assert emb.info.action_space.shape == (10,)
+    assert emb.info.action_space.shape == (14,)
     assert emb.info.action_space.semantics.dim_labels == EEF_DIM_LABELS
     assert emb.info.observation_space.state_keys == frozenset({"joint_pos", "eef_state"})
 
@@ -129,7 +129,7 @@ def test_default_eef_home_is_mandatory_when_home_pose_is_none() -> None:
     assert driver.commands[-1] == pytest.approx(DEFAULT_EEF_HOME_POSE)
     assert observation.state["joint_pos"] == pytest.approx(DEFAULT_EEF_HOME_POSE)
     assert observation.state["eef_state"] == pytest.approx(
-        (0.3, 0.0, 0.2, 0.0, 1.0, 0.3, 0.0, 0.2, 0.0, 1.0)
+        (0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0, 0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0)
     )
 
 
@@ -160,7 +160,9 @@ def test_eef_step_commands_both_arms_and_passes_grippers_outside_ik() -> None:
     emb, driver, _, _ = _build(left=left, right=right)
     emb.reset(Scene(id="eef", instruction="move"))
 
-    action = np.asarray((0.35, 0.1, 0.25, 0.2, 0.25, 0.4, -0.1, 0.3, -0.2, 0.75))
+    action = np.asarray(
+        (0.35, 0.1, 0.25, 0.2, 0.0, 0.0, 0.25, 0.4, -0.1, 0.3, -0.2, 0.0, 0.0, 0.75)
+    )
     emb.step(Action(data=action))
     command = driver.commands[-1]
     assert command[:6] == pytest.approx(left_solution[:6])
@@ -178,7 +180,7 @@ def test_nonfinite_solution_resends_previous_arm_command_but_updates_gripper() -
     emb, driver, _, _ = _build(left=left)
     emb.reset(Scene(id="eef", instruction="move"))
     prior = driver.commands[-1].copy()
-    action = np.asarray((0.3, 0.0, 0.2, 0.0, 0.1, 0.3, 0.0, 0.2, 0.0, 0.9))
+    action = np.asarray((0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 0.1, 0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 0.9))
     emb.step(Action(data=action))
     assert np.all(np.isfinite(driver.commands[-1]))
     assert driver.commands[-1][:6] == pytest.approx(prior[:6])
@@ -243,13 +245,13 @@ def test_home_fk_failure_raises_before_stand_clear_prompt() -> None:
             control_interface="eef_pos",
             rest_secs=0.1,
             unattended=True,
-            eef_low=(0.15, -0.25, 0.03, 0.1, 0.0) * 2,
+            eef_low=(0.15, -0.25, 0.03, 0.1, 0.0, 0.0, 0.0) * 2,
         ),
         YamConfig(
             control_interface="eef_pos",
             rest_secs=0.1,
             unattended=True,
-            eef_high=(0.48, 0.25, 0.40, np.pi, 0.9) * 2,
+            eef_high=(0.48, 0.25, 0.40, np.pi, 0.0, 0.0, 0.9) * 2,
         ),
     ],
 )
@@ -310,7 +312,7 @@ def test_close_then_reset_revalidates_edited_start_pose_against_eef_box(
     # harness: FakeRawKinematics.fk ignores joint input, and a gripper outside
     # [0, 1] would be pre-empted by the joint-limit resolution check. Narrow
     # the box's gripper bound so 0.95 is joint-legal but box-illegal.
-    narrowed_high = (0.48, 0.25, 0.40, np.pi, 0.9) * 2
+    narrowed_high = (0.48, 0.25, 0.40, np.pi, 0.0, 0.0, 0.9) * 2
     good = (0.2,) * 6 + (0.8,) + (0.3,) * 6 + (0.8,)
     _save_start_pose(tmp_path, "ready", good)
     emb, driver, _, _ = _build(_start_pose_config(tmp_path, eef_high=narrowed_high))
@@ -368,7 +370,7 @@ def test_reset_clears_active_hold_before_next_trial_opening_step() -> None:
     emb, _, _, _ = _build(cfg, left=left)
     scene = Scene(id="eef", instruction="move")
     emb.reset(scene)
-    action = Action(data=np.asarray((0.3, 0.0, 0.2, 0.0, 1.0) * 2))
+    action = Action(data=np.asarray((0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0) * 2))
     for _ in range(4):
         emb.step(action)
     assert len(left.ik_calls) == 4
@@ -390,7 +392,7 @@ def test_gripper_measurement_gap_never_resyncs_or_disables_arm_reversal_counting
     driver = EchoDriver(echo_grippers=False)
     emb, _, _, _ = _build(driver=driver, left=left)
     emb.reset(Scene(id="eef", instruction="move"))
-    action = Action(data=np.asarray((0.3, 0.0, 0.2, 0.0, 1.0) * 2))
+    action = Action(data=np.asarray((0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0) * 2))
     for _ in range(4):
         emb.step(action)
     assert len(left.ik_calls) == 4
@@ -399,11 +401,26 @@ def test_gripper_measurement_gap_never_resyncs_or_disables_arm_reversal_counting
     assert emb._left_kinematics.resynced is False
 
 
-def test_eef_action_requires_exactly_ten_dimensions() -> None:
+def test_eef_action_requires_exactly_fourteen_dimensions() -> None:
     emb, _, _, _ = _build()
     emb.reset(Scene(id="eef", instruction="move"))
-    with pytest.raises(ValueError, match="expected a 10-D vector"):
-        emb.step(Action(data=np.zeros(14)))
+    with pytest.raises(ValueError, match="expected a 14-D vector"):
+        emb.step(Action(data=np.zeros(10)))
+
+
+def test_pinned_pitch_and_roll_are_clamped_to_zero_by_the_declared_box() -> None:
+    # Behavior-identity guard for the default bounds: a policy commanding the
+    # new orientation slots is clamped back to the historical yaw-only family
+    # by the framework's clamp approver working off the declared box.
+    from inspect_robots.approver import ClampApprover
+
+    emb, _, _, _ = _build()
+    approver = ClampApprover(emb.info.action_space)
+    raw = Action(data=np.asarray((0.3, 0.0, 0.2, 0.1, 0.5, -0.4, 1.0) * 2))
+    approved = approver.review(raw, {})
+    for index in (4, 5, 11, 12):
+        assert approved.data[index] == pytest.approx(0.0)
+    assert approved.data[3] == pytest.approx(0.1)  # yaw stays commandable
 
 
 def test_eef_kinematics_are_unavailable_before_first_reset() -> None:

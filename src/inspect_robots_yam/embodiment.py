@@ -118,6 +118,11 @@ up; how the two bases are mounted relative to each other depends on the rig.
 - left_yaw / right_yaw: tool rotation in radians about vertical, relative to
   the trial's start orientation; 0 keeps the start orientation and positive
   turns counterclockwise seen from above.
+- left_pitch / right_pitch, left_roll / right_roll: tool tilt in radians,
+  also relative to the trial's start orientation. Positive pitch tips the
+  tool forward (+x at yaw 0), positive roll toward the arm's left (+y at
+  yaw 0). An axis whose configured bounds are equal (typically 0) is pinned:
+  commands on it are clamped to that value and it cannot be actuated.
 - left_gripper / right_gripper: 0 is fully closed, 1 is fully open (about
   9.5 cm between the jaws).
 Proportions: upper arm 0.26 m, forearm 0.25 m, wrist to grasp point 0.25 m
@@ -1868,19 +1873,21 @@ class YAMEmbodiment:
                 left_kinematics,
                 home[: packing.ARM_DOF],
                 float(home[packing.ARM_DOF]),
-                slice(0, 5),
+                slice(0, 7),
             ),
             (
                 "right",
                 right_kinematics,
                 home[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF],
                 float(home[-1]),
-                slice(5, 10),
+                slice(7, 14),
             ),
         )
         for side, kinematics, joints, gripper, bounds in arm_values:
             position = kinematics.fk(joints)[:3, 3]
-            home_state = np.asarray((*position, 0.0, gripper))
+            # Relative yaw/pitch/roll at arrival are 0 by construction: the
+            # home pose is the pose the orientation reference is captured from.
+            home_state = np.asarray((*position, 0.0, 0.0, 0.0, gripper))
             if np.any(home_state < self._cfg.eef_low_array[bounds]) or np.any(
                 home_state > self._cfg.eef_high_array[bounds]
             ):
@@ -1895,7 +1902,7 @@ class YAMEmbodiment:
                 )
 
     def _step_eef(self, action: Vec, driver: BimanualDriver) -> Vec:
-        """Convert one 10-D EEF action into the normative two-arm joint command.
+        """Convert one 14-D EEF action into the normative two-arm joint command.
 
         Returns the clamped vector actually sent, which is what settling waits
         for. In this mode that routinely differs from what the policy asked for:
@@ -1905,16 +1912,16 @@ class YAMEmbodiment:
         state = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
         left_kinematics, right_kinematics = self._require_kinematics()
         left_command = left_kinematics.solve(
-            action[:4],
+            action[:6],
             state[: packing.ARM_DOF],
         )
         right_command = right_kinematics.solve(
-            action[5:9],
+            action[7:13],
             state[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF],
         )
         command = packing.pack(
-            np.concatenate((left_command, action[4:5])),
-            np.concatenate((right_command, action[9:10])),
+            np.concatenate((left_command, action[6:7])),
+            np.concatenate((right_command, action[13:14])),
         )
         sent = self._send(command)
         left_kinematics.update_sent(sent[: packing.ARM_DOF])

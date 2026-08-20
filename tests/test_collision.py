@@ -289,8 +289,8 @@ def test_unnamed_geom_has_stable_fallback_name(checker: CollisionChecker) -> Non
     "space",
     [
         action_box(
-            np.full(10, -1.0),
-            np.full(10, 1.0),
+            np.full(14, -1.0),
+            np.full(14, 1.0),
             control_interface="eef_pos",
         ),
         action_box(

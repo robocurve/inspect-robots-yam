@@ -68,12 +68,21 @@ _STEP_ARM = (0.2,) * ARM_DOF + (1.0,)
 _DEFAULT_STEP_LIMITS = _STEP_ARM * 2
 
 EEF_DIM_LABELS: tuple[str, ...] = tuple(
-    f"{side}_{part}" for side in ("left", "right") for part in ("x", "y", "z", "yaw", "gripper")
+    f"{side}_{part}"
+    for side in ("left", "right")
+    for part in ("x", "y", "z", "yaw", "pitch", "roll", "gripper")
 )
-_EEF_ARM_LOW = (0.15, -0.25, 0.03, -np.pi, 0.0)
-_EEF_ARM_HIGH = (0.48, 0.25, 0.40, np.pi, 1.0)
+# Pitch and roll ship pinned at (0, 0): the axes exist in the layout but are
+# not commandable until an operator widens their bounds, which keeps default
+# behavior identical to the historical yaw-only interface.
+_EEF_ARM_LOW = (0.15, -0.25, 0.03, -np.pi, 0.0, 0.0, 0.0)
+_EEF_ARM_HIGH = (0.48, 0.25, 0.40, np.pi, 0.0, 0.0, 1.0)
 DEFAULT_EEF_LOW: tuple[float, ...] = _EEF_ARM_LOW * 2
 DEFAULT_EEF_HIGH: tuple[float, ...] = _EEF_ARM_HIGH * 2
+_EEF_YAW_INDICES = (3, 10)
+_EEF_PITCH_INDICES = (4, 11)
+_EEF_ROLL_INDICES = (5, 12)
+_EEF_GRIPPER_INDICES = (6, 13)
 
 # Provisional 2026-07-14 LINEAR_4310 solution for EEF position (0.30, 0, 0.20),
 # jaw axis pitched 30 degrees from vertical toward the arm base, and open grippers.
@@ -156,8 +165,8 @@ class YamConfig(_FromKwargs):
     # Named joint-space alternative to home_pose, resolved from pose_dir on the
     # first reset of each connection. Works in both control interfaces; in
     # eef_pos mode the resolved pose must also start inside the EEF action box
-    # (FK grasp-point position, gripper aperture, and relative yaw 0 are all
-    # checked against eef_low/eef_high before the homing ramp).
+    # (FK grasp-point position, gripper aperture, and relative yaw/pitch/roll
+    # 0 are all checked against eef_low/eef_high before the homing ramp).
     start_pose: str | None = None
     pose_dir: str = "poses"
     # Pose used to park on close() after reset() captures the initial pose. None
@@ -331,11 +340,19 @@ class YamConfig(_FromKwargs):
         eef_high = self.eef_high_array
         if not np.all(np.isfinite(eef_low)) or not np.all(np.isfinite(eef_high)):
             raise ValueError("eef_low and eef_high must contain only finite values")
-        if np.any(eef_low >= eef_high):
-            raise ValueError("eef_low must be below eef_high in every dimension")
-        for yaw_index in (3, 8):
+        # Equality pins an axis (not commandable, action_box masks its
+        # max_step declaration); only an inverted pair is a config error.
+        if np.any(eef_low > eef_high):
+            raise ValueError("eef_low must not exceed eef_high in any dimension")
+        for yaw_index in (*_EEF_YAW_INDICES, *_EEF_ROLL_INDICES):
             if eef_low[yaw_index] < -np.pi or eef_high[yaw_index] > np.pi:
-                raise ValueError("eef yaw bounds must stay within [-pi, pi]")
+                raise ValueError("eef yaw and roll bounds must stay within [-pi, pi]")
+        # The relative-rotation ZYX extraction is singular at |pitch| = pi/2;
+        # keeping pitch bounds strictly inside guarantees every commandable
+        # orientation decomposes uniquely.
+        for pitch_index in _EEF_PITCH_INDICES:
+            if eef_low[pitch_index] <= -np.pi / 2 or eef_high[pitch_index] >= np.pi / 2:
+                raise ValueError("eef pitch bounds must stay strictly inside (-pi/2, pi/2)")
         if (
             not isinstance(self.ik_max_iters, int)
             or isinstance(self.ik_max_iters, bool)
@@ -614,7 +631,7 @@ def action_semantics(
     if control_interface == "eef_pos":
         max_step = (
             tuple(
-                gripper_max_step if index in (4, 9) else None
+                gripper_max_step if index in _EEF_GRIPPER_INDICES else None
                 for index in range(len(EEF_DIM_LABELS))
             )
             if gripper_max_step is not None
@@ -701,7 +718,7 @@ def observation_space(
 
     ``state_key`` drives *both* ``state_keys`` and the ``StateSpec`` field key so
     joint mode stays internally consistent for any configured key. Cartesian
-    mode additionally declares its 10-D ``eef_state`` reference.
+    mode additionally declares its 14-D ``eef_state`` reference.
     """
     state = state_spec(state_key)
     if control_interface == "eef_pos":
