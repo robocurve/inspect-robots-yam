@@ -16,10 +16,16 @@ the mounting plane (= table level). Shared by all YAM rigs.
   j2 = B + j1, j3 = C − B. This is the elbow-up branch — the one the
   arms use in practice. Check reachability d ≤ L1 + L2 = 0.509 first.
 - Accuracy: in the gripper-down working envelope (r ≈ 0.3–0.5 m) the
-  approximation reads ~3–4 cm short in r and ~7–10 cm high in z. The
-  bias varies per arm but is nearly constant for a given arm, so
-  relative moves and the local Jacobian are accurate — and both the
-  forward and inverse solutions inherit the bias, so measure your arm's
-  z offset with one closed-gripper table touch and correct all absolute
-  heights by it. Outside that envelope (arm folded) the approximation
+  dominant error is height: the formula reads ~7–10 cm high in z
+  (measured +9.0 cm left / +9.3 cm right at rig-2 — near-identical on
+  both arms, so one global offset serves a rig). The radial bias is
+  small: commanded 2-inch lateral moves measured ~1.7–2 inches against
+  a calibration grid. The z error is what you would get if L3 were
+  ≈0.19 m rather than 0.101 m — an offset that, gripper-down, adds
+  nothing to r, consistent with both observations. The bias is nearly
+  constant for a given arm, so relative moves and the local Jacobian
+  are accurate — and both the forward and inverse solutions inherit it,
+  so correct all absolute heights by the rig's measured z offset (or
+  measure it with one closed-gripper table touch if your rig's fact
+  sheet lacks it). Outside that envelope (arm folded) the approximation
   degrades sharply.

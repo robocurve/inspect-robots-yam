@@ -32,7 +32,8 @@ Start by copying [rig-2.md](rig-2.md) and replacing every number you
 haven't verified on your own rig — wrong facts are worse than no facts,
 because agents trust this text over their own exploration. In particular
 the overhead-camera scale is known to differ between identically built
-rigs; the fact sheets state ranges and agents are told to calibrate.
+rigs; the fact sheets state ranges and agents are told to verify them
+against their first moves and recalibrate only on disagreement.
 `formulas.md` and `advice.md` should apply to any YAM rig as-is.
 
 Facts should be rig-specific but task-agnostic: nothing about particular
