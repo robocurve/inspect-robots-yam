@@ -101,10 +101,11 @@ the CLI and the embodiment cannot drift:
   - `pose_dir` empty/whitespace -> `ValueError`.
 - Both are plain strings: no `_FLOAT_TUPLE_FIELDS` change. But the core
   scalar parser coerces digit-only `-E`/config.ini values to `int` (the
-  name rule permits `42`), so `from_kwargs` needs the same guided
-  string-coercion guard the depth serials already have (config.py's
-  existing pattern): a non-string `start_pose`/`pose_dir` is str()-coerced
-  with the quoting hint, never a bare TypeError.
+  name rule permits `42`, and coercion is lossy: `007` -> `7`), so
+  `from_kwargs` mirrors the depth-serial guard exactly (config.py's
+  existing pattern): a non-string `start_pose`/`pose_dir` RAISES
+  `ValueError` telling the operator to quote the value in config.ini,
+  never a bare TypeError and never a silent str() coercion.
 
 ## Embodiment: resolve `start_pose` at first reset
 
@@ -115,15 +116,16 @@ against this config: 14-D (store guarantees it) and within
 `cfg.low`/`cfg.high` per element; out of range -> `ValueError` naming the
 pose, the offending packed indices, and the values vs bounds. Cache the
 resolved vector; a retried reset does not re-read the file. `close()`
-clears the cache alongside `_driver`/`_init_pose`/`_home_gate_confirmed`,
-so a reconnected instance re-reads the (possibly edited) file.
+clears the cache unconditionally at entry (like `_bound_max_steps`), NOT
+inside the connected-only teardown path: resolution runs before the driver
+factory, so a factory failure leaves `_driver` unset and the never-connected
+early return would otherwise strand a stale cache. A reconnected instance
+therefore always re-reads the (possibly edited) file.
 
 `_home_pose()` returns the cached resolved pose when present; otherwise its
 existing branches run unchanged (the eef default branch is retained, and is
 unreachable with `start_pose` set because config validation already rejected
-that pairing). The homing status line becomes
-`homing: ramping arms to start pose '<name>'` when a named pose is in use so
-eval logs record which pose ran. Everything downstream (stand-clear gate,
+that pairing). Everything downstream (stand-clear gate,
 ramp through `_send` with clamp + denorm, settle, park-on-close semantics,
 `rest_pose` behavior) is retained byte-for-byte.
 
@@ -163,10 +165,13 @@ so they are explicit here):
   `_YAM_DEVICE_KEYS`, while the eval path passes ALL embodiment args
   through unfiltered. So that a config-pinned `pose_dir`/`start_pose` is
   honored consistently, `load_yam_defaults` gains an optional
-  `extra_keys: frozenset[str]` parameter (default empty: health/preflight
-  behavior unchanged) and the pose CLI requests
-  `{"pose_dir", "start_pose"}`. Values are str()-coerced by the existing
-  loader path, which is correct for both keys.
+  `extra_keys: frozenset[str]` parameter (default empty: the two existing
+  callers, health and hold_check, are unchanged) and the pose CLI requests
+  `{"pose_dir", "start_pose"}` (`start_pose` is not consumed by any
+  subcommand — `capture`/`goto` take the name positionally — but admitting
+  it means a pinned value is validated by `from_kwargs` instead of
+  silently dropped; `goto` never defaults to it). Values are str()-coerced
+  by the existing loader path, which is correct for both keys.
 - `-E start_pose=...`/`-E pose_dir=...` join the CLI's raw-string key set
   (health.py's `_RAW_STRING_KEYS` analogue) so digit-only values are not
   int-coerced before `from_kwargs`.
@@ -204,9 +209,10 @@ Subcommands:
      (hand-set apertures overshoot by measurement noise). Arm joints outside
      `cfg.low`/`cfg.high` are an error (exit 1) listing each offending
      joint, unless `--clamp`, which writes the clamped values and prints
-     exactly what changed. Rationale: an out-of-range pose would be
-     silently distorted by the eval-time clamp backstop, which is retained
-     and NOT relaxed by this feature.
+     exactly what changed. Rationale: an out-of-range pose would fail
+     every eval at resolve time (the embodiment's range check above);
+     catch it while the author is standing at the rig. The eval-time
+     clamp backstop is retained and NOT relaxed by this feature.
   6. Write the pose file; print the path and a ready-to-use
      `-E start_pose=<name>` hint.
   7. Safe exit. Two prompts with OPPOSITE operator postures; never blur
@@ -232,7 +238,9 @@ Subcommands:
      moving somewhere else than asked).
   2. Connect, stand-clear Enter gate (same wording convention as the
      embodiment homing gate), ramp to the pose, report the final measured
-     pose, then hold. Exit follows the same two-prompt discipline as
+     pose, then hold position until the exit prompt is answered (the
+     driver keeps holding the last commanded pose while the prompt
+     blocks). Exit follows the same two-prompt discipline as
      capture: default is the support-the-arms torque-off prompt; `--park`
      interposes its own stand-clear gate, ramps back to `rest_pose`, then
      torque-off (with `rest_pose=None`, `--park` is a usage error, exit 2,
@@ -274,8 +282,9 @@ tests must pass without assertion changes) and the CLI (which applies
   existing-target errors.
 - `tests/test_config.py` additions: mutual exclusion, eef rejection,
   bad-name rejection, empty `pose_dir` rejection, digit-only
-  `start_pose`/`pose_dir` int values str()-coerced by `from_kwargs` with
-  the guided hint, defaults land in `from_kwargs`.
+  `start_pose`/`pose_dir` int values rejected by `from_kwargs` with the
+  guided quote-it hint (mirroring the depth-serial guard, no silent
+  coercion), defaults land in `from_kwargs`.
 - `tests/test_user_config.py` additions: `extra_keys` admits
   `pose_dir`/`start_pose` for the pose CLI and default calls stay
   device-keys-only.
