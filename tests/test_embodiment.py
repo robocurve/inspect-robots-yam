@@ -1722,7 +1722,7 @@ def test_absolute_mode_declares_joint_pos_with_labels() -> None:
     ("cfg", "gripper_indices"),
     [
         (YamConfig(), (6, 13)),
-        (YamConfig(control_interface="eef_pos"), (4, 9)),
+        (YamConfig(control_interface="eef_pos"), (6, 13)),
     ],
     ids=["joint-pos", "eef-abs-pose"],
 )

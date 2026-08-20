@@ -134,7 +134,7 @@ def test_gripper_joints_are_midrange_pinned_for_fk_and_ik_then_stripped() -> Non
     kin.capture_yaw_reference(np.zeros(6))
 
     assert raw.fk_inputs[-1][6:] == pytest.approx((0.02, 0.04))
-    command = kin.solve(np.asarray((0.3, 0.0, 0.2, 0.0)), np.zeros(6))
+    command = kin.solve(np.asarray((0.3, 0.0, 0.2, 0.0, 0.0, 0.0)), np.zeros(6))
     assert raw.ik_calls[-1][1][6:] == pytest.approx((0.02, 0.04))
     assert command.shape == (6,)
     assert command == pytest.approx(np.full(6, 0.5))
@@ -146,7 +146,7 @@ def test_rate_backstop_clamps_elbow_flip_and_plumbs_iteration_cap() -> None:
     kin.seed(np.zeros(6))
     kin.capture_yaw_reference(np.zeros(6))
 
-    command = kin.solve(np.asarray((0.35, 0.1, 0.25, 0.0)), np.zeros(6))
+    command = kin.solve(np.asarray((0.35, 0.1, 0.25, 0.0, 0.0, 0.0)), np.zeros(6))
     assert command == pytest.approx(np.full(6, 0.2))
     assert raw.ik_calls[-1][2] == 20
 
@@ -156,7 +156,7 @@ def test_nonconverged_finite_last_iterate_is_commanded_best_effort() -> None:
     kin = _wrapper(raw)
     kin.seed(np.zeros(6))
     kin.capture_yaw_reference(np.zeros(6))
-    assert kin.solve(np.asarray((0.3, 0.0, 0.2, 0.0)), np.zeros(6)) == pytest.approx(
+    assert kin.solve(np.asarray((0.3, 0.0, 0.2, 0.0, 0.0, 0.0)), np.zeros(6)) == pytest.approx(
         np.full(6, 0.1)
     )
 
@@ -168,7 +168,7 @@ def test_nonfinite_ik_output_degrades_step_to_previous_command() -> None:
     kin = _wrapper(raw)
     kin.seed(np.full(6, 0.1))
     kin.capture_yaw_reference(np.zeros(6))
-    assert kin.solve(np.asarray((0.3, 0.0, 0.2, 0.0)), np.zeros(6)) == pytest.approx(
+    assert kin.solve(np.asarray((0.3, 0.0, 0.2, 0.0, 0.0, 0.0)), np.zeros(6)) == pytest.approx(
         np.full(6, 0.1)
     )
 
@@ -180,7 +180,7 @@ def test_solver_infeasibility_exception_propagates() -> None:
     kin.seed(np.zeros(6))
     kin.capture_yaw_reference(np.zeros(6))
     with pytest.raises(RuntimeError, match="NoSolutionFound"):
-        kin.solve(np.asarray((0.3, 0.0, 0.2, 0.0)), np.zeros(6))
+        kin.solve(np.asarray((0.3, 0.0, 0.2, 0.0, 0.0, 0.0)), np.zeros(6))
 
 
 def test_resync_reseeds_from_measured_effective_range_and_records_no_reversal() -> None:
@@ -189,7 +189,7 @@ def test_resync_reseeds_from_measured_effective_range_and_records_no_reversal() 
     kin.seed(np.zeros(6))
     kin.capture_yaw_reference(np.zeros(6))
     measured = np.asarray((2.0, 0.0, 0.0, 0.0, 0.0, 0.0))
-    command = kin.solve(np.asarray((0.3, 0.0, 0.2, 0.0)), measured)
+    command = kin.solve(np.asarray((0.3, 0.0, 0.2, 0.0, 0.0, 0.0)), measured)
     assert kin.resynced is True
     assert raw.ik_calls[-1][1][0] == pytest.approx(1.0)
     assert command[0] == pytest.approx(1.0)
@@ -203,22 +203,65 @@ def test_signed_relative_yaw_and_home_reads_exactly_zero() -> None:
     kin.capture_yaw_reference(np.zeros(6))
     home = kin.observe(np.zeros(6), gripper=1.0)
     moved = kin.observe(np.zeros(6), gripper=0.5)
-    assert home == pytest.approx((0.3, 0.0, 0.2, 0.0, 1.0))
+    assert home == pytest.approx((0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0))
     assert moved[3] == pytest.approx(delta)
-    assert moved[4] == pytest.approx(0.5)
+    assert moved[4:6] == pytest.approx((0.0, 0.0))
+    assert moved[6] == pytest.approx(0.5)
 
 
-def test_vertical_axis_fallback_branch_is_pinned_across_threshold_crossing() -> None:
-    reference = np.asarray(((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0)))
-    crossed = reference.copy()
-    crossed[:, 0] = (0.1, -0.1, 0.99)
-    crossed[:, 1] = (np.cos(0.2), np.sin(0.2), 0.0)
-    raw = FakeRawKinematics(fk_poses=[_pose(reference), _pose(crossed)])
+def _ry_forward(pitch: float) -> np.ndarray:
+    c = np.cos(pitch)
+    s = np.sin(pitch)
+    return np.asarray(((c, 0.0, -s), (0.0, 1.0, 0.0), (s, 0.0, c)))
+
+
+def _rx(roll: float) -> np.ndarray:
+    c = np.cos(roll)
+    s = np.sin(roll)
+    return np.asarray(((1.0, 0.0, 0.0), (0.0, c, -s), (0.0, s, c)))
+
+
+@pytest.mark.parametrize(
+    ("yaw", "pitch", "roll"),
+    [
+        (0.4, 0.0, 0.0),
+        (0.0, 0.6, 0.0),
+        (0.0, 0.0, -0.8),
+        (0.9, -0.5, 0.3),
+        (-2.5, 1.2, 2.9),
+    ],
+)
+def test_relative_orientation_roundtrips_through_observe(
+    yaw: float, pitch: float, roll: float
+) -> None:
+    # Non-trivial reference: the extraction must depend only on the relative
+    # rotation, never on the absolute pose.
+    reference = _rz(0.7) @ _ry_forward(-0.4) @ _rx(0.2)
+    tipped = _rz(yaw) @ _ry_forward(pitch) @ _rx(roll) @ reference
+    raw = FakeRawKinematics(fk_poses=[_pose(reference), _pose(tipped)])
     kin = _wrapper(raw)
     kin.capture_yaw_reference(np.zeros(6))
     state = kin.observe(np.zeros(6), gripper=1.0)
-    assert kin.yaw_axis == 1
-    assert state[3] == pytest.approx(0.2)
+    assert state[3:6] == pytest.approx((yaw, pitch, roll))
+
+
+def test_orientation_sign_convention_tips_a_gripper_down_tool_forward_and_left() -> None:
+    down = np.asarray((0.0, 0.0, -1.0))
+    pitched = _ry_forward(0.3) @ down
+    assert pitched[0] > 0  # positive pitch -> tool tips toward +x (forward)
+    rolled = _rx(0.3) @ down
+    assert rolled[1] > 0  # positive roll -> tool tips toward +y (arm's left)
+
+
+def test_solve_composes_pitch_and_roll_into_the_target_rotation() -> None:
+    reference = _rz(0.4)
+    raw = FakeRawKinematics(fk_poses=[_pose(reference)], ik_results=[(True, np.zeros(8))])
+    kin = _wrapper(raw)
+    kin.seed(np.zeros(6))
+    kin.capture_yaw_reference(np.zeros(6))
+    kin.solve(np.asarray((0.3, 0.0, 0.2, 0.25, 0.5, -0.6)), np.zeros(6))
+    expected = _rz(0.25) @ _ry_forward(0.5) @ _rx(-0.6) @ reference
+    assert raw.ik_calls[-1][0][:3, :3] == pytest.approx(expected)
 
 
 def test_reset_reference_is_never_reread_when_building_targets() -> None:
@@ -231,7 +274,7 @@ def test_reset_reference_is_never_reread_when_building_targets() -> None:
     kin.seed(np.zeros(6))
     kin.capture_yaw_reference(np.zeros(6))
     kin.observe(np.zeros(6), gripper=1.0)
-    kin.solve(np.asarray((0.3, 0.0, 0.2, 0.25)), np.zeros(6))
+    kin.solve(np.asarray((0.3, 0.0, 0.2, 0.25, 0.0, 0.0)), np.zeros(6))
     assert raw.ik_calls[-1][0][:3, :3] == pytest.approx(_rz(0.25) @ reference)
 
 
@@ -241,7 +284,7 @@ def test_alternating_branches_trip_hold_then_re_evaluate_after_hold_steps() -> N
     kin = _wrapper(raw, osc_hold_steps=2)
     kin.seed(np.zeros(6))
     kin.capture_yaw_reference(np.zeros(6))
-    target = np.asarray((0.3, 0.0, 0.2, 0.0))
+    target = np.asarray((0.3, 0.0, 0.2, 0.0, 0.0, 0.0))
 
     sent = np.zeros(6)
     for _ in range(3):
@@ -266,7 +309,7 @@ def test_monotone_approach_and_single_overshoot_never_trigger_hold() -> None:
     monotone_kin = _wrapper(monotone, osc_reversals=0)
     monotone_kin.seed(np.zeros(6))
     monotone_kin.capture_yaw_reference(np.zeros(6))
-    target = np.asarray((0.3, 0.0, 0.2, 0.0))
+    target = np.asarray((0.3, 0.0, 0.2, 0.0, 0.0, 0.0))
     sent = np.zeros(6)
     for _ in range(4):
         sent = monotone_kin.solve(target, sent)
@@ -291,7 +334,7 @@ def test_pure_yaw_motion_is_unaffected_by_position_progress() -> None:
     kin = _wrapper(raw)
     kin.seed(np.zeros(6))
     kin.capture_yaw_reference(np.zeros(6))
-    command = kin.solve(np.asarray((0.3, 0.0, 0.2, 0.7)), np.zeros(6))
+    command = kin.solve(np.asarray((0.3, 0.0, 0.2, 0.7, 0.0, 0.0)), np.zeros(6))
     assert command == pytest.approx(np.full(6, 0.1))
     assert raw.ik_calls[-1][0][:3, 3] == pytest.approx((0.3, 0.0, 0.2))
     assert kin.hold_counter == 0
@@ -317,7 +360,7 @@ def test_seed_validates_shape_and_solve_requires_a_seed() -> None:
     with pytest.raises(ValueError, match="expected 6 commanded arm joints"):
         kin.seed(np.zeros(7))
     with pytest.raises(RuntimeError, match="command reference"):
-        kin.solve(np.asarray((0.3, 0.0, 0.2, 0.0)), np.zeros(6))
+        kin.solve(np.asarray((0.3, 0.0, 0.2, 0.0, 0.0, 0.0)), np.zeros(6))
 
 
 def test_wrap_yaw_pi_boundary_maps_to_positive_pi() -> None:

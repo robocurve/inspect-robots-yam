@@ -304,7 +304,7 @@ def test_eef_settles_against_the_commanded_pose_not_the_request(build_settle: An
     emb.reset(Scene(id="s", instruction="go"))
     sleeps.clear()
 
-    result = emb.step(Action(data=np.full(10, 0.3)))
+    result = emb.step(Action(data=np.full(14, 0.3)))
 
     assert result.info["settled"] is True
     assert sleeps == [PACE_S]  # nothing to wait for: the arm was already there

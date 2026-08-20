@@ -178,20 +178,35 @@ def test_yam_control_interface_validation() -> None:
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"eef_low": (0.0,) * 9}, "eef_low must have 10"),
-        ({"eef_high": (1.0,) * 9}, "eef_high must have 10"),
+        ({"eef_low": (0.0,) * 13}, "eef_low must have 14"),
+        ({"eef_high": (1.0,) * 13}, "eef_high must have 14"),
         (
             {"eef_high": (*DEFAULT_EEF_HIGH[:2], np.nan, *DEFAULT_EEF_HIGH[3:])},
             "only finite values",
         ),
-        ({"eef_low": DEFAULT_EEF_HIGH}, "eef_low must be below eef_high"),
         (
-            {"eef_low": (*DEFAULT_EEF_LOW[:3], -np.pi - 0.01, *DEFAULT_EEF_LOW[4:])},
-            "yaw bounds must stay within",
+            {"eef_low": (0.5, *DEFAULT_EEF_LOW[1:])},
+            "eef_low must not exceed eef_high",
         ),
         (
-            {"eef_high": (*DEFAULT_EEF_HIGH[:8], np.pi + 0.01, *DEFAULT_EEF_HIGH[9:])},
-            "yaw bounds must stay within",
+            {"eef_low": (*DEFAULT_EEF_LOW[:3], -np.pi - 0.01, *DEFAULT_EEF_LOW[4:])},
+            "yaw and roll bounds must stay within",
+        ),
+        (
+            {"eef_high": (*DEFAULT_EEF_HIGH[:10], np.pi + 0.01, *DEFAULT_EEF_HIGH[11:])},
+            "yaw and roll bounds must stay within",
+        ),
+        (
+            {"eef_high": (*DEFAULT_EEF_HIGH[:12], np.pi + 0.01, *DEFAULT_EEF_HIGH[13:])},
+            "yaw and roll bounds must stay within",
+        ),
+        (
+            {"eef_low": (*DEFAULT_EEF_LOW[:4], -np.pi / 2, *DEFAULT_EEF_LOW[5:])},
+            "pitch bounds must stay strictly inside",
+        ),
+        (
+            {"eef_high": (*DEFAULT_EEF_HIGH[:11], np.pi / 2, *DEFAULT_EEF_HIGH[12:])},
+            "pitch bounds must stay strictly inside",
         ),
         ({"ik_max_iters": 0}, "ik_max_iters must be a positive integer"),
         ({"ik_max_iters": 1.5}, "ik_max_iters must be a positive integer"),
@@ -249,8 +264,8 @@ def test_eef_config_defaults_and_cli_tuple_overrides() -> None:
         eef_low=",".join(str(value) for value in DEFAULT_EEF_LOW),
         eef_high=",".join(str(value) for value in DEFAULT_EEF_HIGH),
     )
-    assert cfg.eef_low_array.shape == (10,)
-    assert cfg.eef_high_array.shape == (10,)
+    assert cfg.eef_low_array.shape == (14,)
+    assert cfg.eef_high_array.shape == (14,)
     assert cfg.ik_max_iters == 20
     assert cfg.ik_step_joint_limit == pytest.approx(0.2)
     assert cfg.cmd_resync_threshold == pytest.approx(0.35)
@@ -283,7 +298,7 @@ def test_eef_action_space_shape_labels_bounds_and_semantics() -> None:
         high=np.asarray(DEFAULT_EEF_HIGH),
         control_interface="eef_pos",
     )
-    assert space.shape == (10,)
+    assert space.shape == (14,)
     assert space.low is not None and np.array_equal(space.low, DEFAULT_EEF_LOW)
     assert space.high is not None and np.array_equal(space.high, DEFAULT_EEF_HIGH)
     assert space.semantics.control_mode == "eef_abs_pose"
@@ -303,7 +318,7 @@ def test_absolute_action_spaces_declare_gripper_max_step_only_at_grippers() -> N
     eef_space = action_box(control_interface="eef_pos", gripper_max_step=0.25)
     assert eef_space.semantics is not None
     assert eef_space.semantics.max_step == tuple(
-        0.25 if index in (4, 9) else None for index in range(len(EEF_DIM_LABELS))
+        0.25 if index in (6, 13) else None for index in range(len(EEF_DIM_LABELS))
     )
 
 
@@ -334,12 +349,27 @@ def test_delta_and_unspecified_action_spaces_declare_no_max_step() -> None:
     assert unspecified_space.semantics.max_step is None
 
 
+def test_eef_pitch_and_roll_default_to_pinned_zero_bounds() -> None:
+    # Equality means a pinned axis: the default layout carries pitch/roll but
+    # they are not commandable until an operator widens their bounds.
+    cfg = YamConfig(control_interface="eef_pos")
+    for index in (4, 5, 11, 12):
+        assert cfg.eef_low_array[index] == cfg.eef_high_array[index] == 0.0
+    opened = YamConfig(
+        control_interface="eef_pos",
+        eef_high=(*DEFAULT_EEF_HIGH[:4], 0.8, 0.5, *DEFAULT_EEF_HIGH[6:]),
+        eef_low=(*DEFAULT_EEF_LOW[:4], -0.8, -0.5, *DEFAULT_EEF_LOW[6:]),
+    )
+    assert opened.eef_high_array[4] == pytest.approx(0.8)
+    assert opened.eef_low_array[5] == pytest.approx(-0.5)
+
+
 def test_eef_observation_space_declares_joint_and_eef_state_once() -> None:
     space = observation_space(224, 224, DEFAULT_CAMERAS, control_interface="eef_pos")
     assert space.state_keys == frozenset({"joint_pos", "eef_state"})
     assert space.state is not None
     fields = {field.key: field.shape for field in space.state.fields}
-    assert fields == {"joint_pos": (14,), "eef_state": (10,)}
+    assert fields == {"joint_pos": (14,), "eef_state": (14,)}
 
 
 def test_yam_operational_defaults() -> None:

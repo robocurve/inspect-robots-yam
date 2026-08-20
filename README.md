@@ -465,32 +465,44 @@ off requires an explicit `--disable-guardrails`.
 
 ### Cartesian EEF mode
 
-For LLM-agent runs, opt into the 10-D absolute Cartesian interface:
+For LLM-agent runs, opt into the 14-D absolute Cartesian interface:
 
 ```ini
 [embodiment.args]
 control_interface = eef_pos
 ```
 
-Each arm is controlled as `x, y, z, yaw, gripper`. Positions are metres in
-that arm's own base frame, with +x forward from the base and +z up. The two
-base frames are independent. On common mirrored bimanual mounts, the arms'
-+y axes point in opposite world directions, so equal signed y targets do not
-mean equal world directions.
+Each arm is controlled as `x, y, z, yaw, pitch, roll, gripper`. Positions are
+metres in that arm's own base frame, with +x forward from the base and +z up.
+The two base frames are independent. On common mirrored bimanual mounts, the
+arms' +y axes point in opposite world directions, so equal signed y targets do
+not mean equal world directions.
 
-Yaw is an absolute target relative to the orientation captured at reset:
-`0` means the reset orientation. It rotates about base +z while preserving the
-captured roll and pitch. Yaw interpolation does not wrap. A move from `3.1` to
+All three orientation slots are absolute targets relative to the orientation
+captured at reset: `0, 0, 0` means the reset orientation. Yaw rotates about
+base +z (positive counterclockwise from above); positive pitch tips the tool
+forward (+x at yaw 0); positive roll tips it toward the arm's left (+y at
+yaw 0). Orientation interpolation does not wrap. A yaw move from `3.1` to
 `-3.1` sweeps through zero instead of taking the short path, so use
 intermediate yaw targets for near-±π regrasps.
 
 The default workspace per arm is x `[0.15, 0.48]`, y `[-0.25, 0.25]`, and z
-`[0.03, 0.40]`, with yaw `[-π, π]` and gripper `[0, 1]`. These bounds were
-validated against the bundled YAM + LINEAR_4310 model at the default working
-orientation, but they are a conservative box rather than an exact reachable
-set. `eef_low` and `eef_high` override all ten bounds. The observation keeps
-the 14-D `joint_pos` field for logging and adds the command-aligned 10-D
-`eef_state` field.
+`[0.03, 0.40]`, with yaw `[-π, π]`, **pitch and roll pinned at `[0, 0]`**,
+and gripper `[0, 1]`. Pinned axes are declared but not commandable — the
+default behaves exactly like the historical yaw-only interface. Opening
+pitch or roll is a per-run decision via `eef_low`/`eef_high` (pitch bounds
+must stay strictly inside `(-π/2, π/2)`; roll within `[-π, π]`). These
+bounds were validated against the bundled YAM + LINEAR_4310 model at the
+default working orientation, but they are a conservative box rather than an
+exact reachable set. `eef_low` and `eef_high` override all fourteen bounds.
+The observation keeps the 14-D `joint_pos` field for logging and adds the
+command-aligned 14-D `eef_state` field.
+
+> [!WARNING]
+> The z floor (`z >= 0.03`) protects *fingertips* assuming a gripper-down
+> tool. A pitched or rolled gripper can reach the table with its knuckles or
+> wrist camera at a legal fingertip z — when opening pitch or roll, raise the
+> z lower bound to cover the tilted gripper body.
 
 In both control interfaces, `home_pose=None` selects a mandatory per-mode
 factory default instead of skipping homing. Joint mode uses the
@@ -501,8 +513,8 @@ grippers open. The first EEF reset validates that the configured home FK lies
 in the workspace box before moving, then captures each arm's yaw reference
 after homing. Named `start_pose` poses work in EEF mode too: the resolved
 joint-space pose must start inside the EEF action box (grasp-point position,
-gripper aperture, and relative yaw 0), and a reconnect revalidates the
-re-read pose file.
+gripper aperture, and relative yaw/pitch/roll 0), and a reconnect revalidates
+the re-read pose file.
 
 > [!WARNING]
 > EEF mode has no arm-table or arm-arm collision checking. The workspace box,
@@ -710,13 +722,15 @@ motions, or replace the operator and physical e-stop.
 Hardware gripper units (via `gripper_open`/`gripper_closed`) exist only at the
 driver boundary; pose and limit vectors never use driver-native gripper units.
 
-In `control_interface="eef_pos"`, actions and `eef_low`/`eef_high` are 10-D:
+In `control_interface="eef_pos"`, actions and `eef_low`/`eef_high` are 14-D:
 
 | Slots | Meaning | Unit |
 |-------|---------|------|
-| 0–2, 5–7 | left / right EEF x, y, z in each arm's base frame | metres |
-| 3, 8 | left / right yaw relative to reset orientation | radians |
-| 4, 9 | left / right gripper | normalized 0–1 (1 = open, 0 = closed) |
+| 0–2, 7–9 | left / right EEF x, y, z in each arm's base frame | metres |
+| 3, 10 | left / right yaw relative to reset orientation | radians |
+| 4, 11 | left / right pitch relative to reset orientation (pinned at 0 by default) | radians |
+| 5, 12 | left / right roll relative to reset orientation (pinned at 0 by default) | radians |
+| 6, 13 | left / right gripper | normalized 0–1 (1 = open, 0 = closed) |
 
 `home_pose`, `rest_pose`, joint limits, and parking remain 14-D joint-space
 vectors in both control interfaces.
