@@ -154,7 +154,10 @@ class YamConfig(_FromKwargs):
     # Gripper slots are normalized 0-1 (1 = open).
     home_pose: tuple[float, ...] | None = None
     # Named joint-space alternative to home_pose, resolved from pose_dir on the
-    # first reset of each connection.
+    # first reset of each connection. Works in both control interfaces; in
+    # eef_pos mode the resolved pose must also start inside the EEF action box
+    # (FK grasp-point position, gripper aperture, and relative yaw 0 are all
+    # checked against eef_low/eef_high before the homing ramp).
     start_pose: str | None = None
     pose_dir: str = "poses"
     # Pose used to park on close() after reset() captures the initial pose. None
@@ -382,11 +385,6 @@ class YamConfig(_FromKwargs):
         if self.start_pose is not None and self.home_pose is not None:
             raise ValueError("start_pose and home_pose are mutually exclusive; set only one key")
         if self.start_pose is not None:
-            if self.control_interface == "eef_pos":
-                raise ValueError(
-                    "start_pose is joint-space and cannot be used with "
-                    "control_interface='eef_pos'; EEF conversion is out of scope"
-                )
             try:
                 validate_pose_name(self.start_pose)
             except ValueError as exc:

@@ -86,9 +86,9 @@ def test_start_pose_and_home_pose_are_mutually_exclusive() -> None:
         YamConfig(start_pose="ready", home_pose=(0.0,) * 14)
 
 
-def test_start_pose_rejects_eef_control() -> None:
-    with pytest.raises(ValueError, match="EEF conversion is out of scope"):
-        YamConfig(start_pose="ready", control_interface="eef_pos")
+def test_start_pose_accepted_with_eef_control() -> None:
+    cfg = YamConfig(start_pose="ready", control_interface="eef_pos")
+    assert cfg.start_pose == "ready"
 
 
 @pytest.mark.parametrize("name", ["", "   ", ".hidden", "../evil", "x" * 65])

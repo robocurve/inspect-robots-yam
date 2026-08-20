@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -13,6 +14,7 @@ from inspect_robots.scene import Scene
 from inspect_robots.types import Action
 
 import inspect_robots_yam.embodiment as embodiment_module
+from inspect_robots_yam import poses
 from inspect_robots_yam.config import DEFAULT_EEF_HOME_POSE, EEF_DIM_LABELS, YamConfig
 from inspect_robots_yam.embodiment import YAMEmbodiment, _default_kinematics_factory
 from inspect_robots_yam.operator import OperatorIO
@@ -258,6 +260,68 @@ def test_home_relative_yaw_and_gripper_must_also_start_inside_action_box(
     with pytest.raises(ValueError, match=r"left EEF home state.*workspace"):
         emb.reset(Scene(id="eef", instruction="move"))
     assert driver.commands == []
+
+
+def _save_start_pose(directory: Path, name: str, values: tuple[float, ...]) -> None:
+    poses.save_pose(
+        directory,
+        poses.StartPose(
+            name=name,
+            joints=values,
+            created_at="2026-08-20T12:00:00+00:00",
+        ),
+        overwrite=True,
+    )
+
+
+def _start_pose_config(pose_dir: Path, **overrides: Any) -> YamConfig:
+    return YamConfig(
+        control_interface="eef_pos",
+        start_pose="ready",
+        pose_dir=str(pose_dir),
+        rest_secs=0.5,
+        unattended=True,
+        **overrides,
+    )
+
+
+def test_named_start_pose_resolves_and_homing_ramps_to_it_in_eef_mode(tmp_path: Path) -> None:
+    target = (0.2,) * 6 + (0.4,) + (0.3,) * 6 + (0.6,)
+    _save_start_pose(tmp_path, "ready", target)
+    emb, driver, _, _ = _build(_start_pose_config(tmp_path))
+    observation = emb.reset(Scene(id="eef", instruction="move"))
+    assert driver.commands[-1] == pytest.approx(target)
+    assert observation.state["joint_pos"] == pytest.approx(target)
+
+
+def test_eef_start_pose_outside_box_names_the_pose(tmp_path: Path) -> None:
+    _save_start_pose(tmp_path, "ready", (0.2,) * 6 + (0.4,) + (0.3,) * 6 + (0.6,))
+    left = FakeRawKinematics(pose=_pose((0.1, 0.0, 0.2)))
+    emb, driver, _, _ = _build(_start_pose_config(tmp_path), left=left)
+    with pytest.raises(ValueError, match=r"left EEF start pose 'ready'.*workspace"):
+        emb.reset(Scene(id="eef", instruction="move"))
+    assert driver.commands == []  # box failure precedes any motion (not the connect)
+
+
+def test_close_then_reset_revalidates_edited_start_pose_against_eef_box(
+    tmp_path: Path,
+) -> None:
+    # The gripper slot is the only editable route out of the box under this
+    # harness: FakeRawKinematics.fk ignores joint input, and a gripper outside
+    # [0, 1] would be pre-empted by the joint-limit resolution check. Narrow
+    # the box's gripper bound so 0.95 is joint-legal but box-illegal.
+    narrowed_high = (0.48, 0.25, 0.40, np.pi, 0.9) * 2
+    good = (0.2,) * 6 + (0.8,) + (0.3,) * 6 + (0.8,)
+    _save_start_pose(tmp_path, "ready", good)
+    emb, driver, _, _ = _build(_start_pose_config(tmp_path, eef_high=narrowed_high))
+    emb.reset(Scene(id="eef", instruction="move"))
+    assert driver.commands[-1] == pytest.approx(good)
+
+    emb.close()
+    edited = (0.2,) * 6 + (0.95,) + (0.3,) * 6 + (0.8,)
+    _save_start_pose(tmp_path, "ready", edited)
+    with pytest.raises(ValueError, match=r"left EEF start pose 'ready'.*workspace"):
+        emb.reset(Scene(id="eef", instruction="move"))
 
 
 def test_configured_joint_home_and_parking_remain_joint_space_mechanisms() -> None:

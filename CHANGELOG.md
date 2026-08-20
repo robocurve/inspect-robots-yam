@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Named start poses now work in EEF mode: the config-time veto is gone, the
+  resolved pose is validated against the EEF action box (FK grasp-point
+  position, gripper aperture, and relative yaw 0) before the homing ramp,
+  the box error names the offending pose, and a reconnect revalidates the
+  re-read pose file (#131).
 - Named joint-space start poses with the `inspect-robots-yam-pose` capture,
   goto, list, show, delete, and rename workflows. Pose files use a versioned,
   shareable JSON format with normalized grippers, while `YamConfig.start_pose`
