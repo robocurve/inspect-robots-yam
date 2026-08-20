@@ -3,21 +3,44 @@
 Working practice distilled from episode hindsight on these rigs.
 Task-agnostic; shared by all YAM rigs.
 
-## Calibrate before you commit
+## Trust the sheet; calibrate on disagreement
 
-- Overhead scale: calibrate px/cm in your first few calls, before
-  planning any layout, from a known gripper move observed in the top
-  frame — compute the travelled distance from joint readback, not the
-  commanded target (controller undershoot otherwise skews the scale
-  low). A grasped object of known size also works.
-- Height: before the first grasp, close the empty gripper and descend
-  until joint effort shows table contact (j1 stops tracking while its
-  holding torque relaxes), then record what the planar FK reads at that
-  pose — that offset is your arm's z bias. A 2 cm height error is the
-  difference between grasping a 4 cm object and closing on air.
-- Depth: do an early calibrated test move (translate a known 3 cm,
-  measure the pixel shift in the wrist view) — first radial estimates
-  are otherwise off by 5–10 cm.
+The fact sheet's numbers were measured on the rig you are driving —
+start the task using them directly rather than spending calls
+re-deriving them: a full upfront calibration pass costs about as much
+as a verified pick-and-place. The exception is any number the sheet
+tags as carried over from a sibling rig rather than measured here:
+treat those as priors, and verify each one before the first action
+that depends on it (the z-bias before the first grasp, a camera scale
+before a long committed move) — trusting an inherited number over your
+own observations is how a gripper closes on empty air several times in
+a row.
+
+- Make your first task motion double as a sanity check: after the first
+  sizeable move, compare the observed pixel shift and joint readback
+  against what the documented scale and FK predict. If they agree
+  within ~20–30%, proceed on the sheet's numbers.
+- Recalibrate only the quantity that disagrees, using these probes:
+  - Pixel displacement far from predicted → re-derive px/cm from a
+    known gripper move observed in the top frame, computing the
+    travelled distance from joint readback, not the commanded target
+    (controller undershoot otherwise skews the scale low). A grasped
+    object of known size also works. Calibrate in the image region you
+    are working in, and image-x and image-y separately — the oblique
+    top view has no single scale.
+  - Contact earlier or later than FK plus the documented z-bias
+    predicts → re-measure the z bias: close the empty gripper and
+    descend until joint effort shows table contact (j1 stops tracking
+    while its holding torque relaxes), then record what the planar FK
+    reads at that pose. A 2 cm height error is the difference between
+    grasping a 4 cm object and closing on air — so if your rig's fact
+    sheet carries no measured z-bias, do this once before the first
+    grasp; and note the first effort-confirmed contact of a real grasp
+    gives you the same measurement for free.
+  - Wrist-view estimates repeatedly missing → do a calibrated test
+    move: translate a known 3 cm purely radially (j1/j2/j3, no yaw — a
+    j0 nudge rolls the wrist image and corrupts the reading) and
+    measure the pixel shift in the wrist view.
 - Prefer solving the planar IK for a target and issuing j1/j2/j3
   together over nudging single joints — it converges in far fewer
   calls.
@@ -31,8 +54,8 @@ Task-agnostic; shared by all YAM rigs.
   closes at a computed position usually miss and shove the object
   5–9 cm, forcing a re-find.
 - Never read depth from image-y alone: descend in 1–2 cm steps, keeping
-  the target column-aligned with the jaw gap (x≈115), and re-check
-  between steps.
+  the target column-aligned with the jaw gap (the sheet's grasp-point x,
+  re-located at your current pitch), and re-check between steps.
 
 ## Grasping
 
@@ -43,16 +66,22 @@ Task-agnostic; shared by all YAM rigs.
 - For thin objects lying on a surface, lower the open gripper until
   joint effort confirms fingertip–table contact, then close — closing at
   an unverified height is the main cause of angled, slip-prone grasps.
-- Verify every grasp with a full close and check the residual against
-  the expected thickness of the part you meant to grip; never test a
-  grasp with a partial close. A residual several times too large with
-  high effort means you clamped something bulky or at an angle, and it
-  will slip during transport — regrasp. A near-zero residual (≈0.01) on
-  a rigid object is the opposite failure: a shallow edge pinch that will
-  slip — regrasp deeper so more material sits between the jaws.
+- Verify every grasp with a full close and check the settled residual
+  against the expected thickness of the part you meant to grip; never
+  test a grasp with a partial close, and never judge by gripper effort
+  immediately after the close — an empty gripper spikes to ≈0.9 too and
+  only decays over several seconds. A residual several times too large
+  with high effort means you clamped something bulky or at an angle,
+  and it will slip during transport — regrasp. A residual under ~0.04
+  means you are holding nothing, or at best a shallow edge pinch that
+  will slip (an empty closed gripper itself drifts up to ≈0.04) —
+  regrasp deeper so more material sits between the jaws.
 - Failed close attempts drag the object. After any failed grasp, re-find
-  the object's actual position in the overhead frame before retrying —
-  don't assume it is where it was.
+  the object in the overhead frame before retrying — don't assume it is
+  where it was, and don't assume it is what you thought: the wrist view
+  alone can misidentify a target, and repeated empty closes on the same
+  apparent target usually mean you are approaching the wrong thing.
+  Cross-check the overhead view before spending more calls on it.
 
 ## Transport and placement
 
