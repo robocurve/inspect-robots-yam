@@ -81,3 +81,31 @@ def split(vec: npt.ArrayLike) -> tuple[Vec, Vec]:
     """Split a flat 14-D vector into ``(left 7-D, right 7-D)`` arm vectors."""
     arr = validate_dim(vec, TOTAL_DIM)
     return arr[LEFT].copy(), arr[RIGHT].copy()
+
+
+def norm_grippers(
+    vec: npt.ArrayLike,
+    *,
+    gripper_open: float,
+    gripper_closed: float,
+) -> Vec:
+    """Copy a packed vector and map only its gripper slots into normalized units."""
+    out: Vec = validate_dim(vec).copy()
+    span = gripper_open - gripper_closed
+    for index in (ARM_DOF, ARM_WIDTH + ARM_DOF):
+        out[index] = (out[index] - gripper_closed) / span
+    return out
+
+
+def denorm_grippers(
+    vec: npt.ArrayLike,
+    *,
+    gripper_open: float,
+    gripper_closed: float,
+) -> Vec:
+    """Copy a packed vector and map only its gripper slots into driver-native units."""
+    out: Vec = validate_dim(vec).copy()
+    span = gripper_open - gripper_closed
+    for index in (ARM_DOF, ARM_WIDTH + ARM_DOF):
+        out[index] = gripper_closed + out[index] * span
+    return out

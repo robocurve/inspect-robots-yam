@@ -27,6 +27,7 @@ from inspect_robots.spaces import (
 )
 
 from inspect_robots_yam.packing import ARM_DOF, DIM_LABELS, STATE_KEY, TOTAL_DIM, state_spec
+from inspect_robots_yam.poses import validate_pose_name
 
 _T = TypeVar("_T", bound="_FromKwargs")
 
@@ -152,6 +153,10 @@ class YamConfig(_FromKwargs):
     # (DEFAULT_JOINT_HOME_POSE / DEFAULT_EEF_HOME_POSE).
     # Gripper slots are normalized 0-1 (1 = open).
     home_pose: tuple[float, ...] | None = None
+    # Named joint-space alternative to home_pose, resolved from pose_dir on the
+    # first reset of each connection.
+    start_pose: str | None = None
+    pose_dir: str = "poses"
     # Pose used to park on close() after reset() captures the initial pose. None
     # opts out of the factory target and parks at that captured pose instead.
     # Gripper slots are normalized 0-1 (1 = open).
@@ -244,6 +249,18 @@ class YamConfig(_FromKwargs):
     @classmethod
     def from_kwargs(cls, **flat: Any) -> YamConfig:
         """Build CLI configuration while keeping boolean off-states explicit."""
+        for field in ("start_pose", "pose_dir"):
+            if field not in flat:
+                continue
+            # None means "unset" (e.g. -E start_pose=none), matching the
+            # depth-serial guard below, which also lets None through.
+            if flat[field] is None:
+                del flat[field]
+            elif not isinstance(flat[field], str):
+                raise ValueError(
+                    f"{field} must be a string; quote the value in config.ini — "
+                    "numeric values are int-coerced and may lose leading zeros"
+                )
         for slot in ("top", "left", "right"):
             field = f"{slot}_depth_serial"
             if isinstance(flat.get(field), int):
@@ -362,6 +379,20 @@ class YamConfig(_FromKwargs):
             raise ValueError("settle_timeout_budget must be a positive integer")
         if self.home_pose is not None and len(self.home_pose) != TOTAL_DIM:
             raise ValueError(f"home_pose must have {TOTAL_DIM} entries")
+        if self.start_pose is not None and self.home_pose is not None:
+            raise ValueError("start_pose and home_pose are mutually exclusive; set only one key")
+        if self.start_pose is not None:
+            if self.control_interface == "eef_pos":
+                raise ValueError(
+                    "start_pose is joint-space and cannot be used with "
+                    "control_interface='eef_pos'; EEF conversion is out of scope"
+                )
+            try:
+                validate_pose_name(self.start_pose)
+            except ValueError as exc:
+                raise ValueError(f"invalid start_pose: {exc}") from None
+        if not isinstance(self.pose_dir, str) or not self.pose_dir.strip():
+            raise ValueError("pose_dir must be a non-empty string")
         if self.rest_pose is not None and len(self.rest_pose) != TOTAL_DIM:
             raise ValueError(f"rest_pose must have {TOTAL_DIM} entries")
         if self.rest_secs <= 0:

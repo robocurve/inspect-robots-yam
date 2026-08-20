@@ -218,6 +218,53 @@ The stream is unauthenticated, and the default `0.0.0.0` bind listens on all
 interfaces. Use `--bind <tailscale-ip>` to limit it to the rig's tailnet
 address.
 
+## Named start poses: capture and reuse a rig setup
+
+Capture a joint-space start pose by bringing the arms up in gravity-compensation
+mode, moving both arms and grippers by hand, and pressing Enter:
+
+```bash
+inspect-robots-yam-pose capture table-ready --notes "bowls placed for pouring"
+```
+
+The command writes `poses/table-ready.json` by default. It prompts you to
+support both arms before closing the driver and releasing torque. Pass `--park`
+to gate and ramp to the configured rest pose first, or `--clamp` to explicitly
+clamp arm joints that are outside the configured limits. Gripper readings are
+always normalized to the portable 0 to 1 range.
+
+Each file is plain JSON with the packed left-then-right 14-slot joint layout:
+
+```json
+{
+  "schema": 1,
+  "name": "table-ready",
+  "joints": [0.12, 0.65, 1.04, -0.31, 0.08, 0.0, 0.72, -0.1, 0.7, 0.98, -0.28, -0.05, 0.02, 0.68],
+  "created_at": "2026-08-19T19:30:00+00:00",
+  "notes": "bowls placed for pouring",
+  "rig": "rig-1"
+}
+```
+
+Use the pose for an eval by setting its name on the embodiment:
+
+```bash
+inspect-robots "pour the pasta into the bowl" \
+    --embodiment yam_arms -E start_pose=table-ready
+```
+
+Set `pose_dir` in `[embodiment.args]`, pass `-E pose_dir=...`, or use the pose
+tool's `--pose-dir` flag to select another store. Commit `poses/` with a rig
+configuration or copy the directory between compatible rigs to share poses.
+The normalized gripper slots remain portable across different native gripper
+calibrations.
+
+> [!WARNING]
+> Before using a new pose in an unattended eval, run
+> `inspect-robots-yam-pose goto table-ready` and verify the full ramp while
+> ready on the e-stop. The straight-line joint interpolation checks configured
+> joint limits, but it does not perform collision checking.
+
 ## Run on hardware
 
 Write your defaults once. The interactive wizard interviews this plugin's

@@ -40,6 +40,12 @@ def test_yam_defaults() -> None:
     assert cfg.control_interface == "joints"
 
 
+def test_pose_config_defaults() -> None:
+    cfg = YamConfig()
+    assert cfg.start_pose is None
+    assert cfg.pose_dir == "poses"
+
+
 def test_molmo_defaults_and_url() -> None:
     cfg = ActServerConfig()
     assert cfg.num_steps == 10
@@ -73,6 +79,46 @@ def test_yam_from_kwargs() -> None:
     cfg = YamConfig.from_kwargs(left_channel="canA", control_hz=25.0)
     assert cfg.left_channel == "canA"
     assert cfg.control_hz == 25.0
+
+
+def test_start_pose_and_home_pose_are_mutually_exclusive() -> None:
+    with pytest.raises(ValueError, match="start_pose and home_pose"):
+        YamConfig(start_pose="ready", home_pose=(0.0,) * 14)
+
+
+def test_start_pose_rejects_eef_control() -> None:
+    with pytest.raises(ValueError, match="EEF conversion is out of scope"):
+        YamConfig(start_pose="ready", control_interface="eef_pos")
+
+
+@pytest.mark.parametrize("name", ["", "   ", ".hidden", "../evil", "x" * 65])
+def test_start_pose_rejects_invalid_names_with_rule(name: str) -> None:
+    with pytest.raises(ValueError, match=r"must match \^\[A-Za-z0-9\]"):
+        YamConfig(start_pose=name)
+
+
+@pytest.mark.parametrize("pose_dir", ["", "   "])
+def test_pose_dir_must_be_nonempty(pose_dir: str) -> None:
+    with pytest.raises(ValueError, match="pose_dir must be a non-empty string"):
+        YamConfig(pose_dir=pose_dir)
+
+
+@pytest.mark.parametrize("field", ["start_pose", "pose_dir"])
+def test_pose_strings_reject_scalar_coercion_with_config_hint(field: str) -> None:
+    with pytest.raises(ValueError, match=rf"{field}.*quote.*config.ini"):
+        YamConfig.from_kwargs(**{field: 42})
+
+
+def test_pose_fields_land_through_from_kwargs() -> None:
+    cfg = YamConfig.from_kwargs(start_pose="007", pose_dir="42")
+    assert cfg.start_pose == "007"
+    assert cfg.pose_dir == "42"
+
+
+@pytest.mark.parametrize("field", ["start_pose", "pose_dir"])
+def test_pose_strings_treat_none_as_unset(field: str) -> None:
+    cfg = YamConfig.from_kwargs(**{field: None})
+    assert getattr(cfg, field) == getattr(YamConfig(), field)
 
 
 def test_gripper_stroke_defaults_to_one_second_and_point_one_step() -> None:
