@@ -499,7 +499,10 @@ and both grippers open. EEF mode uses `DEFAULT_EEF_HOME_POSE`; its provisional
 per-arm joints are `[-0.024, 0.794, 0.645, -0.375, -0.021, -0.012]`, with both
 grippers open. The first EEF reset validates that the configured home FK lies
 in the workspace box before moving, then captures each arm's yaw reference
-after homing.
+after homing. Named `start_pose` poses work in EEF mode too: the resolved
+joint-space pose must start inside the EEF action box (grasp-point position,
+gripper aperture, and relative yaw 0), and a reconnect revalidates the
+re-read pose file.
 
 > [!WARNING]
 > EEF mode has no arm-table or arm-arm collision checking. The workspace box,

@@ -1706,6 +1706,10 @@ class YAMEmbodiment:
         # horizon into a later framework-less run.
         self._bound_max_steps = None
         self._resolved_start_pose = None
+        # A reconnect re-reads a named start pose from its (possibly edited)
+        # file, so the EEF box validation must re-run with it. Revalidating a
+        # static home is idempotent.
+        self._eef_home_validated = False
         for kinematics in (self._left_kinematics, self._right_kinematics):
             if kinematics is not None:
                 kinematics.clear()
@@ -1880,9 +1884,14 @@ class YAMEmbodiment:
             if np.any(home_state < self._cfg.eef_low_array[bounds]) or np.any(
                 home_state > self._cfg.eef_high_array[bounds]
             ):
+                source = (
+                    f"start pose {self._cfg.start_pose!r}"
+                    if self._cfg.start_pose is not None
+                    else "home"
+                )
                 raise ValueError(
-                    f"{side} EEF home state {home_state.tolist()} is outside the "
-                    "configured action workspace bounds"
+                    f"{side} EEF {source} state {home_state.tolist()} is outside "
+                    "the configured action workspace bounds"
                 )
 
     def _step_eef(self, action: Vec, driver: BimanualDriver) -> Vec:
