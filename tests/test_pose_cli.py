@@ -118,6 +118,20 @@ def test_capture_writes_wire_shape_and_pins_zero_gravity(tmp_path: Path) -> None
     assert driver.closed is True
 
 
+def test_capture_warns_that_none_is_unreachable_from_the_eval_cli(tmp_path: Path) -> None:
+    console = ScriptedConsole(["", ""])
+    code = pose_cli.main(
+        _main_args(tmp_path, "capture", "NoNe"),
+        driver_factory=lambda _cfg: FakeDriver(),
+        io=console.io,
+        sleep_fn=lambda _delay: None,
+        now_fn=_now,
+        hostname_fn=lambda: "rig-1",
+    )
+    assert code == 0
+    assert any("unreachable" in line and "start_pose=none" in line for line in console.lines)
+
+
 def test_capture_silently_clamps_gripper_slots(tmp_path: Path) -> None:
     state = np.zeros(14)
     state[6] = 1.2

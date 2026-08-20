@@ -229,6 +229,11 @@ def _capture(
 ) -> int:
     """Run the zero-gravity capture workflow and its torque-safe teardown."""
     cfg = dataclasses.replace(cfg, zero_gravity_mode=True)
+    if args.name.lower() == "none":
+        io.output_fn(
+            "warning: the eval CLI parses -E start_pose=none as unset, so this "
+            "pose will be unreachable there; prefer another name"
+        )
     path = poses.pose_path(cfg.pose_dir, args.name)
     if path.exists() and not args.force:
         io.output_fn(

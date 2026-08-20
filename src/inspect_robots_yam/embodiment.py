@@ -1489,6 +1489,7 @@ class YAMEmbodiment:
                         f"start pose {stored.name!r} is outside configured joint bounds at "
                         f"packed indices {bad.tolist()}: {details}"
                     )
+                resolved.setflags(write=False)
                 self._resolved_start_pose = resolved
                 logger.info(
                     "resolved start pose %r from %s",
