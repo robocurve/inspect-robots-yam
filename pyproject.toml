@@ -68,6 +68,7 @@ gr00t = "inspect_robots_yam.policy:gr00t_policy"
 inspect-robots-yam-preflight = "inspect_robots_yam.preflight:main"
 inspect-robots-yam-holdcheck = "inspect_robots_yam.hold_check:main"
 inspect-robots-yam-health = "inspect_robots_yam.health:main"
+inspect-robots-yam-pose = "inspect_robots_yam.pose_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/inspect_robots_yam"]

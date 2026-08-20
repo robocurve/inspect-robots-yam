@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- Named joint-space start poses with the `inspect-robots-yam-pose` capture,
+  goto, list, show, delete, and rename workflows. Pose files use a versioned,
+  shareable JSON format with normalized grippers, while `YamConfig.start_pose`
+  resolves and validates a named pose before the arm driver connects (#128).
+
 ### Changed
 
 - Session-connected runs no longer author console prose: the running banner

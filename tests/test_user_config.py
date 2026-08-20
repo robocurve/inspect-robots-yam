@@ -89,6 +89,25 @@ def test_yam_arms_filters_and_coerces_device_values(tmp_path: Path) -> None:
     )
 
 
+def test_extra_keys_admit_pose_values_without_widening_default_filter(tmp_path: Path) -> None:
+    path = _write_config(
+        tmp_path,
+        "[defaults]\nembodiment = yam_arms\n"
+        "[embodiment.args]\n"
+        "pose_dir = 007\n"
+        "start_pose = 42\n"
+        "control_hz = 20\n",
+    )
+    assert load_yam_defaults(_env(tmp_path)) == YamDefaults({}, None, None)
+    assert load_yam_defaults(
+        _env(tmp_path), extra_keys=frozenset({"pose_dir", "start_pose"})
+    ) == YamDefaults(
+        {"pose_dir": "7", "start_pose": "42"},
+        str(path),
+        "yam_arms",
+    )
+
+
 def test_only_keys_outside_the_device_filter_yield_an_empty_result(tmp_path: Path) -> None:
     _write_config(
         tmp_path,

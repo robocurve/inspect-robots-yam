@@ -42,8 +42,11 @@ class YamDefaults:
     owner: str | None
 
 
-def load_yam_defaults(env: Mapping[str, str]) -> YamDefaults:
-    """Return YAM-owned device defaults, ignoring stale or foreign owners."""
+def load_yam_defaults(
+    env: Mapping[str, str],
+    extra_keys: frozenset[str] = frozenset(),
+) -> YamDefaults:
+    """Return selected YAM-owned defaults, ignoring stale or foreign owners."""
     defaults = load_defaults(env)
     owner = defaults.embodiment_args_owner
     if owner is None or not defaults.embodiment_args:
@@ -56,7 +59,7 @@ def load_yam_defaults(env: Mapping[str, str]) -> YamDefaults:
     args = {
         key: str(value)
         for key, value in defaults.embodiment_args.items()
-        if key in _YAM_DEVICE_KEYS and value is not None
+        if key in (_YAM_DEVICE_KEYS | extra_keys) and value is not None
     }
     if not args:
         return YamDefaults(args={}, source=None, owner=None)

@@ -105,7 +105,10 @@ the CLI and the embodiment cannot drift:
   `from_kwargs` mirrors the depth-serial guard exactly (config.py's
   existing pattern): a non-string `start_pose`/`pose_dir` RAISES
   `ValueError` telling the operator to quote the value in config.ini,
-  never a bare TypeError and never a silent str() coercion.
+  never a bare TypeError and never a silent str() coercion. Exception,
+  matching the depth-serial guard's None tolerance: `None` means "unset"
+  (the eval CLI parses `-E start_pose=none` to `None`), so the key is
+  dropped and the field default applies.
 
 ## Embodiment: resolve `start_pose` at first reset
 
