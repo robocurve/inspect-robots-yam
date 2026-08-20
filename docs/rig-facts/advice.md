@@ -20,7 +20,8 @@ as a verified pick-and-place.
     travelled distance from joint readback, not the commanded target
     (controller undershoot otherwise skews the scale low). A grasped
     object of known size also works. Calibrate in the image region you
-    are working in — the oblique top view has no single scale.
+    are working in, and image-x and image-y separately — the oblique
+    top view has no single scale.
   - Contact earlier or later than FK plus the documented z-bias
     predicts → re-measure the z bias: close the empty gripper and
     descend until joint effort shows table contact (j1 stops tracking

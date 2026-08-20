@@ -46,9 +46,14 @@ measured at the rig. Planar FK/IK for the arm lives in
   rising to ≈8 px/cm near the bottom edge — a ~2.5× change across the
   frame (the working-region figure was derived from the 0.584 m base
   spacing spanning ~174 px at table level; a sibling rig built
-  identically measures ≈2.2–2.7). Use the number for the region you are
-  working in, and verify it against your first sizeable move —
-  recalibrate if they disagree. Scale also grows with height, roughly
+  identically measures ≈2.2–2.7). Image-x and image-y scales also
+  differ at the same spot (an inch grid measured ≈3.1 px/cm along
+  image-x vs ≈4.0 along image-y), so calibrate the two axes separately,
+  and localize the fingertip rather than the arm body — elevated links
+  project displaced outward from the tip. Use the numbers for the
+  region you are working in, and verify them against your first
+  sizeable move — recalibrate if they disagree. Scale also grows with
+  height, roughly
   H/(H − h) with camera height H ≈ 0.72 m in the working region, so a
   gripper carrying at 10 cm reads ~15% larger than it will at table
   level, and things shrink slightly as you lower them.
@@ -72,7 +77,11 @@ measured at the rig. Planar FK/IK for the arm lives in
   within ~10 cm of the table ranged from ~3 to ~12 px/cm across runs, so
   never trust a remembered scale — close to the table the 224-px frame
   may span only a few tens of centimetres, and a hand-sized object can
-  fill it. To calibrate this view, make a pure radial move (j1/j2/j3, no
+  fill it. Scale also varies within a single frame: the camera is close
+  and forward-tilted, so px/cm grows toward the bottom edge (≈20 px/cm
+  near the bottom vs ≈12 mid-frame measured in one image at ~5 cm
+  height) — calibrate near where the target sits in the image. To
+  calibrate this view, make a pure radial move (j1/j2/j3, no
   yaw) of known FK size and read the pixel shift. A j0 nudge is tempting
   (it translates the camera by r·Δj0) but it also rolls the wrist image
   about its centre by Δj0, mixing rotation into the shift — scale
@@ -89,9 +98,11 @@ measured at the rig. Planar FK/IK for the arm lives in
 - Table plane: the tabletop coincides with the arm mounting plane — true
   fingertip z = 0 at table contact (verified by replaying contact poses
   through the framework's grasp-site forward kinematics).
-- Measured planar-FK z-bias at table contact on this rig: +0.090 m
-  (left arm) / +0.093 m (right arm) — near-identical on both arms, so
-  one global z offset serves the whole rig (see
+- Measured planar-FK z-bias at table contact on this rig: ≈+0.08–0.09 m
+  on both arms, with ~1.5 cm of pose dependence within the working
+  envelope (the right arm contacted at FK z = +0.075 at r = 0.38 m and
+  +0.090 at r = 0.33 m). Correct absolute heights by ~8–9 cm and
+  confirm with a table touch when centimetre precision matters (see
   [formulas.md](formulas.md)).
 - With the gripper pointing straight down, reach caps at ~0.51 m wrist
   radius; pitching the gripper 30–45° forward buys another 10–20 cm.
@@ -103,10 +114,10 @@ measured at the rig. Planar FK/IK for the arm lives in
   rad). Re-issue the same target, or command slightly beyond it, to
   converge. Undershoot grows when carrying a load — expect lifts with an
   object in the gripper to need more re-issues or stronger targets.
-- Larger commands are clamped by a per-step delta limit
-  (`delta_clamped` in the move result) and each call reports only a few
-  steps. Nothing is broken — re-issue, or command 0.1–0.2 rad beyond the
-  goal.
+- Larger commands are clamped by a per-step delta limit — reported as a
+  separate `approver: N step(s) modified (delta_clamped)` line, not in
+  the move result itself — and each call reports only a few steps.
+  Nothing is broken — re-issue, or command 0.1–0.2 rad beyond the goal.
 - Very small commands are dropped entirely: a 0.03 rad j0 target
   executed one step with zero motion. The minimum useful command step is
   ≈0.05–0.1 rad — for a small correction, command at least that far (or

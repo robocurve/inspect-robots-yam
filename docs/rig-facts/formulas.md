@@ -17,8 +17,8 @@ the mounting plane (= table level). Shared by all YAM rigs.
   arms use in practice. Check reachability d ≤ L1 + L2 = 0.509 first.
 - Accuracy: in the gripper-down working envelope (r ≈ 0.3–0.5 m) the
   dominant error is height: the formula reads ~7–10 cm high in z
-  (measured +9.0 cm left / +9.3 cm right at rig-2 — near-identical on
-  both arms, so one global offset serves a rig). The radial bias is
+  (measured ≈8–9 cm on both arms at rig-2, similar across arms but with
+  ~1.5 cm of pose dependence across the envelope). The radial bias is
   small: commanded 2-inch lateral moves measured ~1.7–2 inches against
   a calibration grid. The z error is what you would get if L3 were
   ≈0.19 m rather than 0.101 m — an offset that, gripper-down, adds
@@ -27,5 +27,6 @@ the mounting plane (= table level). Shared by all YAM rigs.
   are accurate — and both the forward and inverse solutions inherit it,
   so correct all absolute heights by the rig's measured z offset (or
   measure it with one closed-gripper table touch if your rig's fact
-  sheet lacks it). Outside that envelope (arm folded) the approximation
-  degrades sharply.
+  sheet lacks it), and re-touch near the target pose when centimetre
+  precision matters. Outside that envelope (arm folded) the
+  approximation degrades sharply.
