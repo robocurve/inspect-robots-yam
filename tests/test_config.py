@@ -650,3 +650,15 @@ def test_collision_bool_flags_reject_non_bool_values(flag: str, value: object) -
 def test_default_collision_flag_does_not_reject_unsupported_contribution_modes() -> None:
     assert YamConfig(control_interface="eef_pos").collision_guardrail is True
     assert YamConfig(joints_are_delta=True).collision_guardrail is True
+
+
+def test_collision_hold_limit_default_and_validation() -> None:
+    assert YamConfig().collision_hold_limit == 50
+    assert YamConfig(collision_hold_limit=None).collision_hold_limit is None
+    assert YamConfig(collision_hold_limit=0).collision_hold_limit == 0
+    assert YamConfig(collision_hold_limit=100).collision_hold_limit == 100
+
+    msg = "collision_hold_limit must be a non-negative integer or None"
+    for invalid in (-1, -50, "50", 50.0, True):
+        with pytest.raises(ValueError, match=msg):
+            YamConfig(collision_hold_limit=invalid)  # type: ignore[arg-type]

@@ -202,6 +202,7 @@ class YamConfig(_FromKwargs):
     collision_table: bool = True
     collision_table_height: float | None = None
     collision_penetration_threshold: float | None = None
+    collision_hold_limit: int | None = 50
     # Wait for the arm to reach each commanded pose before observing, so a
     # chunked policy plans from a converged view. None disables the wait; a
     # tolerance must exceed the rig's steady-state offset (run
@@ -414,6 +415,12 @@ class YamConfig(_FromKwargs):
             raise ValueError("rest_secs must be > 0")
         if self.max_steps_hint is not None and self.max_steps_hint < 1:
             raise ValueError("max_steps_hint must be >= 1")
+        if self.collision_hold_limit is not None and (
+            not isinstance(self.collision_hold_limit, int)
+            or isinstance(self.collision_hold_limit, bool)
+            or self.collision_hold_limit < 0
+        ):
+            raise ValueError("collision_hold_limit must be a non-negative integer or None")
         valid_realsense_capture = {"inline", "process"}
         if self.realsense_capture not in valid_realsense_capture:
             raise ValueError(
