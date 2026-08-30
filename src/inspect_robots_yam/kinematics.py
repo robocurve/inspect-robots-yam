@@ -17,7 +17,6 @@ from inspect_robots_yam.packing import ARM_DOF
 
 Vec = npt.NDArray[np.float64]
 Pose = npt.NDArray[np.float64]
-_YAW_FALLBACK_THRESHOLD = float(np.sin(np.deg2rad(5.0)))
 
 
 class RawKinematics(Protocol):
@@ -105,8 +104,6 @@ class _ArmKinematics:
         self._last_delta: Vec | None = None
         self._resynced = False
         self._yaw_reference: npt.NDArray[np.float64] | None = None
-        self._yaw_zero = 0.0
-        self._yaw_axis = 0
 
     @property
     def effective_ranges(self) -> npt.NDArray[np.float64]:
@@ -128,11 +125,6 @@ class _ArmKinematics:
         """Report whether the most recent solve re-seeded from measurement."""
         return self._resynced
 
-    @property
-    def yaw_axis(self) -> int:
-        """Return the pinned rotation-matrix axis used for yaw extraction."""
-        return self._yaw_axis
-
     def seed(self, q_commanded: npt.ArrayLike) -> None:
         """Seed the six-joint command reference and clear trial-local guard state."""
         q = np.asarray(q_commanded, dtype=np.float64)
@@ -150,28 +142,33 @@ class _ArmKinematics:
         self._clear_reversals()
         self._resynced = False
         self._yaw_reference = None
-        self._yaw_zero = 0.0
-        self._yaw_axis = 0
 
     def capture_yaw_reference(self, q_measured: npt.ArrayLike) -> None:
-        """Pin the reset orientation and robust yaw-extraction branch for a trial."""
+        """Pin the trial's reference orientation: zero for yaw, pitch, and roll.
+
+        Targets and observations both work on the relative rotation
+        ``R_measured @ reference.T``, which stays near identity inside the
+        action box, so extraction never degenerates at any reachable pose
+        (the ZYX singularity sits at |pitch| = pi/2, excluded by config
+        bounds validation).
+        """
         pose = self.fk(q_measured)
-        rotation = pose[:3, :3].copy()
-        horizontal_norm = float(np.linalg.norm(rotation[:2, 0]))
-        self._yaw_axis = 1 if horizontal_norm < _YAW_FALLBACK_THRESHOLD else 0
-        self._yaw_reference = rotation
-        self._yaw_zero = self._extract_yaw(rotation)
+        self._yaw_reference = pose[:3, :3].copy()
 
     def fk(self, q_arm: npt.ArrayLike) -> Pose:
         """Run FK with any model gripper joints pinned at their mid-ranges."""
         return np.asarray(self._raw.fk(self._full_q(q_arm)), dtype=np.float64)
 
     def observe(self, q_measured: npt.ArrayLike, *, gripper: float) -> Vec:
-        """Return ``x, y, z, relative_yaw, gripper`` from measured arm state."""
-        self._require_yaw_reference()
+        """Return ``x, y, z, yaw, pitch, roll, gripper`` from measured arm state.
+
+        Orientation values are relative to the trial's reference orientation,
+        matching the command convention in :meth:`solve`.
+        """
+        reference = self._require_yaw_reference()
         pose = self.fk(q_measured)
-        yaw = self._wrap_yaw(self._extract_yaw(pose[:3, :3]) - self._yaw_zero)
-        return np.asarray((*pose[:3, 3], yaw, gripper), dtype=np.float64)
+        yaw, pitch, roll = self._extract_relative(pose[:3, :3] @ reference.T)
+        return np.asarray((*pose[:3, 3], yaw, pitch, roll, gripper), dtype=np.float64)
 
     def solve(self, target: npt.ArrayLike, q_measured: npt.ArrayLike) -> Vec:
         """Run the normative hold, resync, IK, rate-clamp, and reversal pipeline."""
@@ -193,7 +190,10 @@ class _ArmKinematics:
         target_values = np.asarray(target, dtype=np.float64)
         target_pose = np.eye(4, dtype=np.float64)
         target_pose[:3, :3] = (
-            self._rotation_z(float(target_values[3])) @ self._require_yaw_reference()
+            self._rotation_z(float(target_values[3]))
+            @ self._rotation_y_forward(float(target_values[4]))
+            @ self._rotation_x(float(target_values[5]))
+            @ self._require_yaw_reference()
         )
         target_pose[:3, 3] = target_values[:3]
         warm_start = self._clip_effective(previous)
@@ -242,9 +242,18 @@ class _ArmKinematics:
         values = np.asarray(q, dtype=np.float64)
         return np.clip(values, self._effective_ranges[:, 0], self._effective_ranges[:, 1])
 
-    def _extract_yaw(self, rotation: npt.NDArray[np.float64]) -> float:
-        axis = rotation[:, self._yaw_axis]
-        return float(np.arctan2(axis[1], axis[0]))
+    def _extract_relative(self, relative: npt.NDArray[np.float64]) -> tuple[float, float, float]:
+        """Decompose a relative rotation as the yaw/pitch/roll of :meth:`solve`.
+
+        Inverse of ``Rz(yaw) @ Ry'(pitch) @ Rx(roll)`` with ``Ry'`` about -y
+        (standard ZYX with the pitch sign flipped, so positive pitch reads as
+        tool-forward). Singular only at |pitch| = pi/2, which the config
+        bounds exclude.
+        """
+        pitch = float(np.arcsin(np.clip(relative[2, 0], -1.0, 1.0)))
+        yaw = float(np.arctan2(relative[1, 0], relative[0, 0]))
+        roll = float(np.arctan2(relative[2, 1], relative[2, 2]))
+        return self._wrap_yaw(yaw), pitch, self._wrap_yaw(roll)
 
     @staticmethod
     def _wrap_yaw(yaw: float) -> float:
@@ -257,6 +266,25 @@ class _ArmKinematics:
         sine = np.sin(yaw)
         return np.asarray(
             ((cosine, -sine, 0.0), (sine, cosine, 0.0), (0.0, 0.0, 1.0)),
+            dtype=np.float64,
+        )
+
+    @staticmethod
+    def _rotation_y_forward(pitch: float) -> npt.NDArray[np.float64]:
+        # Rotation about -y: positive pitch tips a gripper-down tool toward +x.
+        cosine = np.cos(pitch)
+        sine = np.sin(pitch)
+        return np.asarray(
+            ((cosine, 0.0, -sine), (0.0, 1.0, 0.0), (sine, 0.0, cosine)),
+            dtype=np.float64,
+        )
+
+    @staticmethod
+    def _rotation_x(roll: float) -> npt.NDArray[np.float64]:
+        cosine = np.cos(roll)
+        sine = np.sin(roll)
+        return np.asarray(
+            ((1.0, 0.0, 0.0), (0.0, cosine, -sine), (0.0, sine, cosine)),
             dtype=np.float64,
         )
 

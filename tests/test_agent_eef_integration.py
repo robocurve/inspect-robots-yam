@@ -44,7 +44,14 @@ def test_public_agent_policy_advertises_and_executes_guardrail_clean_eef_move() 
                                     "function": {
                                         "name": move_name,
                                         "arguments": json.dumps(
-                                            {"targets": {"left_x": 0.31, "right_y": 0.01}}
+                                            {
+                                                "targets": {"left_x": 0.31, "right_y": 0.01},
+                                                "note": (
+                                                    "Both arms are visible at their reset "
+                                                    "poses; nudging the left arm forward and "
+                                                    "the right arm left to make progress."
+                                                ),
+                                            }
                                         ),
                                     },
                                 }
@@ -64,7 +71,7 @@ def test_public_agent_policy_advertises_and_executes_guardrail_clean_eef_move() 
     )
     policy.bind(embodiment.info)
     policy.reset(Scene(id="eef-agent", instruction="move both arms"))
-    current = np.asarray((0.30, 0.0, 0.20, 0.0, 1.0, 0.30, 0.0, 0.20, 0.0, 1.0))
+    current = np.asarray((0.30, 0.0, 0.20, 0.0, 0.0, 0.0, 1.0, 0.30, 0.0, 0.20, 0.0, 0.0, 0.0, 1.0))
     observation = Observation(
         images={},
         state={"joint_pos": np.zeros(14), "eef_state": current},
@@ -80,7 +87,7 @@ def test_public_agent_policy_advertises_and_executes_guardrail_clean_eef_move() 
     assert "right_gripper: [0, 1]" in advertised
     assert len(chunk.actions) > 1
     assert chunk.actions[-1].data[0] == pytest.approx(0.31)
-    assert chunk.actions[-1].data[6] == pytest.approx(0.01)
+    assert chunk.actions[-1].data[8] == pytest.approx(0.01)
     x_values = np.asarray([action.data[0] for action in chunk.actions])
     assert np.all(np.diff(x_values) > 0)
 

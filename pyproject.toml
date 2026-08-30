@@ -44,7 +44,7 @@ dev = [
     "mypy>=1.11",
     "pre-commit>=3.5",
     "kitchenbench",
-    "inspect-robots-agent>=0.2.2",
+    "inspect-robots-agent>=0.26.0",
     # numpy 2.5.0's type stubs use 3.12-only syntax that mypy (python_version 3.10)
     # rejects; pin the 2.4.x line for a deterministic dev/CI gate (runtime is free).
     "numpy<2.5",
@@ -68,6 +68,7 @@ gr00t = "inspect_robots_yam.policy:gr00t_policy"
 inspect-robots-yam-preflight = "inspect_robots_yam.preflight:main"
 inspect-robots-yam-holdcheck = "inspect_robots_yam.hold_check:main"
 inspect-robots-yam-health = "inspect_robots_yam.health:main"
+inspect-robots-yam-pose = "inspect_robots_yam.pose_cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/inspect_robots_yam"]

@@ -218,6 +218,53 @@ The stream is unauthenticated, and the default `0.0.0.0` bind listens on all
 interfaces. Use `--bind <tailscale-ip>` to limit it to the rig's tailnet
 address.
 
+## Named start poses: capture and reuse a rig setup
+
+Capture a joint-space start pose by bringing the arms up in gravity-compensation
+mode, moving both arms and grippers by hand, and pressing Enter:
+
+```bash
+inspect-robots-yam-pose capture table-ready --notes "bowls placed for pouring"
+```
+
+The command writes `poses/table-ready.json` by default. It prompts you to
+support both arms before closing the driver and releasing torque. Pass `--park`
+to gate and ramp to the configured rest pose first, or `--clamp` to explicitly
+clamp arm joints that are outside the configured limits. Gripper readings are
+always normalized to the portable 0 to 1 range.
+
+Each file is plain JSON with the packed left-then-right 14-slot joint layout:
+
+```json
+{
+  "schema": 1,
+  "name": "table-ready",
+  "joints": [0.12, 0.65, 1.04, -0.31, 0.08, 0.0, 0.72, -0.1, 0.7, 0.98, -0.28, -0.05, 0.02, 0.68],
+  "created_at": "2026-08-19T19:30:00+00:00",
+  "notes": "bowls placed for pouring",
+  "rig": "rig-1"
+}
+```
+
+Use the pose for an eval by setting its name on the embodiment:
+
+```bash
+inspect-robots "pour the pasta into the bowl" \
+    --embodiment yam_arms -E start_pose=table-ready
+```
+
+Set `pose_dir` in `[embodiment.args]`, pass `-E pose_dir=...`, or use the pose
+tool's `--pose-dir` flag to select another store. Commit `poses/` with a rig
+configuration or copy the directory between compatible rigs to share poses.
+The normalized gripper slots remain portable across different native gripper
+calibrations.
+
+> [!WARNING]
+> Before using a new pose in an unattended eval, run
+> `inspect-robots-yam-pose goto table-ready` and verify the full ramp while
+> ready on the e-stop. The straight-line joint interpolation checks configured
+> joint limits, but it does not perform collision checking.
+
 ## Run on hardware
 
 Write your defaults once. The interactive wizard interviews this plugin's
@@ -418,32 +465,44 @@ off requires an explicit `--disable-guardrails`.
 
 ### Cartesian EEF mode
 
-For LLM-agent runs, opt into the 10-D absolute Cartesian interface:
+For LLM-agent runs, opt into the 14-D absolute Cartesian interface:
 
 ```ini
 [embodiment.args]
 control_interface = eef_pos
 ```
 
-Each arm is controlled as `x, y, z, yaw, gripper`. Positions are metres in
-that arm's own base frame, with +x forward from the base and +z up. The two
-base frames are independent. On common mirrored bimanual mounts, the arms'
-+y axes point in opposite world directions, so equal signed y targets do not
-mean equal world directions.
+Each arm is controlled as `x, y, z, yaw, pitch, roll, gripper`. Positions are
+metres in that arm's own base frame, with +x forward from the base and +z up.
+The two base frames are independent. On common mirrored bimanual mounts, the
+arms' +y axes point in opposite world directions, so equal signed y targets do
+not mean equal world directions.
 
-Yaw is an absolute target relative to the orientation captured at reset:
-`0` means the reset orientation. It rotates about base +z while preserving the
-captured roll and pitch. Yaw interpolation does not wrap. A move from `3.1` to
+All three orientation slots are absolute targets relative to the orientation
+captured at reset: `0, 0, 0` means the reset orientation. Yaw rotates about
+base +z (positive counterclockwise from above); positive pitch tips the tool
+forward (+x at yaw 0); positive roll tips it toward the arm's left (+y at
+yaw 0). Orientation interpolation does not wrap. A yaw move from `3.1` to
 `-3.1` sweeps through zero instead of taking the short path, so use
 intermediate yaw targets for near-±π regrasps.
 
 The default workspace per arm is x `[0.15, 0.48]`, y `[-0.25, 0.25]`, and z
-`[0.03, 0.40]`, with yaw `[-π, π]` and gripper `[0, 1]`. These bounds were
-validated against the bundled YAM + LINEAR_4310 model at the default working
-orientation, but they are a conservative box rather than an exact reachable
-set. `eef_low` and `eef_high` override all ten bounds. The observation keeps
-the 14-D `joint_pos` field for logging and adds the command-aligned 10-D
-`eef_state` field.
+`[0.03, 0.40]`, with yaw `[-π, π]`, **pitch and roll pinned at `[0, 0]`**,
+and gripper `[0, 1]`. Pinned axes are declared but not commandable — the
+default behaves exactly like the historical yaw-only interface. Opening
+pitch or roll is a per-run decision via `eef_low`/`eef_high` (pitch bounds
+must stay strictly inside `(-π/2, π/2)`; roll within `[-π, π]`). These
+bounds were validated against the bundled YAM + LINEAR_4310 model at the
+default working orientation, but they are a conservative box rather than an
+exact reachable set. `eef_low` and `eef_high` override all fourteen bounds.
+The observation keeps the 14-D `joint_pos` field for logging and adds the
+command-aligned 14-D `eef_state` field.
+
+> [!WARNING]
+> The z floor (`z >= 0.03`) protects *fingertips* assuming a gripper-down
+> tool. A pitched or rolled gripper can reach the table with its knuckles or
+> wrist camera at a legal fingertip z — when opening pitch or roll, raise the
+> z lower bound to cover the tilted gripper body.
 
 In both control interfaces, `home_pose=None` selects a mandatory per-mode
 factory default instead of skipping homing. Joint mode uses the
@@ -452,7 +511,10 @@ and both grippers open. EEF mode uses `DEFAULT_EEF_HOME_POSE`; its provisional
 per-arm joints are `[-0.024, 0.794, 0.645, -0.375, -0.021, -0.012]`, with both
 grippers open. The first EEF reset validates that the configured home FK lies
 in the workspace box before moving, then captures each arm's yaw reference
-after homing.
+after homing. Named `start_pose` poses work in EEF mode too: the resolved
+joint-space pose must start inside the EEF action box (grasp-point position,
+gripper aperture, and relative yaw/pitch/roll 0), and a reconnect revalidates
+the re-read pose file.
 
 > [!WARNING]
 > EEF mode has no arm-table or arm-arm collision checking. The workspace box,
@@ -611,6 +673,11 @@ motions, or replace the operator and physical e-stop.
   parks with both grippers open (wire 1), so parking releases anything still
   held during the ramp, wherever the arms happen to be. Rigs that must keep an
   object gripped at park should override `rest_pose` with gripper slots 0.0.
+  With `park_before_grade=true`, the arms also make the same motion as the
+  `close()` park at episode end, before grading. This is a new time for that
+  motion and there is no stand-clear gate. Tasks whose success state is the
+  gripper holding an object must set `park_before_grade=false` so the grader
+  uses the last step's frames instead.
   Override both `home_pose` and `rest_pose` on rigs whose joint limits exclude
   zero, since both targets are clamped through the same per-joint box as every
   command.
@@ -655,13 +722,15 @@ motions, or replace the operator and physical e-stop.
 Hardware gripper units (via `gripper_open`/`gripper_closed`) exist only at the
 driver boundary; pose and limit vectors never use driver-native gripper units.
 
-In `control_interface="eef_pos"`, actions and `eef_low`/`eef_high` are 10-D:
+In `control_interface="eef_pos"`, actions and `eef_low`/`eef_high` are 14-D:
 
 | Slots | Meaning | Unit |
 |-------|---------|------|
-| 0–2, 5–7 | left / right EEF x, y, z in each arm's base frame | metres |
-| 3, 8 | left / right yaw relative to reset orientation | radians |
-| 4, 9 | left / right gripper | normalized 0–1 (1 = open, 0 = closed) |
+| 0–2, 7–9 | left / right EEF x, y, z in each arm's base frame | metres |
+| 3, 10 | left / right yaw relative to reset orientation | radians |
+| 4, 11 | left / right pitch relative to reset orientation (pinned at 0 by default) | radians |
+| 5, 12 | left / right roll relative to reset orientation (pinned at 0 by default) | radians |
+| 6, 13 | left / right gripper | normalized 0–1 (1 = open, 0 = closed) |
 
 `home_pose`, `rest_pose`, joint limits, and parking remain 14-D joint-space
 vectors in both control interfaces.
@@ -687,6 +756,9 @@ attended episode flow; needs a TTY; `unattended` takes precedence),
 `report_joint_eff` (default `False`; add the optional `joint_eff` observation
 state with sign-corrected estimated torque in raw N·m, including the gripper
 slots),
+`park_before_grade` (default `True`; park for an unobstructed final grader view;
+set `False` for tasks whose success state is the gripper holding an object so
+grading uses the last step's frames),
 `collision_guardrail` (default `True`; predictive holds in absolute joint
 mode; the setup wizard suggests `false` until the base positions below are
 measured),

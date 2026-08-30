@@ -27,7 +27,7 @@ import logging
 import math
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
@@ -41,7 +41,7 @@ from inspect_robots.scene import Scene
 from inspect_robots.spaces import Box
 from inspect_robots.types import OPERATOR_END, Action, Observation, StepResult
 
-from inspect_robots_yam import packing
+from inspect_robots_yam import packing, poses
 from inspect_robots_yam._capture_proc import (
     JOIN_TIMEOUT_S,
     MAX_FRAME_AGE_S,
@@ -118,6 +118,11 @@ up; how the two bases are mounted relative to each other depends on the rig.
 - left_yaw / right_yaw: tool rotation in radians about vertical, relative to
   the trial's start orientation; 0 keeps the start orientation and positive
   turns counterclockwise seen from above.
+- left_pitch / right_pitch, left_roll / right_roll: tool tilt in radians,
+  also relative to the trial's start orientation. Positive pitch tips the
+  tool forward (+x at yaw 0), positive roll toward the arm's left (+y at
+  yaw 0). An axis whose configured bounds are equal (typically 0) is pinned:
+  commands on it are clamped to that value and it cannot be actuated.
 - left_gripper / right_gripper: 0 is fully closed, 1 is fully open (about
   9.5 cm between the jaws).
 Proportions: upper arm 0.26 m, forearm 0.25 m, wrist to grasp point 0.25 m
@@ -209,6 +214,13 @@ DriverFactory = Callable[[YamConfig], BimanualDriver]
 KinematicsFactory = Callable[[YamConfig], tuple[RawKinematics, RawKinematics]]
 CameraReader = Callable[[YamConfig], ImageMap]
 DepthReader = Callable[[YamConfig], dict[str, Any]]
+
+
+def ramp_waypoints(start: Vec, target: Vec, n: int) -> Iterator[Vec]:
+    """Yield ``n`` linear waypoints after ``start``, including ``target`` last."""
+    for index in range(1, n + 1):
+        alpha = index / n
+        yield (1.0 - alpha) * start + alpha * target
 
 
 class _RealsenseReader(Protocol):
@@ -1253,6 +1265,7 @@ class YAMEmbodiment:
         self._right_kinematics: _ArmKinematics | None = None
         self._eef_home_validated = False
         self._init_pose: Vec | None = None
+        self._resolved_start_pose: Vec | None = None
         # Set only after the stand-clear gate resolves (prompt returned, or
         # the auto_start notice printed), so a gate fault (dead stdin)
         # re-prompts on a retried reset instead of ramping unconfirmed;
@@ -1471,6 +1484,27 @@ class YAMEmbodiment:
                 "headless runs."
             )
         if self._driver is None:
+            if self._cfg.start_pose is not None and self._resolved_start_pose is None:
+                stored = poses.load_pose(self._cfg.pose_dir, self._cfg.start_pose)
+                resolved = np.asarray(stored.joints, dtype=np.float64)
+                bad = np.flatnonzero((resolved < self._cfg.low) | (resolved > self._cfg.high))
+                if bad.size:
+                    details = ", ".join(
+                        f"{int(index)}: {resolved[index]} vs "
+                        f"[{self._cfg.low[index]}, {self._cfg.high[index]}]"
+                        for index in bad
+                    )
+                    raise ValueError(
+                        f"start pose {stored.name!r} is outside configured joint bounds at "
+                        f"packed indices {bad.tolist()}: {details}"
+                    )
+                resolved.setflags(write=False)
+                self._resolved_start_pose = resolved
+                logger.info(
+                    "resolved start pose %r from %s",
+                    stored.name,
+                    poses.pose_path(self._cfg.pose_dir, stored.name),
+                )
             self._driver = self._driver_factory(self._cfg)
         if self._cfg.control_interface == "eef_pos" and (
             self._left_kinematics is None or self._right_kinematics is None
@@ -1512,7 +1546,10 @@ class YAMEmbodiment:
                 )
             self._home_gate_confirmed = True
         if not self._cfg.unattended:
-            self._status("homing: ramping arms to start pose")
+            if self._cfg.start_pose is None:
+                self._status("homing: ramping arms to start pose")
+            else:
+                self._status(f"homing: ramping arms to start pose {self._cfg.start_pose!r}")
         try:
             final_home_command = self._ramp_to(home_pose)
             # Inside the try, so the operator sees a status line instead of up
@@ -1616,6 +1653,45 @@ class YAMEmbodiment:
             )
         return StepResult(observation=obs, terminated=False, info=settle_info)
 
+    def observe_parked(self) -> Observation | None:
+        """Park and capture the final grader view for a scored trial.
+
+        The framework calls this immediately before grading. It moves the arms
+        to the configured rest pose, or the pose captured by :meth:`reset`, and
+        returns a fresh observation without lazy extras. It declines with
+        ``None`` when :attr:`YamConfig.park_before_grade` is false or the
+        driver is not connected (never connected, or already closed), leaving
+        no park target.
+        """
+        if not self._cfg.park_before_grade or self._driver is None or self._init_pose is None:
+            return None
+        target = (
+            np.asarray(self._cfg.rest_pose, dtype=np.float64)
+            if self._cfg.rest_pose is not None
+            else self._init_pose
+        )
+        # close() keeps its own ramp: a later close parks from wherever the arms
+        # are, and ramping twice to the same target is a no-op ramp. The status
+        # line stays open through the settle, like reset()'s ramp, so an
+        # attended operator is not left staring at silence for the settle wait.
+        if not self._cfg.unattended:
+            self._status("parking for grading: ramping arms clear")
+        try:
+            sent = self._ramp_to(target)
+            self._settle(sent)
+        finally:
+            if not self._cfg.unattended:
+                self._status(None)
+        observation = self._observe(None)
+        # image_times/state_time are deliberately left at their defaults: the
+        # source observation never sets them today, and a future _observe that
+        # does should extend this rebuild rather than lose them silently.
+        return Observation(
+            images=observation.images,
+            state=observation.state,
+            instruction=None,
+        )
+
     def close(self) -> None:
         """Park the arms, then release the driver handles.
 
@@ -1639,6 +1715,11 @@ class YAMEmbodiment:
         # abort between bind_task and the first reset) must not carry a stale
         # horizon into a later framework-less run.
         self._bound_max_steps = None
+        self._resolved_start_pose = None
+        # A reconnect re-reads a named start pose from its (possibly edited)
+        # file, so the EEF box validation must re-run with it. Revalidating a
+        # static home is idempotent.
+        self._eef_home_validated = False
         for kinematics in (self._left_kinematics, self._right_kinematics):
             if kinematics is not None:
                 kinematics.clear()
@@ -1710,9 +1791,8 @@ class YAMEmbodiment:
         hz = self._cfg.control_hz if self._cfg.control_hz > 0 else 10.0
         n = max(1, round(self._cfg.rest_secs * hz))
         sent = start
-        for i in range(1, n + 1):
-            alpha = i / n
-            sent = self._send((1.0 - alpha) * start + alpha * target)
+        for waypoint in ramp_waypoints(start, target, n):
+            sent = self._send(waypoint)
             self._sleep(1.0 / hz)
         return sent
 
@@ -1742,6 +1822,8 @@ class YAMEmbodiment:
 
     def _home_pose(self) -> Vec:
         """Select the configured joint home, defaulting per control interface."""
+        if self._resolved_start_pose is not None:
+            return self._resolved_start_pose
         if self._cfg.control_interface == "eef_pos":
             values = self._cfg.home_pose or DEFAULT_EEF_HOME_POSE
         else:
@@ -1796,29 +1878,36 @@ class YAMEmbodiment:
                 left_kinematics,
                 home[: packing.ARM_DOF],
                 float(home[packing.ARM_DOF]),
-                slice(0, 5),
+                slice(0, 7),
             ),
             (
                 "right",
                 right_kinematics,
                 home[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF],
                 float(home[-1]),
-                slice(5, 10),
+                slice(7, 14),
             ),
         )
         for side, kinematics, joints, gripper, bounds in arm_values:
             position = kinematics.fk(joints)[:3, 3]
-            home_state = np.asarray((*position, 0.0, gripper))
+            # Relative yaw/pitch/roll at arrival are 0 by construction: the
+            # home pose is the pose the orientation reference is captured from.
+            home_state = np.asarray((*position, 0.0, 0.0, 0.0, gripper))
             if np.any(home_state < self._cfg.eef_low_array[bounds]) or np.any(
                 home_state > self._cfg.eef_high_array[bounds]
             ):
+                source = (
+                    f"start pose {self._cfg.start_pose!r}"
+                    if self._cfg.start_pose is not None
+                    else "home"
+                )
                 raise ValueError(
-                    f"{side} EEF home state {home_state.tolist()} is outside the "
-                    "configured action workspace bounds"
+                    f"{side} EEF {source} state {home_state.tolist()} is outside "
+                    "the configured action workspace bounds"
                 )
 
     def _step_eef(self, action: Vec, driver: BimanualDriver) -> Vec:
-        """Convert one 10-D EEF action into the normative two-arm joint command.
+        """Convert one 14-D EEF action into the normative two-arm joint command.
 
         Returns the clamped vector actually sent, which is what settling waits
         for. In this mode that routinely differs from what the policy asked for:
@@ -1828,16 +1917,16 @@ class YAMEmbodiment:
         state = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
         left_kinematics, right_kinematics = self._require_kinematics()
         left_command = left_kinematics.solve(
-            action[:4],
+            action[:6],
             state[: packing.ARM_DOF],
         )
         right_command = right_kinematics.solve(
-            action[5:9],
+            action[7:13],
             state[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF],
         )
         command = packing.pack(
-            np.concatenate((left_command, action[4:5])),
-            np.concatenate((right_command, action[9:10])),
+            np.concatenate((left_command, action[6:7])),
+            np.concatenate((right_command, action[13:14])),
         )
         sent = self._send(command)
         left_kinematics.update_sent(sent[: packing.ARM_DOF])
@@ -1904,11 +1993,9 @@ class YAMEmbodiment:
 
     def _denorm_grippers(self, cmd: Vec) -> Vec:
         """Map wire grippers (1 = open, 0 = closed) into driver-native units."""
-        out: Vec = cmd.copy()
-        span = self._cfg.gripper_open - self._cfg.gripper_closed
-        for idx in (packing.ARM_DOF, packing.ARM_WIDTH + packing.ARM_DOF):  # 6, 13
-            out[idx] = self._cfg.gripper_closed + cmd[idx] * span
-        return out
+        return packing.denorm_grippers(
+            cmd, gripper_open=self._cfg.gripper_open, gripper_closed=self._cfg.gripper_closed
+        )
 
     def _norm_grippers(self, physical: Vec) -> Vec:
         """Map driver units to wire grippers (1 = open, 0 = closed).
@@ -1916,11 +2003,11 @@ class YAMEmbodiment:
         ``YamConfig.__post_init__`` guarantees ``gripper_open != gripper_closed``,
         so the span is never zero.
         """
-        out: Vec = physical.copy()
-        span = self._cfg.gripper_open - self._cfg.gripper_closed
-        for idx in (packing.ARM_DOF, packing.ARM_WIDTH + packing.ARM_DOF):  # 6, 13
-            out[idx] = (physical[idx] - self._cfg.gripper_closed) / span
-        return out
+        return packing.norm_grippers(
+            physical,
+            gripper_open=self._cfg.gripper_open,
+            gripper_closed=self._cfg.gripper_closed,
+        )
 
     def _settle(self, target: Vec) -> tuple[bool, float] | None:
         """Wait for the arm joints to reach ``target``; report (settled, residual).

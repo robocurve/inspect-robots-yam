@@ -81,3 +81,28 @@ def test_split_returns_copies() -> None:
 def test_split_rejects_wrong_length() -> None:
     with pytest.raises(ValueError, match="expected a 14-D vector"):
         packing.split(np.zeros(13))
+
+
+def test_gripper_normalization_helpers_touch_only_gripper_slots_and_copy() -> None:
+    physical = np.arange(14, dtype=float)
+    physical[6] = 17.0
+    physical[13] = 12.0
+    normalized = packing.norm_grippers(
+        physical,
+        gripper_open=10.0,
+        gripper_closed=20.0,
+    )
+    assert normalized[6] == pytest.approx(0.3)
+    assert normalized[13] == pytest.approx(0.8)
+    assert np.array_equal(
+        normalized[[*range(6), *range(7, 13)]], physical[[*range(6), *range(7, 13)]]
+    )
+    assert physical[6] == 17.0
+
+    restored = packing.denorm_grippers(
+        normalized,
+        gripper_open=10.0,
+        gripper_closed=20.0,
+    )
+    assert restored == pytest.approx(physical)
+    assert normalized[6] == pytest.approx(0.3)

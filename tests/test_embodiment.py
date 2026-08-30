@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import NoReturn, cast
 
 import numpy as np
@@ -15,6 +16,7 @@ from inspect_robots.scene import Scene
 from inspect_robots.types import Action
 
 import inspect_robots_yam.embodiment as embodiment_module
+from inspect_robots_yam import poses
 from inspect_robots_yam.config import (
     DEFAULT_JOINT_HOME_POSE,
     DEFAULT_REST_POSE,
@@ -192,6 +194,175 @@ def test_reset_returns_observation_and_homes() -> None:
     assert home_cmd[0] == pytest.approx(0.1)
     assert home_cmd[6] == pytest.approx(19.0)  # 20 + 0.1 * (10 - 20)
     assert home_cmd[13] == pytest.approx(19.0)
+
+
+def _save_start_pose(directory: Path, name: str, values: tuple[float, ...]) -> None:
+    poses.save_pose(
+        directory,
+        poses.StartPose(
+            name=name,
+            joints=values,
+            created_at="2026-08-19T12:00:00+00:00",
+        ),
+        overwrite=True,
+    )
+
+
+def test_named_start_pose_resolves_and_homing_ramps_to_it(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    target = (0.2,) * 6 + (0.4,) + (0.3,) * 6 + (0.6,)
+    _save_start_pose(tmp_path, "ready", target)
+    cfg = YamConfig(start_pose="ready", pose_dir=str(tmp_path), rest_secs=0.2)
+    driver = EchoDriver()
+    emb, _, _ = _build(cfg, driver=driver)
+
+    with caplog.at_level("INFO", logger="inspect_robots_yam.embodiment"):
+        emb.reset(Scene(id="s", instruction="x"))
+
+    assert len(driver.commands) == 2
+    assert driver.commands[-1] == pytest.approx(target)
+    assert "resolved start pose 'ready'" in caplog.text
+    assert str(tmp_path / "ready.json") in caplog.text
+
+
+def test_named_start_pose_resolution_fails_before_driver_factory(tmp_path: Path) -> None:
+    calls = 0
+
+    def factory(_cfg: YamConfig) -> FakeDriver:
+        nonlocal calls
+        calls += 1
+        return FakeDriver()
+
+    emb = YAMEmbodiment(
+        YamConfig(start_pose="missing", pose_dir=str(tmp_path)),
+        driver_factory=factory,
+        camera_reader=_cameras,
+        operator=_operator(),
+        sleep_fn=lambda _delay: None,
+        clock=lambda: 0.0,
+    )
+    with pytest.raises(poses.PoseStoreError, match="available poses"):
+        emb.reset(Scene(id="s", instruction="x"))
+    assert calls == 0
+
+
+def test_named_start_pose_out_of_bounds_names_indices_before_connect(tmp_path: Path) -> None:
+    values = [0.0] * 14
+    values[0] = 4.0
+    values[8] = -4.0
+    _save_start_pose(tmp_path, "unsafe", tuple(values))
+    calls = 0
+
+    def factory(_cfg: YamConfig) -> FakeDriver:
+        nonlocal calls
+        calls += 1
+        return FakeDriver()
+
+    emb = YAMEmbodiment(
+        YamConfig(start_pose="unsafe", pose_dir=str(tmp_path)),
+        driver_factory=factory,
+        camera_reader=_cameras,
+        operator=_operator(),
+        sleep_fn=lambda _delay: None,
+        clock=lambda: 0.0,
+    )
+    with pytest.raises(ValueError, match=r"unsafe.*packed indices \[0, 8\].*4\.0"):
+        emb.reset(Scene(id="s", instruction="x"))
+    assert calls == 0
+
+
+def test_named_start_pose_is_cached_across_failed_factory_retry(tmp_path: Path) -> None:
+    old = (0.1,) * 14
+    new = (0.2,) * 14
+    _save_start_pose(tmp_path, "ready", old)
+    driver = EchoDriver()
+    calls = 0
+
+    def factory(_cfg: YamConfig) -> FakeDriver:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("connect fault")
+        return driver
+
+    emb = YAMEmbodiment(
+        YamConfig(
+            start_pose="ready",
+            pose_dir=str(tmp_path),
+            rest_secs=0.1,
+            cam_height=4,
+            cam_width=4,
+        ),
+        driver_factory=factory,
+        camera_reader=_cameras,
+        operator=_operator(),
+        sleep_fn=lambda _delay: None,
+        clock=lambda: 0.0,
+    )
+    with pytest.raises(RuntimeError, match="connect fault"):
+        emb.reset(Scene(id="s", instruction="x"))
+    _save_start_pose(tmp_path, "ready", new)
+    emb.reset(Scene(id="s", instruction="x"))
+    assert driver.commands[-1] == pytest.approx(old)
+
+
+def test_close_clears_named_pose_cache_even_without_connection(tmp_path: Path) -> None:
+    old = (0.1,) * 14
+    new = (0.2,) * 14
+    _save_start_pose(tmp_path, "ready", old)
+    driver = EchoDriver()
+    calls = 0
+
+    def factory(_cfg: YamConfig) -> FakeDriver:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("connect fault")
+        return driver
+
+    emb = YAMEmbodiment(
+        YamConfig(
+            start_pose="ready",
+            pose_dir=str(tmp_path),
+            rest_secs=0.1,
+            cam_height=4,
+            cam_width=4,
+        ),
+        driver_factory=factory,
+        camera_reader=_cameras,
+        operator=_operator(),
+        sleep_fn=lambda _delay: None,
+        clock=lambda: 0.0,
+    )
+    with pytest.raises(RuntimeError, match="connect fault"):
+        emb.reset(Scene(id="s", instruction="x"))
+    emb.close()
+    _save_start_pose(tmp_path, "ready", new)
+    emb.reset(Scene(id="s", instruction="x"))
+    assert driver.commands[-1] == pytest.approx(new)
+
+
+def test_named_start_pose_status_includes_name(tmp_path: Path) -> None:
+    _save_start_pose(tmp_path, "ready", (0.1,) * 14)
+    status: list[str | None] = []
+    emb = YAMEmbodiment(
+        YamConfig(
+            start_pose="ready",
+            pose_dir=str(tmp_path),
+            rest_secs=0.1,
+            cam_height=4,
+            cam_width=4,
+        ),
+        driver_factory=lambda _cfg: EchoDriver(),
+        camera_reader=_cameras,
+        operator=_operator(),
+        sleep_fn=lambda _delay: None,
+        clock=lambda: 0.0,
+        status_fn=status.append,
+    )
+    emb.reset(Scene(id="s", instruction="x"))
+    assert status[0] == "homing: ramping arms to start pose 'ready'"
 
 
 def test_joint_eff_is_absent_by_default() -> None:
@@ -854,6 +1025,200 @@ def test_default_camera_reader_not_implemented() -> None:
         _default_camera_reader(YamConfig())
 
 
+def test_observe_parked_disabled_skips_driver_camera_and_ramp() -> None:
+    class CountingDriver(EchoDriver):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reads = 0
+
+        def get_joint_pos(self) -> np.ndarray:
+            self.reads += 1
+            return super().get_joint_pos()
+
+    camera_calls: list[bool] = []
+
+    def _recording_cameras(cfg: YamConfig):
+        camera_calls.append(True)
+        return _cameras(cfg)
+
+    driver = CountingDriver()
+    emb = YAMEmbodiment(
+        YamConfig(
+            cam_height=4,
+            cam_width=4,
+            park_before_grade=False,
+            rest_secs=0.1,
+        ),
+        driver_factory=lambda _cfg: driver,
+        camera_reader=_recording_cameras,
+        operator=_operator(),
+        poll_end=lambda: False,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+    )
+    emb.reset(Scene(id="s", instruction="x"))
+    reads = driver.reads
+    commands = len(driver.commands)
+    camera_calls.clear()
+
+    assert emb.observe_parked() is None
+    assert driver.reads == reads
+    assert len(driver.commands) == commands
+    assert camera_calls == []
+
+
+def test_observe_parked_declines_before_connect_or_pose_capture() -> None:
+    emb, driver, _ = _build()
+    assert emb.observe_parked() is None
+    assert driver.commands == []
+
+    class CaptureFault(FakeDriver):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reads = 0
+
+        def get_joint_pos(self) -> np.ndarray:
+            self.reads += 1
+            raise RuntimeError("encoder read fault")
+
+    faulty_driver = CaptureFault()
+    emb, _, _ = _build(driver=faulty_driver)
+    with pytest.raises(RuntimeError, match="encoder read fault"):
+        emb.reset(Scene(id="s", instruction="x"))
+    assert faulty_driver.reads == 1
+    assert emb.observe_parked() is None
+    assert faulty_driver.reads == 1
+
+
+def test_observe_parked_ramps_settles_observes_and_drops_extra() -> None:
+    events: list[str] = []
+
+    class RecordingDriver(EchoDriver):
+        def get_joint_pos(self) -> np.ndarray:
+            events.append("read")
+            return super().get_joint_pos()
+
+        def command_joint_pos(self, target: np.ndarray) -> None:
+            events.append("command")
+            super().command_joint_pos(target)
+
+    images = {
+        name: np.full((4, 4, 3), fill, dtype=np.uint8)
+        for name, fill in (("top_cam", 1), ("left_cam", 2), ("right_cam", 3))
+    }
+
+    def _recording_cameras(_cfg: YamConfig):
+        events.append("camera")
+        return images
+
+    produced_extra = {"lazy_depth": lambda: np.ones((4, 4), dtype=np.float32)}
+
+    def _recording_extra(_cfg: YamConfig):
+        events.append("extra")
+        return produced_extra
+
+    status: list[str | None] = []
+    driver = RecordingDriver(state=np.full(14, 0.2))
+    emb = YAMEmbodiment(
+        YamConfig(
+            cam_height=4,
+            cam_width=4,
+            rest_pose=(0.6,) * 14,
+            rest_secs=0.1,
+            settle_tolerance=0.01,
+            zero_gravity_mode=False,
+        ),
+        driver_factory=lambda _cfg: driver,
+        camera_reader=_recording_cameras,
+        depth_reader=_recording_extra,
+        operator=_operator(),
+        poll_end=lambda: False,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+        status_fn=status.append,
+    )
+    emb.reset(Scene(id="s", instruction="policy instruction"))
+    events.clear()
+    driver.commands.clear()
+    status.clear()
+
+    observation = emb.observe_parked()
+
+    assert observation is not None
+    assert events == ["read", "command", "read", "read", "camera", "extra"]
+    assert len(driver.commands) == 1
+    assert driver.commands[0] == pytest.approx(np.full(14, 0.6))
+    assert observation.state["joint_pos"] == pytest.approx(np.full(14, 0.6))
+    assert all(observation.images[name] is image for name, image in images.items())
+    assert not observation.extra
+    assert observation.extra is not produced_extra
+    assert observation.instruction is None
+    assert status == ["parking for grading: ramping arms clear", None]
+
+
+def test_observe_parked_uses_captured_pose_and_is_silent_unattended() -> None:
+    init_pose = np.full(14, 0.2)
+    driver = EchoDriver(state=init_pose.copy())
+    status: list[str | None] = []
+    emb = YAMEmbodiment(
+        YamConfig(
+            cam_height=4,
+            cam_width=4,
+            rest_pose=None,
+            rest_secs=0.1,
+            unattended=True,
+        ),
+        driver_factory=lambda _cfg: driver,
+        camera_reader=_cameras,
+        operator=_operator(),
+        poll_end=lambda: False,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+        status_fn=status.append,
+    )
+    emb.reset(Scene(id="s", instruction="x"))
+    emb.step(Action(data=np.full(14, 0.8)))
+    driver.commands.clear()
+
+    observation = emb.observe_parked()
+
+    assert observation is not None
+    assert driver.commands[-1] == pytest.approx(init_pose)
+    assert observation.state["joint_pos"] == pytest.approx(init_pose)
+    assert status == []
+
+
+def test_observe_parked_ramp_fault_propagates_and_closes_status() -> None:
+    class FaultyDriver(EchoDriver):
+        fail_commands = False
+
+        def command_joint_pos(self, target: np.ndarray) -> None:
+            if self.fail_commands:
+                raise RuntimeError("grading park fault")
+            super().command_joint_pos(target)
+
+    driver = FaultyDriver()
+    status: list[str | None] = []
+    emb = YAMEmbodiment(
+        YamConfig(cam_height=4, cam_width=4, rest_secs=0.1),
+        driver_factory=lambda _cfg: driver,
+        camera_reader=_cameras,
+        operator=_operator(),
+        poll_end=lambda: False,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+        status_fn=status.append,
+    )
+    emb.reset(Scene(id="s", instruction="x"))
+    status.clear()
+    driver.fail_commands = True
+
+    with pytest.raises(RuntimeError, match="grading park fault"):
+        emb.observe_parked()
+
+    assert status == ["parking for grading: ramping arms clear", None]
+
+
 def test_close_ramps_to_rest_pose_then_releases() -> None:
     # Reset and close each issue 20 waypoints at 10 Hz.
     cfg = YamConfig(rest_pose=(0.5,) * 14, rest_secs=2.0)
@@ -1424,7 +1789,7 @@ def test_absolute_mode_declares_joint_pos_with_labels() -> None:
     ("cfg", "gripper_indices"),
     [
         (YamConfig(), (6, 13)),
-        (YamConfig(control_interface="eef_pos"), (4, 9)),
+        (YamConfig(control_interface="eef_pos"), (6, 13)),
     ],
     ids=["joint-pos", "eef-abs-pose"],
 )

@@ -21,6 +21,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Breaking (EEF layout):** the Cartesian interface grows from 5 to 7 slots
+  per arm — `x, y, z, yaw, pitch, roll, gripper`, 14 total. Old→new per-arm
+  slot mapping: x/y/z/yaw keep slots 0–3, gripper moves 4→6, and pitch/roll
+  occupy the new slots 4/5 (right arm starts at slot 7, was 5). Affects
+  `eef_low`/`eef_high` config strings, `eef_state` observations, logged EEF
+  actions, and `EEF_DIM_LABELS`. Pitch and roll ship **pinned at (0, 0)** —
+  behavior at default bounds is identical to the yaw-only interface; open an
+  axis by widening its bounds (pitch strictly inside (-π/2, π/2), roll within
+  [-π, π]). Orientation slots are relative to the reset orientation; positive
+  pitch tips the tool forward, positive roll toward the arm's left. Equality
+  in `eef_low`/`eef_high` now means a pinned axis (previously rejected). The
+  relative-rotation extraction supersedes the near-vertical yaw fallback
+  (`_ArmKinematics.yaw_axis` is gone) and reports identical yaw inside the
+  yaw-only family (#133).
+
+### Added
+
+- Named start poses now work in EEF mode: the config-time veto is gone, the
+  resolved pose is validated against the EEF action box (FK grasp-point
+  position, gripper aperture, and relative yaw 0) before the homing ramp,
+  the box error names the offending pose, and a reconnect revalidates the
+  re-read pose file (#131).
+- Named joint-space start poses with the `inspect-robots-yam-pose` capture,
+  goto, list, show, delete, and rename workflows. Pose files use a versioned,
+  shareable JSON format with normalized grippers, while `YamConfig.start_pose`
+  resolves and validates a named pose before the arm driver connects (#128).
+
+### Changed
+
 - Session-connected runs no longer author console prose: the running banner
   becomes "Running." plus the horizon and the per-second ticker sends bare rig
   state ("t = 4s / ~120s"). The framework session appends its own
