@@ -1273,6 +1273,10 @@ class YAMEmbodiment:
         self._home_gate_confirmed = False
         self._instruction: str | None = None
         self._t_last = 0.0
+        # Wall-clock stamp taken when reset() hands the episode over, so the
+        # operator's elapsed counter measures real time rather than step count
+        # (#64). Homing happens before it is set and is deliberately excluded.
+        self._t_started = 0.0
         self.num_steps = 0
         self.settle_timeouts = 0
         # Set when the per-trial timeout budget is exhausted; suppresses further
@@ -1591,7 +1595,7 @@ class YAMEmbodiment:
                     flush_first=self._deferred_operator_end,
                 )
             horizon = self._horizon_secs()
-            limit = f" Max {horizon:.0f}s." if horizon is not None else ""
+            limit = f" Max ~{horizon:.0f}s." if horizon is not None else ""
             if self._session is not None:
                 # Rig facts only: console prose (end gesture, message
                 # affordance) belongs to the connected session. This banner
@@ -1606,6 +1610,7 @@ class YAMEmbodiment:
                 self._status(f"Running: press any key to end the episode and grade it.{limit}")
         self.num_steps = 0
         self._t_last = self._clock()
+        self._t_started = self._t_last
         return self._observe(scene.instruction)
 
     def step(self, action: Action) -> StepResult:
@@ -1929,14 +1934,14 @@ class YAMEmbodiment:
         return sent
 
     def _horizon_secs(self) -> float | None:
-        """The episode horizon in seconds: the bound envelope, else the hint.
+        """The estimated episode horizon in seconds: bound envelope, else hint.
 
-        Dividing by our own ``control_hz`` is honest because this embodiment
-        is ``SELF_PACED`` — that rate is the one ``_pace()`` sleeps to.
-
-        With ``settle_tolerance`` set, ``control_hz`` becomes a floor on step
-        duration rather than the rate, so this is then a lower bound rather
-        than an estimate. Issue #64 tracks driving it from the wall clock.
+        Dividing the step budget by our own ``control_hz`` is the closest we
+        get: remaining step duration is not knowable in advance, so this is an
+        estimate and never a deadline. It is a lower bound whenever a step can
+        overrun the control period, which ``settle_tolerance`` makes routine
+        and a slow camera read can already cause. Callers render it with a
+        leading ``~`` to keep that visible to the operator.
         """
         steps = (
             self._bound_max_steps if self._bound_max_steps is not None else self._cfg.max_steps_hint
@@ -1947,10 +1952,12 @@ class YAMEmbodiment:
         return steps / hz
 
     def _emit_status(self) -> None:
-        """Once per second (of control time), tell the operator where they are.
+        """Roughly once per second, tell the operator where they are.
 
-        Elapsed time is counted in steps, so with ``settle_tolerance`` set both
-        this counter and the horizon it prints understate real time. Issue #64.
+        Elapsed comes from the wall clock, so it stays true when a step
+        overruns the control period. The step count only throttles how often
+        the line is redrawn, which is why the counter can advance by more than
+        one second between updates on a slow run.
         """
         if self._cfg.unattended:
             return
@@ -1958,9 +1965,9 @@ class YAMEmbodiment:
         interval = max(1, round(hz))
         if self.num_steps % interval != 0:
             return
-        elapsed = self.num_steps / hz
+        elapsed = self._clock() - self._t_started
         horizon = self._horizon_secs()
-        span = f"{elapsed:.0f}s / {horizon:.0f}s" if horizon is not None else f"{elapsed:.0f}s"
+        span = f"{elapsed:.0f}s / ~{horizon:.0f}s" if horizon is not None else f"{elapsed:.0f}s"
         if self._session is not None:
             # The connected session appends the framework-owned end-gesture hint;
             # sending our own copy would just be stripped and re-appended.

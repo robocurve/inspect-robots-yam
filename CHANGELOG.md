@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Fixed
+
+- The operator's elapsed counter now reads the wall clock instead of the step
+  count. It was `num_steps / control_hz`, which is only the truth while every
+  step fits inside its control period. A step can already overrun that on a slow
+  camera read, and `settle_tolerance` makes overrun routine, at which point an
+  operator watching a hardware run could see 30s reported after 90 real seconds
+  had passed. Homing is excluded: the clock starts when `reset()` hands the
+  episode over. The horizon is unchanged but now renders as `Max ~120s` and
+  `t = 30s / ~120s`, because remaining step duration is not knowable in advance
+  and dividing the step budget by `control_hz` is an estimate rather than a
+  deadline (#64).
+
 ### Changed
 
 - **Breaking (EEF layout):** the Cartesian interface grows from 5 to 7 slots
@@ -39,7 +52,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Session-connected runs no longer author console prose: the running banner
   becomes "Running." plus the horizon and the per-second ticker sends bare rig
-  state ("t = 4s / 120s"). The framework session appends its own
+  state ("t = 4s / ~120s"). The framework session appends its own
   "Esc ends the episode" hint and replaces stale gesture clauses (inspect-robots
   plan 0062), so this text can never drift again when the framework gesture
   changes. Defer-only and never-connected modes keep their own text: the

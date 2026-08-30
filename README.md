@@ -847,8 +847,10 @@ scorers and custom sinks; they are not written to the JSON eval log.
 > demand still hands back whatever the driver queued earlier, so a settled arm
 > can be photographed mid-motion however tight the tolerance.
 
-With settling on, the operator status line and its `Max ...s` horizon count steps
-rather than wall-clock seconds, so both understate real elapsed time (#64).
+The operator status line reads its elapsed time from the wall clock, so it stays
+true with settling on. The `Max ~...s` horizon is still a step budget divided by
+`control_hz`, which is why it is printed with a leading tilde: remaining step
+duration is not knowable in advance, and settling makes steps run long (#64).
 
 ## Development
 
