@@ -14,9 +14,12 @@ from #140 (asks 2 and 3), entirely inside this repo:
    `OptionSlot`): answering yes widens the default-pinned pitch/roll bounds
    to conservative real ranges.
 2. **Run-header warnings** through the existing `contribute_guardrails`
-   warnings channel: one naming any pinned orientation dims in `eef_pos`
-   mode, and one when pitch/roll are open (by flag or by hand-tuned tuples)
-   while the z floor sits at or below the fingertips-down default.
+   warnings channel, all in `eef_pos` mode: one when `eef_orientation` is
+   on (it rewrites `0,0` pins, so the config text no longer matches the
+   effective bounds), one naming any pinned orientation dims, and one per
+   the z-floor hazard: an arm with open pitch/roll (by flag or by
+   hand-tuned tuples) whose z low sits at or below the fingertips-down
+   default.
 
 Ask 1 of #140 (non-degenerate default bounds) is deliberately **not** taken:
 changing `_EEF_ARM_LOW/_EEF_ARM_HIGH` would silently change motion limits on
@@ -31,10 +34,12 @@ The core wizard's plugin surface is exactly `DEVICE_SLOTS` /
 kind. A numeric bounds interview would require a core wizard extension and a
 cross-repo version dance. #140 itself scopes the wizard ask to
 "enable pitch/roll? [y/N] → widen to defaults", which maps 1:1 onto the
-existing boolean protocol with zero core changes. The core wizard already
-carries stored option values through re-runs and skips colliding keys, so
-the setting survives `inspect-robots setup` — the exact failure mode #140
-reports for hand-edited tuples. Operators who need custom orientation ranges
+existing boolean protocol with zero core changes. The core wizard carries
+stored option values through re-runs and skips colliding keys, so the
+setting survives `inspect-robots setup` like any other option (hand-edited
+unmanaged args survive re-runs too via `_render_config`'s carry-through;
+#140 is about discoverability, not loss). Operators who need custom
+orientation ranges
 still set `eef_low`/`eef_high` explicitly; the flag is the discoverable
 80% path, not a replacement for the tuples.
 
@@ -64,9 +69,15 @@ never touched.
 `eef_orientation=true` persisted in config.ini, a hand-written `0,0`
 pitch/roll pin is silently re-widened (and the pinned-axis warning stays
 quiet because nothing is pinned). The semantics stay (the fleet case
-justifies them), but the README section and the field's config comment must
-state: with `eef_orientation=true`, a `0,0` pitch/roll pin is widened; to
-re-pin, set `eef_orientation=false` or pin at a nonzero epsilon. In `joints` mode the flag is accepted and inert (the eef
+justifies them), but the mismatch between config text and effective bounds
+must be visible at run time, not only in docs: a dedicated run-header
+warning fires whenever the flag is on in eef mode (see Changes 2), and the
+README section and the field's `#` comment (repo convention: fields take
+comments, not docstrings) state the rule: with `eef_orientation=true`, a
+`0,0` pitch/roll pin is widened; to re-pin, set `eef_orientation=false` or
+pin at a nonzero epsilon.
+
+In `joints` mode the flag is accepted and inert (the eef
 tuples are validated but unused there today; same behavior). The widening
 happens in `YamConfig.__post_init__` via `object.__setattr__`, inserted
 **after the eef tuple length checks** (config.py:336-338) and **before the
@@ -93,7 +104,8 @@ widen either.
 1. `config.py`
    - New frozen field `eef_orientation: bool = False`, **appended after the
      last existing field** (`park_before_grade`; the repo convention keeps
-     positional construction stable), with a docstring-level contract:
+     positional construction stable), with a `#` comment stating the
+     contract (repo convention: fields take comments, not docstrings):
      "open default-pinned pitch/roll axes to conservative ranges", including
      the re-pin note (see Semantics). Added to the `from_kwargs` bool-guard
      loop and guarded again in `__post_init__` (see Semantics: non-bool
@@ -123,29 +135,41 @@ widen either.
      axes invalidates the fingertips-down z-floor assumption (0026), so it
      must be an explicit operator choice. Extend the OPTION_SLOTS comment
      block with this rationale.
-   - `contribute_guardrails`: two new conditional warnings in the returned
-     `GuardrailContribution`, both only when
+   - `contribute_guardrails`: three new conditional warnings in the
+     returned `GuardrailContribution`, all only when
      `control_interface == "eef_pos"` (this method is the run-header
      warnings channel; both eef-mode return paths — guardrail-disabled and
      joints-mode-only — must carry them):
+     - when `eef_orientation` is `True` (unconditional on whether widening
+       changed anything: `__post_init__` has already rewritten the tuples
+       and the pre-image is unrecoverable):
+       `"eef_orientation=true: pitch/roll bounds written as 0,0 are widened
+       to +/-0.6 / +/-pi/2; set eef_orientation=false to re-pin"`. This is
+       the run-time surface for the re-pin footgun (see Semantics).
      - when `pinned_orientation_labels()` is non-empty:
        `"eef_pos: action dims <labels> are pinned (low == high) and not
        commandable; widen eef_low/eef_high (eef_orientation=true opens
        only zero-pinned pitch/roll)"`. The remedy wording must stay honest
        for pinned yaw and nonzero pins, which the flag never opens.
        No warning when nothing is pinned (e.g. after `eef_orientation=true`).
-     - when any pitch/roll dim is **open** (not pinned — gated on the
-       hazard, not on the `eef_orientation` flag, so hand-tuned tuples
-       trigger it too) and either arm's z low (indices 2, 9) is
-       `<=` the shipped default (compare against the `_EEF_ARM_LOW` z
-       constant, not a `0.03` literal — a lowered floor is strictly worse):
+     - z-floor warning, gated on the hazard **per arm** (not on the
+       `eef_orientation` flag, so hand-tuned tuples trigger it too): fire
+       when some arm has an open (not pinned) pitch/roll dim AND **that
+       same arm's** z low is `<=` the shipped default (left: dims 4/5 vs
+       index 2; right: dims 11/12 vs index 9; compare against the
+       `_EEF_ARM_LOW` z constant, not a `0.03` literal — a lowered floor
+       is strictly worse). An arm with open tilt and a raised z floor, or
+       default z with pinned tilt, does not fire:
        `"eef pitch/roll are open but eef_low z is at or below the
        fingertips-down default; knuckles or the wrist camera can reach the
-       table first — raise the z floor"`. This is the live counterpart to
-       the README's z-floor WARNING; raising z (per arm) silences it.
+       table first; raise the z floor"` (semicolons, matching the existing
+       warning strings; tests freeze the exact text). This is the live
+       counterpart to the README's z-floor WARNING; raising that arm's z
+       silences it.
      **Warning order is part of the spec** (tests assert exact tuples):
      the existing path warning (guardrail-disabled or joints-mode-only)
-     first, then the pinned-axis warning, then the z-floor warning.
+     first, then the eef_orientation widening notice, then the pinned-axis
+     warning, then the z-floor warning.
      Reach caveat, acknowledged here and in the CHANGELOG entry: these
      warnings surface only on CLI-wired runs (`_build_and_announce_guardrails`);
      `--disable-guardrails` and direct `rollout()`/`eval()` API runs never
@@ -164,7 +188,8 @@ widen either.
 
 4. `CHANGELOG.md`: one entry under Unreleased → Added (Keep-a-Changelog
    format) — new `eef_orientation` config field + wizard option, and the
-   pinned-axis and z-floor run warnings (CLI runs only) (#140).
+   three eef-mode run warnings (widening notice, pinned-axis, z-floor;
+   CLI runs only) (#140).
 
 5. `src/inspect_robots_yam/CLAUDE.md`: the module-map rows for `config.py`
    and `embodiment.py` enumerate notable flags and warnings; mention
@@ -195,20 +220,26 @@ widen either.
     `test_contribution_ladder_skips_non_absolute_joint_modes`
     (tests/test_collision.py:545-561) is parametrized over `eef` **and**
     `delta-joints`; only the `eef` param gains the pinned-axis warning
-    (exact two-element tuple, in the specified order), while `delta-joints`
+    (default config: no flag, no open tilt, so exactly the path warning +
+    pinned-axis warning, in the specified order), while `delta-joints`
     (joints mode) keeps its exact one-element assertion. Split the test or
     parametrize the expected warnings per id.
   - New: eef_pos + default bounds → pinned-axis warning present, names all
     four labels, on both the guardrail-disabled and guardrail-enabled
     (joints-mode-only) paths, in the specified order.
-  - New: `eef_orientation=True` → no pinned-axis warning; z-floor warning
-    present while z low is at (or below) the shipped default, absent once
-    both arms' z lows are raised; present when only one arm is raised (the
-    condition is per-arm).
+  - New: `eef_orientation=True` in eef mode → widening notice present
+    (exact text, in order), no pinned-axis warning; joints mode or flag
+    off → no notice.
+  - New: z-floor warning per-arm coupling: flag on + default z lows →
+    present; absent once both arms' z lows are raised; mixed config where
+    the only arm with open tilt has raised z (other arm: pinned tilt,
+    default z) → **absent** (no false positive); one arm with open tilt
+    and default/lowered z → present.
   - New: z-floor warning also fires without the flag when pitch/roll are
-    opened via explicit `eef_low`/`eef_high` tuples and z low is at or
-    below the default (the hazard gate, not the flag gate).
-  - New: joints mode → neither new warning regardless of eef tuples.
+    opened via explicit `eef_low`/`eef_high` tuples and that arm's z low
+    is at or below the default (the hazard gate, not the flag gate).
+  - New: joints mode → none of the three new warnings regardless of eef
+    tuples.
 - `tests/test_i2rt.py` (established cross-repo wizard seam)
   - **Existing test to update:** the exact option-arg set assertion
     (tests/test_i2rt.py:366-370, currently
