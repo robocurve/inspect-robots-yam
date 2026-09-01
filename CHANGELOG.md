@@ -42,8 +42,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   zero-pinned EEF pitch and roll to conservative ranges. EEF-mode CLI runs now
   warn when that rewrite is active, name orientation axes that remain pinned,
   and flag open tilt axes whose arm still uses the fingertips-down default z
-  floor. Direct `rollout()` and `eval()` API runs do not emit these run-header
-  warnings (#140).
+  floor. Direct `rollout()` and `eval()` API runs and CLI runs with
+  `--disable-guardrails` do not emit these run-header warnings (#140).
 - Named start poses now work in EEF mode: the config-time veto is gone, the
   resolved pose is validated against the EEF action box (FK grasp-point
   position, gripper aperture, and relative yaw 0) before the homing ramp,
