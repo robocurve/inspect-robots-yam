@@ -77,7 +77,8 @@ comments, not docstrings) state the rule: with `eef_orientation=true`, a
 `0,0` pitch/roll pin is widened; to re-pin, set `eef_orientation=false` or
 pin at a nonzero epsilon.
 
-In `joints` mode the flag is accepted and inert (the eef
+In `joints` mode the flag is accepted and inert-but-applied: the tuples
+are still rewritten, just unused (the eef
 tuples are validated but unused there today; same behavior). The widening
 happens in `YamConfig.__post_init__` via `object.__setattr__`, inserted
 **after the eef tuple length checks** (config.py:336-338) and **before the
@@ -114,7 +115,8 @@ widen either.
      `_EEF_ORIENTATION_PITCH = (-0.6, 0.6)`,
      `_EEF_ORIENTATION_ROLL = (-np.pi / 2, np.pi / 2)`) next to
      `_EEF_PITCH_INDICES` / `_EEF_ROLL_INDICES`.
-   - `__post_init__`: before the existing eef bounds validation, if
+   - `__post_init__`: after the eef length checks (config.py:336-338)
+     and before the finiteness/range checks (see Semantics), if
      `eef_orientation` and `control_interface` is anything (inert-but-
      applied in joints mode is fine since the tuples are unused there;
      simpler than special-casing), rebuild `eef_low`/`eef_high` tuples with
@@ -157,7 +159,8 @@ widen either.
        when some arm has an open (not pinned) pitch/roll dim AND **that
        same arm's** z low is `<=` the shipped default (left: dims 4/5 vs
        index 2; right: dims 11/12 vs index 9; compare against the
-       `_EEF_ARM_LOW` z constant, not a `0.03` literal — a lowered floor
+       public `DEFAULT_EEF_LOW[2]`/`[9]` constants, not a `0.03` literal or
+       the module-private `_EEF_ARM_LOW` — a lowered floor
        is strictly worse). An arm with open tilt and a raised z floor, or
        default z with pinned tilt, does not fire:
        `"eef pitch/roll are open but eef_low z is at or below the
@@ -180,7 +183,9 @@ widen either.
      pitch/roll, keep (and cross-reference) the existing z-floor WARNING,
      and state the re-pin rule (with `eef_orientation=true` a `0,0`
      pitch/roll pin is widened; re-pin by unsetting the flag or pinning at
-     a nonzero epsilon).
+     a nonzero epsilon). Also note the z-floor warning covers open axes
+     only: a deliberate nonzero tilt pin has the same knuckles-first
+     hazard and still requires the operator to raise z themselves.
    - Wizard/options documentation (wherever the other option slots are
      listed): add the new option.
    - Style rule applies: no em dashes in prose, bold only for `**term:**`
