@@ -13,8 +13,10 @@ from #140 (asks 2 and 3), entirely inside this repo:
 1. **`eef_orientation` boolean option** (new `YamConfig` field + wizard
    `OptionSlot`): answering yes widens the default-pinned pitch/roll bounds
    to conservative real ranges.
-2. **Run-header warning** naming any pinned orientation dims in `eef_pos`
-   mode, through the existing `contribute_guardrails` warnings channel.
+2. **Run-header warnings** through the existing `contribute_guardrails`
+   warnings channel: one naming any pinned orientation dims in `eef_pos`
+   mode, and one when `eef_orientation` is enabled but the z floor is still
+   the fingertips-down default.
 
 Ask 1 of #140 (non-degenerate default bounds) is deliberately **not** taken:
 changing `_EEF_ARM_LOW/_EEF_ARM_HIGH` would silently change motion limits on
@@ -57,16 +59,29 @@ Deliberate pins are respected: a pitch/roll dim pinned at a **nonzero**
 value, or already widened, is left untouched. Yaw and position dims are
 never touched. In `joints` mode the flag is accepted and inert (the eef
 tuples are validated but unused there today; same behavior). The widening
-happens in `YamConfig.__post_init__` via `object.__setattr__` **before**
-bounds validation, so `-E eef_orientation=true` works identically for CLI,
-config.ini, and direct Python construction, and the widened values still
-pass through the yaw/roll/pitch range checks.
+happens in `YamConfig.__post_init__` via `object.__setattr__`, inserted
+**after the eef tuple length checks** (config.py:336-338) and **before the
+finiteness/range checks**, so a malformed short tuple still fails with the
+clean length `ValueError` (never an `IndexError` from the widening indexing
+4/5/11/12), `-E eef_orientation=true` works identically for CLI, config.ini,
+and direct Python construction, and the widened values still pass through
+the yaw/roll/pitch range checks.
+
+**Type strictness:** no string path exists in practice (core `_parse_value`
+converts `true`/`false` to Python bools before `from_kwargs` sees them),
+and a truthiness check would make `-E eef_orientation=off` or `="false"`
+(truthy strings) silently widen motion bounds. `eef_orientation` therefore
+joins the existing bool-guard loop in `YamConfig.from_kwargs`
+(config.py:289-296, currently guarding `collision_guardrail` et al.): any
+non-bool raises `ValueError`.
 
 ## Changes
 
 1. `config.py`
    - New frozen field `eef_orientation: bool = False` with a docstring-level
      contract: "open default-pinned pitch/roll axes to conservative ranges".
+     Added to the `from_kwargs` bool-guard loop (see Semantics: non-bool
+     values raise).
    - Module constants for the widened ranges (e.g.
      `_EEF_ORIENTATION_PITCH = (-0.6, 0.6)`,
      `_EEF_ORIENTATION_ROLL = (-np.pi / 2, np.pi / 2)`) next to
@@ -77,9 +92,10 @@ pass through the yaw/roll/pitch range checks.
      simpler than special-casing), rebuild `eef_low`/`eef_high` tuples with
      the widened entries for exactly-(0.0, 0.0) pitch/roll dims and
      `object.__setattr__` them. Validation then runs on the widened values.
-   - New helper (module-level or `YamConfig` method) returning the pinned
-     orientation dim labels for a config:
-     `pinned_orientation_labels(...) -> tuple[str, ...]` — dims among
+   - New `YamConfig` method (a method, not a module-level function: no
+     `__all__`/api-snapshot decision needed) returning the pinned
+     orientation dim labels:
+     `pinned_orientation_labels(self) -> tuple[str, ...]` — dims among
      yaw/pitch/roll indices where `low == high`, named via
      `EEF_DIM_LABELS`. Used by the warning and directly testable.
 
@@ -91,14 +107,27 @@ pass through the yaw/roll/pitch range checks.
      axes invalidates the fingertips-down z-floor assumption (0026), so it
      must be an explicit operator choice. Extend the OPTION_SLOTS comment
      block with this rationale.
-   - `contribute_guardrails`: when `control_interface == "eef_pos"` and
-     `pinned_orientation_labels()` is non-empty, include one extra warning
-     in the returned `GuardrailContribution` (this method is the run-header
+   - `contribute_guardrails`: two new conditional warnings in the returned
+     `GuardrailContribution`, both only when
+     `control_interface == "eef_pos"` (this method is the run-header
      warnings channel; both eef-mode return paths — guardrail-disabled and
-     joints-mode-only — must carry it):
-     `"eef_pos: action dims <labels> are pinned (low == high) and not
-     commandable; set eef_orientation=true or widen eef_low/eef_high"`.
-     No warning when nothing is pinned (e.g. after `eef_orientation=true`).
+     joints-mode-only — must carry them):
+     - when `pinned_orientation_labels()` is non-empty:
+       `"eef_pos: action dims <labels> are pinned (low == high) and not
+       commandable; widen eef_low/eef_high (eef_orientation=true opens
+       only zero-pinned pitch/roll)"`. The remedy wording must stay honest
+       for pinned yaw and nonzero pins, which the flag never opens.
+       No warning when nothing is pinned (e.g. after `eef_orientation=true`).
+     - when `eef_orientation` is `True` and either arm's z low (indices
+       2, 9) still equals the shipped default `0.03`:
+       `"eef_orientation opens pitched poses but eef_low z is still the
+       fingertips-down default (0.03); knuckles or the wrist camera can
+       reach the table first — raise the z floor"`. This is the live
+       counterpart to the README's z-floor WARNING; raising z silences it.
+     Reach caveat, acknowledged here and in the CHANGELOG entry: these
+     warnings surface only on CLI-wired runs (`_build_and_announce_guardrails`);
+     `--disable-guardrails` and direct `rollout()`/`eval()` API runs never
+     call `contribute_guardrails`, so they see neither warning.
 
 3. `README.md`
    - EEF section: document `eef_orientation` as the supported way to open
@@ -109,7 +138,8 @@ pass through the yaw/roll/pitch range checks.
      lead-ins.
 
 4. `CHANGELOG.md`: one entry under Unreleased — new `eef_orientation`
-   config field + wizard option, and the pinned-axis run warning (#140).
+   config field + wizard option, and the pinned-axis and z-floor run
+   warnings (CLI runs only) (#140).
 
 ## Tests (100% coverage, mypy strict, ruff)
 
@@ -121,18 +151,31 @@ pass through the yaw/roll/pitch range checks.
   - Nonzero-pinned pitch (e.g. `0.1,0.1`) and already-widened dims: left
     alone.
   - `eef_orientation=False` (default): bounds byte-identical to today.
-  - String round-trip: `from_kwargs(eef_orientation="true")` behaves like
-    the wizard-written config value (matching the existing boolean option
-    args' parsing path).
+  - Bool guard: `from_kwargs(eef_orientation=True)` widens;
+    `from_kwargs(eef_orientation="true")` (or any non-bool, e.g. `None`
+    from `-E eef_orientation=none`) raises `ValueError`. No string
+    acceptance: core `_parse_value` delivers real bools, and truthy strings
+    like `"false"` or `"off"` must never widen motion bounds.
   - `pinned_orientation_labels`: default config → the four pitch/roll
     labels; fully-open config → empty; pinned yaw included.
-- `tests/test_embodiment.py` / `tests/test_eef_embodiment.py`
-  - `contribute_guardrails` in eef_pos mode with default bounds: warning
-    present, names all four labels, on both the guardrail-disabled and
-    guardrail-enabled paths.
-  - With `eef_orientation=True`: no pinned-axis warning.
-  - Joints mode: no pinned-axis warning regardless of eef tuples.
+- `tests/test_collision.py` (where the existing `contribute_guardrails`
+  tests live)
+  - **Existing test to update, not weaken:**
+    `test_contribution_ladder_skips_non_absolute_joint_modes`
+    (tests/test_collision.py:545-561) asserts an exact one-element warnings
+    tuple for a default `eef_pos` config; it gains the pinned-axis warning
+    and must assert the new exact two-element tuple.
+  - New: eef_pos + default bounds → pinned-axis warning present, names all
+    four labels, on both the guardrail-disabled and guardrail-enabled
+    (joints-mode-only) paths.
+  - New: `eef_orientation=True` → no pinned-axis warning; z-floor warning
+    present while z low is the 0.03 default, absent once z low is raised.
+  - New: joints mode → neither new warning regardless of eef tuples.
 - `tests/test_i2rt.py` (established cross-repo wizard seam)
+  - **Existing test to update:** the exact option-arg set assertion
+    (tests/test_i2rt.py:366-370, currently
+    `{"auto_start", "collision_guardrail", "report_joint_eff"}`) gains
+    `"eef_orientation"`.
   - New slot appears in `OPTION_SLOTS`, its `arg` is a real `YamConfig`
     field, wizard default (False) matches the runtime default.
   - Round-trip through core `_setup._options_section` + `_render_config` +
@@ -146,7 +189,8 @@ pass through the yaw/roll/pitch range checks.
   extension; file upstream if the boolean proves insufficient.
 - Automatic z-floor adjustment when opening tilt axes: the coupling is
   rig-geometry-dependent (0026 already documents it as an operator
-  responsibility); the option label and README carry the reminder.
+  responsibility); the option label, README, and the new z-floor run
+  warning carry the reminder instead.
 - Per-axis orientation `max_step` (0026 follow-up, unchanged).
-- Core `doctor` surfacing of `zero_width` dim names (core repo issue if
-  wanted).
+- Core `doctor` already emits a generic `zero_width` warning
+  (conformance.py:205); giving it dim names is a core repo issue if wanted.
