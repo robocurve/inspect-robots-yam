@@ -314,16 +314,21 @@ cd ~/robocurve/rig-1
     --instruction "Place the fork on the plate" -P model=claude-opus-5 -P effort=medium
 ```
 
-Each trial is a separate `./run` process. That process asks the operator for a
-verdict after the episode (the grading pause), then parks the arms and
-releases torque on exit. Only then does the script ask you to reset the scene;
-the next trial, which powers the arms back on and ramps to the start pose,
-begins when you press Enter (`q` stops the batch). A non-zero trial exit asks
-whether to continue. Per-trial verdicts are read from the eval logs into
-`<log-dir>/batches/<stamp>.tsv` and tallied at the end.
+Each trial is a separate `./run` process with `--epochs 1` forced. That
+process asks the operator for a verdict after the episode (the grading pause),
+then parks the arms and releases torque on exit. Only then does the script ask
+you to reset the scene; the next trial, which powers the arms back on and
+ramps to the start pose, begins when you press Enter (`q` stops the batch).
+Keystrokes typed while the arms were parking are discarded before that prompt.
+A trial that does not exit cleanly gets a warning instead of the torque-off
+claim and asks whether to continue: check the arms are limp before reaching in.
+Ctrl-C cancels the running trial (the framework writes a cancelled log and
+parks) and ends the batch. Per-trial verdicts are read from the eval logs into
+`<log-dir>/batches/<stamp>.tsv`, echoed after each trial, and tallied at the end.
 
-`--epochs` is rejected on purpose: within one process the arms stay connected
-and torque-held at the home pose between epochs while you reach into the scene.
+Any other `--epochs` value is rejected on purpose: within one process the arms
+stay connected and torque-held at the home pose between epochs while you reach
+into the scene.
 
 ### RealSense depth
 
