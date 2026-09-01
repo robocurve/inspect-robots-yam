@@ -366,6 +366,7 @@ def test_option_slots_declare_boolean_config_args() -> None:
     assert {option.arg for option in options} == {
         "auto_start",
         "collision_guardrail",
+        "eef_orientation",
         "report_joint_eff",
     }
 
@@ -395,6 +396,52 @@ def test_report_joint_eff_wizard_default_matches_config_default() -> None:
 
     assert report_slot.default is False
     assert YamConfig().report_joint_eff is False
+
+
+def test_eef_orientation_slot_matches_config_default_and_contract() -> None:
+    """Fresh wizard and direct configs both keep EEF tilt axes opt-in."""
+    orientation_slot = next(
+        option for option in YAMEmbodiment.OPTION_SLOTS if option.arg == "eef_orientation"
+    )
+
+    assert orientation_slot.label == (
+        "Open EEF pitch/roll tilt axes (eef_orientation; eef_pos rigs only, "
+        "raise the eef_low z floor after)"
+    )
+    assert orientation_slot.default is False
+    assert YamConfig().eef_orientation is False
+
+
+def test_eef_orientation_wizard_writer_round_trips_true_and_widens_bounds(tmp_path) -> None:
+    """A yes answer persists and activates the effective orientation ranges."""
+    from inspect_robots._setup import _options_section, _render_config
+    from inspect_robots.defaults import load_defaults
+
+    orientation_slot = next(
+        option for option in YAMEmbodiment.OPTION_SLOTS if option.arg == "eef_orientation"
+    )
+    answers = _options_section(
+        (orientation_slot,),
+        {},
+        input_fn=lambda _prompt: "y",
+        out=io.StringIO(),
+    )
+    rendered = _render_config(
+        {"embodiment": "yam_arms"},
+        answers,
+        {},
+        managed_args=("eef_orientation",),
+    )
+    assert "eef_orientation = true" in rendered
+    path = tmp_path / "inspect-robots" / "config.ini"
+    path.parent.mkdir()
+    path.write_text(rendered, encoding="utf-8")
+
+    defaults = load_defaults({"XDG_CONFIG_HOME": str(tmp_path)})
+    config = YamConfig.from_kwargs(**defaults.embodiment_args)
+    assert defaults.embodiment_args == {"eef_orientation": True}
+    assert config.eef_orientation is True
+    assert config.pinned_orientation_labels() == ()
 
 
 def test_collision_guardrail_wizard_default_diverges_from_config_default() -> None:

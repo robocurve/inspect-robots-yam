@@ -269,7 +269,10 @@ calibrations.
 
 Write your defaults once. The interactive wizard interviews this plugin's
 declared devices (three cameras and both arms' CAN channels) with live
-probes, including unplug-to-identify:
+probes, including unplug-to-identify. It also offers the `auto_start`,
+`collision_guardrail`, `report_joint_eff`, and `eef_orientation` boolean
+options. The `eef_orientation` option applies to `eef_pos` rigs and reminds
+you to raise the `eef_low` z floor after opening tilt axes:
 
 ```bash
 inspect-robots setup
@@ -487,22 +490,30 @@ yaw 0). Orientation interpolation does not wrap. A yaw move from `3.1` to
 intermediate yaw targets for near-±π regrasps.
 
 The default workspace per arm is x `[0.15, 0.48]`, y `[-0.25, 0.25]`, and z
-`[0.03, 0.40]`, with yaw `[-π, π]`, **pitch and roll pinned at `[0, 0]`**,
-and gripper `[0, 1]`. Pinned axes are declared but not commandable — the
+`[0.03, 0.40]`, with yaw `[-π, π]`, pitch and roll pinned at `[0, 0]`,
+and gripper `[0, 1]`. Pinned axes are declared but not commandable. The
 default behaves exactly like the historical yaw-only interface. Opening
-pitch or roll is a per-run decision via `eef_low`/`eef_high` (pitch bounds
-must stay strictly inside `(-π/2, π/2)`; roll within `[-π, π]`). These
-bounds were validated against the bundled YAM + LINEAR_4310 model at the
-default working orientation, but they are a conservative box rather than an
-exact reachable set. `eef_low` and `eef_high` override all fourteen bounds.
-The observation keeps the 14-D `joint_pos` field for logging and adds the
-command-aligned 14-D `eef_state` field.
+pitch and roll is supported through `eef_orientation=true`, which widens each
+exactly `0,0` pitch pin to `[-0.6, 0.6]` and roll pin to `[-π/2, π/2]` in the
+effective `eef_low`/`eef_high` bounds. The rewrite also applies when the tuples
+contain tuned position bounds. Custom orientation bounds remain supported:
+pitch must stay strictly inside `(-π/2, π/2)` and roll within `[-π, π]`.
+With `eef_orientation=true`, a `0,0` pitch or roll pin is widened. To re-pin
+one, set `eef_orientation=false` or pin it at a nonzero epsilon. See the
+z-floor WARNING below before opening either axis. These bounds were validated
+against the bundled YAM + LINEAR_4310 model at the default working orientation,
+but they are a conservative box rather than an exact reachable set. `eef_low`
+and `eef_high` override all fourteen bounds. The observation keeps the 14-D
+`joint_pos` field for logging and adds the command-aligned 14-D `eef_state`
+field.
 
 > [!WARNING]
 > The z floor (`z >= 0.03`) protects *fingertips* assuming a gripper-down
 > tool. A pitched or rolled gripper can reach the table with its knuckles or
-> wrist camera at a legal fingertip z — when opening pitch or roll, raise the
-> z lower bound to cover the tilted gripper body.
+> wrist camera at a legal fingertip z. When opening pitch or roll, raise the
+> z lower bound to cover the tilted gripper body. The run warning checks open
+> axes only. A deliberate nonzero tilt pin has the same knuckles-first hazard
+> but does not trigger that warning, so its operator must still raise z.
 
 In both control interfaces, `home_pose=None` selects a mandatory per-mode
 factory default instead of skipping homing. Joint mode uses the
@@ -759,6 +770,9 @@ slots),
 `park_before_grade` (default `True`; park for an unobstructed final grader view;
 set `False` for tasks whose success state is the gripper holding an object so
 grading uses the last step's frames),
+`eef_orientation` (default `False`; widen exactly zero-pinned EEF pitch and
+roll bounds to conservative ranges; set it back to `False` or use a nonzero
+epsilon to re-pin, and raise the EEF z floor as described above),
 `collision_guardrail` (default `True`; predictive holds in absolute joint
 mode; the setup wizard suggests `false` until the base positions below are
 measured),

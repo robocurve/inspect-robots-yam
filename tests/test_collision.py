@@ -23,7 +23,13 @@ from inspect_robots_yam.collision import (
     CollisionConfig,
     build_yam_guardrails,
 )
-from inspect_robots_yam.config import DEFAULT_JOINT_HOME_POSE, YamConfig, action_box
+from inspect_robots_yam.config import (
+    DEFAULT_EEF_HIGH,
+    DEFAULT_EEF_LOW,
+    DEFAULT_JOINT_HOME_POSE,
+    YamConfig,
+    action_box,
+)
 from inspect_robots_yam.embodiment import YAMEmbodiment
 from inspect_robots_yam.packing import DIM_LABELS, TOTAL_DIM
 
@@ -39,6 +45,24 @@ def _pose(**values: float) -> np.ndarray:
 
 HOME = np.asarray(DEFAULT_JOINT_HOME_POSE, dtype=np.float64)
 REACH_DOWN = _pose(left_j1=1.8, left_j2=0.3, right_j1=1.8, right_j2=0.3)
+_EEF_SKIP_WARNING = "collision guardrail skipped: absolute joints mode only (plan 0011 v1)"
+_EEF_DISABLED_WARNING = (
+    "collision guardrail disabled by config; set collision_guardrail=true "
+    "after measuring collision_*_base_pos"
+)
+_EEF_ORIENTATION_WARNING = (
+    "eef_orientation=true: pitch/roll bounds written as 0,0 are widened "
+    "to +/-0.6 / +/-pi/2; set eef_orientation=false to re-pin"
+)
+_EEF_PINNED_WARNING = (
+    "eef_pos: action dims left_pitch, left_roll, right_pitch, right_roll are pinned "
+    "(low == high) and not commandable; widen eef_low/eef_high "
+    "(eef_orientation=true opens only zero-pinned pitch/roll)"
+)
+_EEF_Z_FLOOR_WARNING = (
+    "eef pitch/roll are open but eef_low z is at or below the fingertips-down default; "
+    "knuckles or the wrist camera can reach the table first; raise the z floor"
+)
 
 
 @pytest.fixture(scope="module")
@@ -543,22 +567,150 @@ def test_contribution_ladder_off_warns_to_measure_geometry(joint_space: Box) -> 
 
 
 @pytest.mark.parametrize(
-    "config",
+    ("config", "expected_warnings"),
     [
-        YamConfig(control_interface="eef_pos"),
-        YamConfig(joints_are_delta=True),
+        (
+            YamConfig(control_interface="eef_pos"),
+            (_EEF_SKIP_WARNING, _EEF_PINNED_WARNING),
+        ),
+        (YamConfig(joints_are_delta=True), (_EEF_SKIP_WARNING,)),
     ],
     ids=["eef", "delta-joints"],
 )
-def test_contribution_ladder_skips_non_absolute_joint_modes(config: YamConfig) -> None:
+def test_contribution_ladder_skips_non_absolute_joint_modes(
+    config: YamConfig,
+    expected_warnings: tuple[str, ...],
+) -> None:
     embodiment = YAMEmbodiment(config)
 
     contribution = embodiment.contribute_guardrails(embodiment.info.action_space)
 
     assert contribution.approvers == ()
-    assert contribution.warnings == (
-        "collision guardrail skipped: absolute joints mode only (plan 0011 v1)",
+    assert contribution.warnings == expected_warnings
+
+
+def test_eef_pinned_warning_follows_guardrail_disabled_path_warning() -> None:
+    embodiment = YAMEmbodiment(YamConfig(control_interface="eef_pos", collision_guardrail=False))
+
+    contribution = embodiment.contribute_guardrails(embodiment.info.action_space)
+
+    assert contribution.approvers == ()
+    assert contribution.warnings == (_EEF_DISABLED_WARNING, _EEF_PINNED_WARNING)
+
+
+@pytest.mark.parametrize(
+    ("collision_guardrail", "path_warning"),
+    [(True, _EEF_SKIP_WARNING), (False, _EEF_DISABLED_WARNING)],
+)
+def test_eef_orientation_notice_precedes_z_floor_warning_without_pin_warning(
+    collision_guardrail: bool,
+    path_warning: str,
+) -> None:
+    embodiment = YAMEmbodiment(
+        YamConfig(
+            control_interface="eef_pos",
+            eef_orientation=True,
+            collision_guardrail=collision_guardrail,
+        )
     )
+
+    contribution = embodiment.contribute_guardrails(embodiment.info.action_space)
+
+    assert contribution.warnings == (
+        path_warning,
+        _EEF_ORIENTATION_WARNING,
+        _EEF_Z_FLOOR_WARNING,
+    )
+
+
+def test_eef_warning_order_includes_notice_pin_and_z_floor_after_path() -> None:
+    low = list(DEFAULT_EEF_LOW)
+    high = list(DEFAULT_EEF_HIGH)
+    low[4] = high[4] = 0.1
+    config = YamConfig(
+        control_interface="eef_pos",
+        eef_orientation=True,
+        eef_low=tuple(low),
+        eef_high=tuple(high),
+    )
+
+    contribution = YAMEmbodiment(config).contribute_guardrails(action_box())
+
+    assert contribution.warnings == (
+        _EEF_SKIP_WARNING,
+        _EEF_ORIENTATION_WARNING,
+        "eef_pos: action dims left_pitch are pinned (low == high) and not commandable; "
+        "widen eef_low/eef_high (eef_orientation=true opens only zero-pinned pitch/roll)",
+        _EEF_Z_FLOOR_WARNING,
+    )
+
+
+def test_eef_orientation_notice_is_absent_when_flag_is_off_or_mode_is_joints() -> None:
+    eef = YAMEmbodiment(YamConfig(control_interface="eef_pos"))
+    joints = YAMEmbodiment(YamConfig(eef_orientation=True, collision_guardrail=False))
+
+    assert eef.contribute_guardrails(eef.info.action_space).warnings == (
+        _EEF_SKIP_WARNING,
+        _EEF_PINNED_WARNING,
+    )
+    assert joints.contribute_guardrails(joints.info.action_space).warnings == (
+        _EEF_DISABLED_WARNING,
+    )
+
+
+def test_eef_z_floor_warning_clears_after_both_arms_raise_their_floor() -> None:
+    low = list(DEFAULT_EEF_LOW)
+    low[2] += 0.01
+    low[9] += 0.01
+    config = YamConfig(
+        control_interface="eef_pos",
+        eef_orientation=True,
+        eef_low=tuple(low),
+    )
+
+    contribution = YAMEmbodiment(config).contribute_guardrails(action_box())
+
+    assert contribution.warnings == (_EEF_SKIP_WARNING, _EEF_ORIENTATION_WARNING)
+
+
+def test_eef_z_floor_warning_couples_open_tilt_to_the_same_arm() -> None:
+    low = list(DEFAULT_EEF_LOW)
+    high = list(DEFAULT_EEF_HIGH)
+    low[2] += 0.01
+    low[4], high[4] = -0.2, 0.2
+    config = YamConfig(control_interface="eef_pos", eef_low=tuple(low), eef_high=tuple(high))
+
+    contribution = YAMEmbodiment(config).contribute_guardrails(action_box())
+
+    assert contribution.warnings == (
+        _EEF_SKIP_WARNING,
+        "eef_pos: action dims left_roll, right_pitch, right_roll are pinned "
+        "(low == high) and not commandable; widen eef_low/eef_high "
+        "(eef_orientation=true opens only zero-pinned pitch/roll)",
+    )
+
+
+@pytest.mark.parametrize("right_z", [DEFAULT_EEF_LOW[9], DEFAULT_EEF_LOW[9] - 0.01])
+def test_eef_z_floor_warning_fires_for_open_right_tilt_at_default_or_lowered_z(
+    right_z: float,
+) -> None:
+    low = list(DEFAULT_EEF_LOW)
+    high = list(DEFAULT_EEF_HIGH)
+    low[9] = right_z
+    low[12], high[12] = -0.2, 0.2
+    config = YamConfig(control_interface="eef_pos", eef_low=tuple(low), eef_high=tuple(high))
+
+    contribution = YAMEmbodiment(config).contribute_guardrails(action_box())
+
+    assert contribution.warnings[-1] == _EEF_Z_FLOOR_WARNING
+
+
+def test_joints_mode_has_no_eef_warnings_even_with_open_orientation_tuples() -> None:
+    config = YamConfig(eef_orientation=True, collision_guardrail=False)
+
+    contribution = YAMEmbodiment(config).contribute_guardrails(action_box())
+
+    assert contribution.warnings == (_EEF_DISABLED_WARNING,)
 
 
 def test_contribution_ladder_reports_missing_mujoco_before_construction(
