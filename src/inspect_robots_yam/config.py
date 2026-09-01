@@ -82,6 +82,8 @@ DEFAULT_EEF_HIGH: tuple[float, ...] = _EEF_ARM_HIGH * 2
 _EEF_YAW_INDICES = (3, 10)
 _EEF_PITCH_INDICES = (4, 11)
 _EEF_ROLL_INDICES = (5, 12)
+_EEF_ORIENTATION_PITCH = (-0.6, 0.6)
+_EEF_ORIENTATION_ROLL = (-np.pi / 2, np.pi / 2)
 _EEF_GRIPPER_INDICES = (6, 13)
 
 # Provisional 2026-07-14 LINEAR_4310 solution for EEF position (0.30, 0, 0.20),
@@ -257,6 +259,10 @@ class YamConfig(_FromKwargs):
     # holding an object must set this false; the framework then grades the last
     # step's frames as before.
     park_before_grade: bool = True
+    # Open default-pinned pitch/roll axes to conservative ranges. With this
+    # true, a 0,0 pitch/roll pin is widened; re-pin by setting this false or
+    # pinning at a nonzero epsilon.
+    eef_orientation: bool = False
 
     @classmethod
     def from_kwargs(cls, **flat: Any) -> YamConfig:
@@ -291,6 +297,7 @@ class YamConfig(_FromKwargs):
             "collision_table",
             "report_joint_eff",
             "park_before_grade",
+            "eef_orientation",
         ):
             if flag in flat and not isinstance(flat[flag], bool):
                 raise ValueError(f"{flag} must be true or false, got {flat[flag]!r}")
@@ -336,6 +343,19 @@ class YamConfig(_FromKwargs):
         for name in ("eef_low", "eef_high"):
             if len(getattr(self, name)) != len(EEF_DIM_LABELS):
                 raise ValueError(f"{name} must have {len(EEF_DIM_LABELS)} entries")
+        if not isinstance(self.eef_orientation, bool):
+            raise ValueError(f"eef_orientation must be true or false, got {self.eef_orientation!r}")
+        if self.eef_orientation:
+            eef_low_values = list(self.eef_low)
+            eef_high_values = list(self.eef_high)
+            for index in _EEF_PITCH_INDICES:
+                if (eef_low_values[index], eef_high_values[index]) == (0.0, 0.0):
+                    eef_low_values[index], eef_high_values[index] = _EEF_ORIENTATION_PITCH
+            for index in _EEF_ROLL_INDICES:
+                if (eef_low_values[index], eef_high_values[index]) == (0.0, 0.0):
+                    eef_low_values[index], eef_high_values[index] = _EEF_ORIENTATION_ROLL
+            object.__setattr__(self, "eef_low", tuple(eef_low_values))
+            object.__setattr__(self, "eef_high", tuple(eef_high_values))
         eef_low = self.eef_low_array
         eef_high = self.eef_high_array
         if not np.all(np.isfinite(eef_low)) or not np.all(np.isfinite(eef_high)):
@@ -560,6 +580,17 @@ class YamConfig(_FromKwargs):
     def eef_high_array(self) -> npt.NDArray[np.float64]:
         """Return Cartesian upper bounds in metres, radians, and gripper units."""
         return np.asarray(self.eef_high, dtype=np.float64)
+
+    def pinned_orientation_labels(self) -> tuple[str, ...]:
+        """Return EEF yaw, pitch, and roll labels whose bounds pin the axis."""
+        orientation_indices = frozenset(
+            (*_EEF_YAW_INDICES, *_EEF_PITCH_INDICES, *_EEF_ROLL_INDICES)
+        )
+        return tuple(
+            label
+            for index, label in enumerate(EEF_DIM_LABELS)
+            if index in orientation_indices and self.eef_low[index] == self.eef_high[index]
+        )
 
 
 @dataclass(frozen=True)

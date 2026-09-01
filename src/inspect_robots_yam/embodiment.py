@@ -60,6 +60,7 @@ from inspect_robots_yam._i2rt import (
 from inspect_robots_yam.config import (
     DEFAULT_CAMERAS,
     DEFAULT_EEF_HOME_POSE,
+    DEFAULT_EEF_LOW,
     DEFAULT_JOINT_HOME_POSE,
     EEF_DIM_LABELS,
     YamConfig,
@@ -1162,6 +1163,8 @@ class YAMEmbodiment:
     # can false-positive hold until max_steps (#109). An existing config's
     # stored value replaces the suggestion on re-runs. Joint effort reporting
     # is opt-in in both places because it changes the observation contract.
+    # EEF orientation is also opt-in because opening tilt axes invalidates the
+    # fingertips-down z-floor assumption and requires rig-specific adjustment.
     OPTION_SLOTS: ClassVar[tuple[OptionSlot, ...]] = (
         OptionSlot(
             arg="auto_start",
@@ -1177,6 +1180,12 @@ class YAMEmbodiment:
         OptionSlot(
             arg="report_joint_eff",
             label="Report estimated joint effort in observations (report_joint_eff)",
+            default=False,
+        ),
+        OptionSlot(
+            arg="eef_orientation",
+            label="Open EEF pitch/roll tilt axes (eef_orientation; eef_pos rigs only, "
+            "raise the eef_low z floor after)",
             default=False,
         ),
     )
@@ -1345,6 +1354,34 @@ class YAMEmbodiment:
 
     def contribute_guardrails(self, action_space: Box) -> GuardrailContribution:
         """Contribute collision holds when absolute joint checking is available."""
+        eef_warnings: tuple[str, ...] = ()
+        if self._cfg.control_interface == "eef_pos":
+            eef_warning_list = []
+            if self._cfg.eef_orientation:
+                eef_warning_list.append(
+                    "eef_orientation=true: pitch/roll bounds written as 0,0 are widened "
+                    "to +/-0.6 / +/-pi/2; set eef_orientation=false to re-pin"
+                )
+            pinned_labels = self._cfg.pinned_orientation_labels()
+            if pinned_labels:
+                eef_warning_list.append(
+                    f"eef_pos: action dims {', '.join(pinned_labels)} are pinned "
+                    "(low == high) and not commandable; widen eef_low/eef_high "
+                    "(eef_orientation=true opens only zero-pinned pitch/roll)"
+                )
+            for z_index, pitch_index, roll_index in ((2, 4, 5), (9, 11, 12)):
+                tilt_open = any(
+                    self._cfg.eef_low[index] != self._cfg.eef_high[index]
+                    for index in (pitch_index, roll_index)
+                )
+                if tilt_open and self._cfg.eef_low[z_index] <= DEFAULT_EEF_LOW[z_index]:
+                    eef_warning_list.append(
+                        "eef pitch/roll are open but eef_low z is at or below the "
+                        "fingertips-down default; knuckles or the wrist camera can reach "
+                        "the table first; raise the z floor"
+                    )
+                    break
+            eef_warnings = tuple(eef_warning_list)
         if not self._cfg.collision_guardrail:
             # Every other skip path warns; the wizard now suggests off for
             # unmeasured rigs (#109), so the opt-out must be visible in run
@@ -1353,11 +1390,15 @@ class YAMEmbodiment:
                 warnings=(
                     "collision guardrail disabled by config; set collision_guardrail=true "
                     "after measuring collision_*_base_pos",
+                    *eef_warnings,
                 )
             )
         if self._cfg.control_interface != "joints" or self._cfg.joints_are_delta:
             return GuardrailContribution(
-                warnings=("collision guardrail skipped: absolute joints mode only (plan 0011 v1)",)
+                warnings=(
+                    "collision guardrail skipped: absolute joints mode only (plan 0011 v1)",
+                    *eef_warnings,
+                )
             )
 
         from inspect_robots_yam.collision import _INSTALL_COMMAND, _collision_approver

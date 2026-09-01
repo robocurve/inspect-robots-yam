@@ -11,6 +11,8 @@ from inspect_robots.spaces import CameraSpec
 from inspect_robots_yam.config import (
     _DEFAULT_HIGH,
     _DEFAULT_LOW,
+    _EEF_ORIENTATION_PITCH,
+    _EEF_ORIENTATION_ROLL,
     DEFAULT_CAMERAS,
     DEFAULT_EEF_HIGH,
     DEFAULT_EEF_HOME_POSE,
@@ -362,6 +364,105 @@ def test_eef_pitch_and_roll_default_to_pinned_zero_bounds() -> None:
     )
     assert opened.eef_high_array[4] == pytest.approx(0.8)
     assert opened.eef_low_array[5] == pytest.approx(-0.5)
+
+
+def test_eef_orientation_widened_ranges_match_the_run_warning_text() -> None:
+    # The contribute_guardrails widening notice promises "+/-0.6 / +/-pi/2"
+    # as a frozen string; pin the constants so the text cannot silently
+    # desync from the behavior.
+    assert _EEF_ORIENTATION_PITCH == (-0.6, 0.6)
+    assert (-np.pi / 2, np.pi / 2) == _EEF_ORIENTATION_ROLL
+
+
+def test_eef_orientation_widens_default_pitch_and_roll_only() -> None:
+    cfg = YamConfig(eef_orientation=True)
+
+    for index in (4, 11):
+        assert (cfg.eef_low[index], cfg.eef_high[index]) == pytest.approx(_EEF_ORIENTATION_PITCH)
+    for index in (5, 12):
+        assert (cfg.eef_low[index], cfg.eef_high[index]) == pytest.approx(_EEF_ORIENTATION_ROLL)
+    untouched = tuple(index for index in range(14) if index not in (4, 5, 11, 12))
+    assert tuple(cfg.eef_low[index] for index in untouched) == tuple(
+        DEFAULT_EEF_LOW[index] for index in untouched
+    )
+    assert tuple(cfg.eef_high[index] for index in untouched) == tuple(
+        DEFAULT_EEF_HIGH[index] for index in untouched
+    )
+
+
+def test_eef_orientation_widens_explicit_tuned_zero_pins() -> None:
+    low = list(DEFAULT_EEF_LOW)
+    high = list(DEFAULT_EEF_HIGH)
+    low[0], high[0] = 0.2, 0.4
+    low[8], high[8] = -0.1, 0.1
+
+    cfg = YamConfig(eef_low=tuple(low), eef_high=tuple(high), eef_orientation=True)
+
+    assert cfg.eef_low[0] == pytest.approx(0.2)
+    assert cfg.eef_high[8] == pytest.approx(0.1)
+    for index in (4, 11):
+        assert (cfg.eef_low[index], cfg.eef_high[index]) == pytest.approx(_EEF_ORIENTATION_PITCH)
+    for index in (5, 12):
+        assert (cfg.eef_low[index], cfg.eef_high[index]) == pytest.approx(_EEF_ORIENTATION_ROLL)
+
+
+def test_eef_orientation_preserves_nonzero_pins_and_open_bounds() -> None:
+    low = list(DEFAULT_EEF_LOW)
+    high = list(DEFAULT_EEF_HIGH)
+    low[4] = high[4] = 0.1
+    low[5], high[5] = -0.2, 0.3
+
+    cfg = YamConfig(eef_low=tuple(low), eef_high=tuple(high), eef_orientation=True)
+
+    assert cfg.eef_low[4] == cfg.eef_high[4] == pytest.approx(0.1)
+    assert (cfg.eef_low[5], cfg.eef_high[5]) == pytest.approx((-0.2, 0.3))
+    assert (cfg.eef_low[11], cfg.eef_high[11]) == pytest.approx(_EEF_ORIENTATION_PITCH)
+    assert (cfg.eef_low[12], cfg.eef_high[12]) == pytest.approx(_EEF_ORIENTATION_ROLL)
+
+
+def test_eef_orientation_off_preserves_shipped_bounds() -> None:
+    cfg = YamConfig()
+
+    assert cfg.eef_orientation is False
+    assert cfg.eef_low == DEFAULT_EEF_LOW
+    assert cfg.eef_high == DEFAULT_EEF_HIGH
+
+
+def test_eef_orientation_from_kwargs_widens_and_rejects_non_bools() -> None:
+    cfg = YamConfig.from_kwargs(eef_orientation=True)
+    assert (cfg.eef_low[4], cfg.eef_high[4]) == pytest.approx(_EEF_ORIENTATION_PITCH)
+
+    for value in (None, "true", "false", "off", 1):
+        with pytest.raises(ValueError, match="eef_orientation must be true or false"):
+            YamConfig.from_kwargs(eef_orientation=value)
+
+
+def test_eef_orientation_direct_construction_rejects_non_bool_after_length_checks() -> None:
+    with pytest.raises(ValueError, match="eef_orientation must be true or false"):
+        YamConfig(eef_orientation="true")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="eef_low must have 14 entries"):
+        YamConfig(eef_low=(0.0,) * 13, eef_orientation="true")  # type: ignore[arg-type]
+
+
+def test_pinned_orientation_labels_names_orientation_axes_in_layout_order() -> None:
+    assert YamConfig().pinned_orientation_labels() == (
+        "left_pitch",
+        "left_roll",
+        "right_pitch",
+        "right_roll",
+    )
+    assert YamConfig(eef_orientation=True).pinned_orientation_labels() == ()
+
+    low = list(DEFAULT_EEF_LOW)
+    high = list(DEFAULT_EEF_HIGH)
+    low[3] = high[3] = 0.2
+    assert YamConfig(eef_low=tuple(low), eef_high=tuple(high)).pinned_orientation_labels() == (
+        "left_yaw",
+        "left_pitch",
+        "left_roll",
+        "right_pitch",
+        "right_roll",
+    )
 
 
 def test_eef_observation_space_declares_joint_and_eef_state_once() -> None:
