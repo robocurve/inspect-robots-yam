@@ -24,6 +24,15 @@
 # between epochs the arms stay connected and torque-held at the home pose while
 # you reach into the scene. Any other --epochs value is rejected.
 #
+# Right before each trial launches (after you confirm the reset, before the
+# arms power on) one top-camera JPEG of the scene is saved under
+# <log-dir>/batches/batch_<stamp>/trial_NN_<run-id>_start.jpg. The run id is
+# only known once the eval log exists, so the file is written as
+# trial_NN_start.jpg and renamed after the run. Reads top_cam_device from
+# config.ini (or -E top_cam_device=...) with OpenCV from the shared venv the
+# way the plugin's V4L2 reader does; a camera failure warns and never blocks
+# the trial. --no-snapshots turns it off.
+#
 # Per-trial verdicts are collected from each run's eval log and written to
 # <log-dir>/batches/<stamp>.tsv, with a tally printed at the end. Ctrl-C
 # cancels the running trial (the framework writes a cancelled log and parks
@@ -40,6 +49,7 @@ usage() {
 usage: run_batch.sh [-n N] [--] <./run arguments...>
 
   -n, --trials N   number of trials (default 20)
+  --no-snapshots   skip the top-camera JPEG taken before each trial
   -h, --help       this text
 
 Everything else goes to ./run unchanged (plus a forced --epochs 1), e.g.
@@ -52,9 +62,11 @@ EOF
 die() { echo "run_batch: $*" >&2; exit 2; }
 
 trials=20
+snapshots=1
 run_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --no-snapshots) snapshots=0; shift ;;
     -n|--trials)
       [[ $# -ge 2 ]] || die "$1 needs a value"
       trials="$2"; shift 2 ;;
@@ -70,6 +82,7 @@ done
 have_task=0
 log_dir=logs
 epochs_seen=""
+top_cam_override=""
 filtered=()
 i=0
 while [[ $i -lt ${#run_args[@]} ]]; do
@@ -84,6 +97,14 @@ while [[ $i -lt ${#run_args[@]} ]]; do
       [[ $((i+1)) -lt ${#run_args[@]} ]] || die "--epochs needs a value"
       epochs_seen="${run_args[$((i+1))]}"; i=$((i+1)) ;;
     --epochs=*) epochs_seen="${a#*=}" ;;
+    -E)
+      filtered+=("$a")
+      if [[ $((i+1)) -lt ${#run_args[@]} ]]; then
+        nxt="${run_args[$((i+1))]}"
+        [[ "$nxt" == top_cam_device=* ]] && top_cam_override="${nxt#*=}"
+        filtered+=("$nxt"); i=$((i+1))
+      fi ;;
+    -Etop_cam_device=*) top_cam_override="${a#*=}"; filtered+=("$a") ;;
     *) filtered+=("$a") ;;
   esac
   i=$((i+1))
@@ -102,14 +123,36 @@ if [[ ! -t 0 ]]; then
 fi
 command -v python3 >/dev/null || die "python3 not found on PATH (needed to read verdicts from the eval logs)"
 
+# Snapshots need OpenCV. Prefer the interpreter ./run itself uses (the shared
+# rig venv, ../shared/.venv relative to the rig dir), then any python3 with cv2.
+snap_py=""
+if [[ $snapshots -eq 1 ]]; then
+  for cand in ../shared/.venv/bin/python python3; do
+    if command -v "$cand" >/dev/null 2>&1 && "$cand" -c 'import cv2' >/dev/null 2>&1; then
+      snap_py="$cand"; break
+    fi
+  done
+  if [[ -z "$snap_py" ]]; then
+    echo "run_batch: warning: no python with cv2 found; top-camera snapshots disabled" >&2
+    snapshots=0
+  elif [[ -z "$top_cam_override" ]] && ! grep -qE '^[[:space:]]*top_cam_device[[:space:]]*=' ./config.ini; then
+    echo "run_batch: warning: no top_cam_device in config.ini (depth-serial top cams unsupported); snapshots disabled" >&2
+    snapshots=0
+  fi
+fi
+
 stamp="$(date +%Y-%m-%d_%H%M%S)"
 batch_dir="$log_dir/batches"
 mkdir -p "$batch_dir" || die "cannot create $batch_dir"
 batch_file="$batch_dir/batch_$stamp.tsv"
+snap_dir="$batch_dir/batch_$stamp"
+if [[ $snapshots -eq 1 ]]; then
+  mkdir -p "$snap_dir" || die "cannot create $snap_dir"
+fi
 # Comment line first, header second: keeps the file loadable with csv/pandas
 # after skipping the leading '#' line.
 { printf '# args:'; printf ' %q' "${run_args[@]}"; printf '\n'; } > "$batch_file"
-printf 'trial\texit\tstatus\tjudgement\ttermination\tduration_s\tlog\n' >> "$batch_file"
+printf 'trial\texit\tstatus\tjudgement\ttermination\tduration_s\tlog\tsnapshot\n' >> "$batch_file"
 
 marker="$(mktemp "${TMPDIR:-/tmp}/run_batch_marker.XXXXXX")"
 trap 'rm -f "$marker"' EXIT
@@ -148,6 +191,46 @@ print("\t".join([
 PY
 }
 
+# Save one top-camera frame to $1. Opens the configured V4L2 device the way the
+# plugin's reader does (YUYV 640x480; D435s return empty frames on cv2
+# defaults), lets auto-exposure settle over a few frames, releases the device
+# before ./run needs it. Exit status non-zero on any failure; never fatal.
+take_snapshot() {
+  "$snap_py" - ./config.ini "$1" "$top_cam_override" <<'PY'
+import configparser, sys, time
+cfg_path, out, override = sys.argv[1], sys.argv[2], sys.argv[3]
+cp = configparser.ConfigParser(inline_comment_prefixes=("#", ";"), interpolation=None)
+cp.read(cfg_path)
+dev = override or cp.get("embodiment.args", "top_cam_device", fallback=None)
+if not dev:
+    print("no top_cam_device in config.ini (depth-serial top cams are not supported here)", file=sys.stderr)
+    sys.exit(3)
+import cv2
+cap = cv2.VideoCapture(dev, cv2.CAP_V4L2)
+if not cap.isOpened():
+    print(f"cannot open {dev}", file=sys.stderr)
+    sys.exit(4)
+try:
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    frame, good = None, 0
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and good < 8:
+        ok, f = cap.read()
+        if ok and f is not None and f.size:
+            frame, good = f, good + 1
+    if frame is None:
+        print(f"no frames from {dev}", file=sys.stderr)
+        sys.exit(5)
+    if not cv2.imwrite(out, frame, [cv2.IMWRITE_JPEG_QUALITY, 90]):
+        print(f"cannot write {out}", file=sys.stderr)
+        sys.exit(6)
+finally:
+    cap.release()
+PY
+}
+
 declare -a rows=()
 completed=0
 yes=0; no=0; partial=0; other=0
@@ -167,17 +250,30 @@ summary() {
   echo "${bold}batch summary${reset}  ($completed/$trials trials run)"
   printf '%-6s %-8s %-10s %-14s %s\n' trial judged status termination log
   for r in "${rows[@]}"; do
-    IFS=$'\t' read -r t _ex st jd tr _du lg <<<"$r"
+    IFS=$'\t' read -r t _ex st jd tr _du lg _snap <<<"$r"
     printf '%-6s %-8s %-10s %-14s %s\n' "$t" "$jd" "$st" "$tr" "$lg"
   done
   echo
   echo "success: $yes   failure: $no   partial: $partial   ungraded/other: $other"
   echo "${dim}batch record: $batch_file${reset}"
+  if [[ $snapshots -eq 1 ]]; then
+    echo "${dim}start-of-trial snapshots: $snap_dir/${reset}"
+  fi
 }
 
 for ((i = 1; i <= trials; i++)); do
   echo
   echo "${bold}=== trial $i/$trials ===${reset}"
+  snap_path="-"
+  if [[ $snapshots -eq 1 ]]; then
+    snap_tmp="$snap_dir/$(printf 'trial_%02d_start.jpg' "$i")"
+    if take_snapshot "$snap_tmp"; then
+      snap_path="$snap_tmp"
+      echo "${dim}scene snapshot: $snap_path${reset}"
+    else
+      echo "run_batch: warning: top-camera snapshot failed for trial $i (continuing)" >&2
+    fi
+  fi
   touch "$marker"
   ./run "${run_args[@]}"
   rc=$?
@@ -195,10 +291,15 @@ for ((i = 1; i <= trials; i++)); do
     verdict=$'-\t-\t-\t-'
     log_path="(no log written)"
   fi
-  row="$(printf '%s\t%s\t%s\t%s' "$i" "$rc" "$verdict" "$log_path")"
+  if [[ "$snap_path" != "-" && -f "$log_path" ]]; then
+    run_id="$(basename "$log_path" .json)"
+    renamed="$snap_dir/$(printf 'trial_%02d_%s_start.jpg' "$i" "$run_id")"
+    mv -f "$snap_path" "$renamed" && snap_path="$renamed"
+  fi
+  row="$(printf '%s\t%s\t%s\t%s\t%s' "$i" "$rc" "$verdict" "$log_path" "$snap_path")"
   rows+=("$row")
   printf '%s\n' "$row" >> "$batch_file"
-  IFS=$'\t' read -r _ _ st jd tr du _ <<<"$row"
+  IFS=$'\t' read -r _ _ st jd tr du _ _ <<<"$row"
   tally_add "$jd"
   echo
   echo "trial $i/$trials: judged ${bold}$jd${reset} ($st, $tr, ${du}s) — so far $yes success / $no failure / $partial partial"

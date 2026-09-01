@@ -326,6 +326,14 @@ Ctrl-C cancels the running trial (the framework writes a cancelled log and
 parks) and ends the batch. Per-trial verdicts are read from the eval logs into
 `<log-dir>/batches/<stamp>.tsv`, echoed after each trial, and tallied at the end.
 
+Right before each trial launches, after you confirm the reset and before the
+arms power on, the script saves one top-camera JPEG of the scene to
+`<log-dir>/batches/batch_<stamp>/trial_NN_<run-id>_start.jpg` (the run id is
+appended once the eval log exists). It reads `top_cam_device` from
+`config.ini` (or `-E top_cam_device=...`) and opens it with OpenCV from the
+shared venv the way the plugin's V4L2 reader does. A camera failure warns and
+never blocks the trial; `--no-snapshots` turns it off.
+
 Any other `--epochs` value is rejected on purpose: within one process the arms
 stay connected and torque-held at the home pose between epochs while you reach
 into the scene.

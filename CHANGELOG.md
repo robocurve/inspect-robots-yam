@@ -16,7 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   during the park ramp. A trial that exits uncleanly gets a check-the-arms
   warning instead of the torque-off claim. Per-trial verdicts are pulled from
   the eval logs into `<log-dir>/batches/<stamp>.tsv`, echoed per trial, and
-  tallied at the end. Any other `--epochs` value is rejected because
+  tallied at the end. Before each trial launches it saves a top-camera JPEG of
+  the reset scene as `batch_<stamp>/trial_NN_<run-id>_start.jpg`
+  (`--no-snapshots` to skip). Any other `--epochs` value is rejected because
   within-process epochs hold torque at home between trials.
 
 ### Fixed
