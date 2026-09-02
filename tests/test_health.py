@@ -367,6 +367,37 @@ def test_motor_temperatures_are_a_separate_always_ok_row() -> None:
     assert all(result.ok for result in report.joints[:-1])
 
 
+def test_motor_temperature_failure_is_an_always_ok_unavailable_row() -> None:
+    class FailingTempsDriver(FakeDriver):
+        """Fail only the optional thermal snapshot."""
+
+        def get_motor_temps(self) -> np.ndarray:
+            raise RuntimeError("temperature read timed out")
+
+    report = run(driver=FailingTempsDriver(good_positions()), skip_cameras=True)
+
+    assert [result.name for result in report.joints[:-1]] == list(packing.DIM_LABELS)
+    assert all(result.ok for result in report.joints[:-1])
+    assert report.joints[-1] == CheckResult(
+        "temps", True, "unavailable: temperature read timed out"
+    )
+    assert report.ok
+
+
+def test_motor_temperature_sentinels_report_no_data() -> None:
+    class SentinelTempsDriver(FakeDriver):
+        """Expose only the driver's no-temperature-data sentinel."""
+
+        def get_motor_temps(self) -> np.ndarray:
+            return np.full(14, -1.0)
+
+    report = run(driver=SentinelTempsDriver(good_positions()), skip_cameras=True)
+
+    assert [result.name for result in report.joints[:-1]] == list(packing.DIM_LABELS)
+    assert report.joints[-1] == CheckResult("temps", True, "no data")
+    assert report.ok
+
+
 def test_motor_temperature_row_is_absent_for_legacy_driver() -> None:
     class LegacyDriver:
         def __init__(self) -> None:

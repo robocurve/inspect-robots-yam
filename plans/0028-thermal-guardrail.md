@@ -64,6 +64,14 @@ This plan adds a soft, plugin-owned thermal limit with two gates:
   `dm_driver.py:707-708`, and does not touch temps), and includes the gripper
   motor slot (the gripper motor `0x07` joins the same chain,
   `get_robot.py:210`, so each arm always yields 7 slots for `packing.pack`).
+- **Dependency floor raised to `inspect-robots>=0.57`** (amendment, found by the
+  post-implementation review's e2e test): the park-before-grading lifecycle
+  (`observe_parked`) first shipped in framework 0.57, while the old floor was
+  0.51 — on floor installs the plugin's own `observe_parked` hook (plan 0023)
+  was already a silent no-op and this feature's central promise would not
+  hold. Deployed rigs run 0.57.1. The e2e overheat lifecycle test in
+  `tests/test_eval_end_to_end.py` pins the promise against the real installed
+  framework so a future floor/behavior drift fails loudly.
 - **No upstream threshold exists to inherit.** Neither i2rt nor the DM
   constants carry any temperature limit (only the error codes); the sim's
   idle values are 35/40 C. Any default would be invented, so the limit is

@@ -1303,6 +1303,7 @@ class YAMEmbodiment:
         self.num_steps = 0
         self.settle_timeouts = 0
         self._motor_temp_warned = False
+        self._motor_temp_no_data_warned = False
         # Set when the per-trial timeout budget is exhausted; suppresses further
         # settling for the rest of the trial. Cleared at reset() entry.
         self._settle_disabled = False
@@ -1512,6 +1513,7 @@ class YAMEmbodiment:
         self.settle_timeouts = 0
         self._settle_disabled = False
         self._motor_temp_warned = False
+        self._motor_temp_no_data_warned = False
         # Ahead of the homing settle below, which names the scene if it has to
         # report a budget exhaustion; set later it would report the previous
         # trial's instruction, or None on the first.
@@ -2092,6 +2094,11 @@ class YAMEmbodiment:
                 "motor_temp_limit is set but the injected driver lacks get_motor_temps()"
             )
         temps = packing.validate_dim(get_motor_temps())
+        if not self._motor_temp_no_data_warned and not np.any(temps > 0):
+            logger.warning(
+                "thermal guardrail got no valid temperature data; all motor readings are <= 0"
+            )
+            self._motor_temp_no_data_warned = True
         self._warn_motor_temps(temps)
         return temps
 

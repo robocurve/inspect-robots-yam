@@ -541,6 +541,27 @@ def test_motor_temp_nonpositive_sentinels_never_trip() -> None:
     assert not result.terminated
 
 
+def test_motor_temp_no_data_warns_once_per_trial_and_resets(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    driver = FakeDriver(temps=np.full(14, 30.0))
+    emb, _, _ = _build(YamConfig(motor_temp_limit=80.0), driver=driver)
+    emb.reset(Scene(id="s", instruction="inspect"))
+    driver.temps[:] = -1.0
+
+    with caplog.at_level("WARNING", logger="inspect_robots_yam.embodiment"):
+        emb.step(Action(data=np.zeros(14)))
+        emb.step(Action(data=np.zeros(14)))
+        emb.reset(Scene(id="s2", instruction="inspect again"))
+
+    warnings = [
+        record
+        for record in caplog.records
+        if "thermal guardrail got no valid temperature data" in record.message
+    ]
+    assert len(warnings) == 2
+
+
 def test_motor_temp_right_gripper_slot_trips() -> None:
     hot = np.full(14, 30.0)
     hot[13] = 85.0

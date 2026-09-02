@@ -43,6 +43,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The minimum `inspect-robots` version is now 0.57. The thermal guardrail's
+  park-before-grading behavior depends on the framework's `observe_parked`
+  lifecycle, which first shipped in that release. On older frameworks the
+  plugin's existing `observe_parked` hook was a silent no-op.
+
 - **Breaking (EEF layout):** the Cartesian interface grows from 5 to 7 slots
   per arm — `x, y, z, yaw, pitch, roll, gripper`, 14 total. Old→new per-arm
   slot mapping: x/y/z/yaw keep slots 0–3, gripper moves 4→6, and pitch/roll
