@@ -1701,10 +1701,26 @@ class YAMEmbodiment:
                 else:
                     self._operator.output_fn(notice)
                 logger.warning(notice)
+                observation = self._observe(self._instruction)
+                target = (
+                    np.asarray(self._cfg.rest_pose, dtype=np.float64)
+                    if self._cfg.rest_pose is not None
+                    else self._init_pose
+                )
+                if target is not None:
+                    if not self._cfg.unattended:
+                        self._status("thermal guardrail: parking to rest to cool")
+                    try:
+                        sent = self._ramp_to(target)
+                        self._settle(sent)
+                    finally:
+                        if not self._cfg.unattended:
+                            self._status(None)
                 # The framework records the policy action even though this hot-path
-                # return deliberately does not execute it on the arm.
+                # return deliberately does not execute it on the arm. The park
+                # settle is deliberately not reported: the trial is already over.
                 return StepResult(
-                    observation=self._observe(self._instruction),
+                    observation=observation,
                     terminated=True,
                     termination_reason="overheat",
                     info={

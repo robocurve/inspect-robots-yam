@@ -48,6 +48,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- A mid-run thermal trip now ramps the arms to their rest pose from inside
+  `step()` before terminating, including ungraded and unattended runs and when
+  `park_before_grade=false`. The returned observation still captures the trip
+  pose before parking (#150).
+
 - The minimum `inspect-robots` version is now 0.57. The thermal guardrail's
   park-before-grading behavior depends on the framework's `observe_parked`
   lifecycle, which first shipped in that release. On older frameworks the
