@@ -371,6 +371,47 @@ def test_option_slots_declare_boolean_config_args() -> None:
     }
 
 
+def test_number_slots_declare_numeric_config_args() -> None:
+    """Every declared number writes a real YamConfig field with a pinned contract."""
+    from dataclasses import fields
+
+    from inspect_robots.conformance import NumberSlot, number_slots
+
+    numbers = number_slots(YAMEmbodiment)
+
+    assert numbers == YAMEmbodiment.NUMBER_SLOTS  # defensive reader keeps every entry
+    config_fields = {f.name for f in fields(YamConfig)}
+    assert all(isinstance(number, NumberSlot) for number in numbers)
+    assert all(number.arg in config_fields for number in numbers)
+    assert {number.arg for number in numbers} == {"motor_temp_limit"}
+    assert numbers == (
+        NumberSlot(
+            arg="motor_temp_limit",
+            label="Motor temperature soft limit in degrees C "
+            "(motor_temp_limit; none disables the thermal guardrail)",
+            default=70,
+            minimum=1,
+            maximum=None,
+            allow_none=True,
+        ),
+    )
+
+
+def test_motor_temp_limit_wizard_default_diverges_from_config_default() -> None:
+    """The wizard suggests 70 while the config default keeps the guardrail off.
+
+    Fresh wizard-driven setups should arm the thermal guardrail, while direct
+    library users retain the non-breaking disabled default. Operators can still
+    answer none in the wizard to choose the disabled behavior explicitly.
+    """
+    motor_temp_slot = next(
+        number for number in YAMEmbodiment.NUMBER_SLOTS if number.arg == "motor_temp_limit"
+    )
+
+    assert motor_temp_slot.default == 70
+    assert YamConfig().motor_temp_limit is None
+
+
 def test_auto_start_wizard_default_diverges_from_config_default() -> None:
     """The wizard suggests yes while the config default stays off.
 
