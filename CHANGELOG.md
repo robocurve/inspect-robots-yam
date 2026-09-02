@@ -30,6 +30,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The operator status line now compares motion-budget seconds with the
+  estimated motion horizon and shows elapsed wall time as a separate labeled
+  value. Slow policy calls therefore remain visible without making the budget
+  numerator race ahead of its step-based denominator (#148).
+
 - The operator's elapsed counter now reads the wall clock instead of the step
   count. It was `num_steps / control_hz`, which is only the truth while every
   step fits inside its control period. A step can already overrun that on a slow

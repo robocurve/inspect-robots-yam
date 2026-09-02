@@ -1297,8 +1297,8 @@ class YAMEmbodiment:
         self._instruction: str | None = None
         self._t_last = 0.0
         # Wall-clock stamp taken when reset() hands the episode over, so the
-        # operator's elapsed counter measures real time rather than step count
-        # (#64). Homing happens before it is set and is deliberately excluded.
+        # separately labeled wall time excludes homing while still exposing
+        # slow or overrunning policy steps.
         self._t_started = 0.0
         self.num_steps = 0
         self.settle_timeouts = 0
@@ -2055,10 +2055,10 @@ class YAMEmbodiment:
     def _emit_status(self) -> None:
         """Roughly once per second, tell the operator where they are.
 
-        Elapsed comes from the wall clock, so it stays true when a step
-        overruns the control period. The step count only throttles how often
-        the line is redrawn, which is why the counter can advance by more than
-        one second between updates on a slow run.
+        The counter tracks motion-budget consumption, so its units are
+        commensurate with the estimated horizon. Wall time is appended with an
+        explicit label because a step overrunning the control period must stay
+        visible to the operator.
         """
         if self._cfg.unattended:
             return
@@ -2066,9 +2066,14 @@ class YAMEmbodiment:
         interval = max(1, round(hz))
         if self.num_steps % interval != 0:
             return
-        elapsed = self._clock() - self._t_started
+        motion = self.num_steps / hz
+        wall = self._clock() - self._t_started
         horizon = self._horizon_secs()
-        span = f"{elapsed:.0f}s / ~{horizon:.0f}s" if horizon is not None else f"{elapsed:.0f}s"
+        span = (
+            f"{motion:.0f}s / ~{horizon:.0f}s | wall {wall:.0f}s"
+            if horizon is not None
+            else f"{motion:.0f}s | wall {wall:.0f}s"
+        )
         if self._session is not None:
             # The connected session appends the framework-owned end-gesture hint;
             # sending our own copy would just be stripped and re-appended.
