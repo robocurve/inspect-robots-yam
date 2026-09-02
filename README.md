@@ -302,42 +302,6 @@ right_depth_serial = YOUR-RIGHT-D405-SERIAL
 EOF
 ```
 
-### Repeat one task N times with a human in the loop
-
-`scripts/run_batch.sh` runs the same task N times from a rig directory (a
-directory holding a `./run` wrapper and its `config.ini`). Type the prompt,
-policy, and effort once; everything except `-n` is forwarded to `./run`:
-
-```bash
-cd ~/robocurve/rig-1
-../inspect-robots-yam/scripts/run_batch.sh -n 20 \
-    --instruction "Place the fork on the plate" -P model=claude-opus-5 -P effort=medium
-```
-
-Each trial is a separate `./run` process with `--epochs 1` forced. That
-process asks the operator for a verdict after the episode (the grading pause),
-then parks the arms and releases torque on exit. Only then does the script ask
-you to reset the scene; the next trial, which powers the arms back on and
-ramps to the start pose, begins when you press Enter (`q` stops the batch).
-Keystrokes typed while the arms were parking are discarded before that prompt.
-A trial that does not exit cleanly gets a warning instead of the torque-off
-claim and asks whether to continue: check the arms are limp before reaching in.
-Ctrl-C cancels the running trial (the framework writes a cancelled log and
-parks) and ends the batch. Per-trial verdicts are read from the eval logs into
-`<log-dir>/batches/<stamp>.tsv`, echoed after each trial, and tallied at the end.
-
-Right before each trial launches, after you confirm the reset and before the
-arms power on, the script saves one top-camera JPEG of the scene to
-`<log-dir>/batches/batch_<stamp>/trial_NN_<run-id>_start.jpg` (the run id is
-appended once the eval log exists). It reads `top_cam_device` from
-`config.ini` (or `-E top_cam_device=...`) and opens it with OpenCV from the
-shared venv the way the plugin's V4L2 reader does. A camera failure warns and
-never blocks the trial; `--no-snapshots` turns it off.
-
-Any other `--epochs` value is rejected on purpose: within one process the arms
-stay connected and torque-held at the home pose between epochs while you reach
-into the scene.
-
 ### RealSense depth
 
 Install the optional librealsense dependency on the robot machine:
