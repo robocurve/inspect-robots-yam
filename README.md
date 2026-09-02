@@ -390,8 +390,9 @@ operator session, press Enter at either readiness gate, then press Esc (or
 type `/stop`) to end the episode; typed lines become policy feedback or
 logged notes.
 On the never-connected legacy path, press Enter at the gates and press any key
-to end the episode. In both modes the status counts up against the run's real
-step limit (`t = 42s / 120s`) with no configuration needed (requires
+to end the episode. In both modes the status shows motion-budget consumption
+against the run's real step limit, with separately labeled wall time
+(`t = 42s / ~120s | wall 75s`), and needs no configuration (requires
 inspect-robots newer than 0.8.1; on older cores set `max_steps_hint`).
 
 To skip both Enter gates, set `auto_start=true` (CLI: `-E auto_start=true`,

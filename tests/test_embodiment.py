@@ -946,7 +946,7 @@ def test_connect_operator_session_owns_status_and_episode_end() -> None:
         None,
         "Running.",
     ]
-    assert session.statuses[3] == "t = 1s"
+    assert session.statuses[3] == "t = 1s | wall 1s"
     assert session.statuses[4:] == [
         "parking: ramping arms back before torque-off",
         None,
@@ -1803,8 +1803,8 @@ def test_status_line_updates_once_per_second_with_horizon() -> None:
         emb.step(Action(data=np.zeros(14)))
     updates = [m for m in status[reset_entries:] if m is not None]
     assert updates == [
-        "t = 1s / ~120s | any key ends the episode",
-        "t = 2s / ~120s | any key ends the episode",
+        "t = 1s / ~120s | wall 1s | any key ends the episode",
+        "t = 2s / ~120s | wall 2s | any key ends the episode",
     ]
 
 
@@ -1824,7 +1824,7 @@ def test_ticker_gesture_prose_belongs_to_the_session_when_connected(connected: b
 
     # Connected: rig state only, the session composes the end-gesture hint.
     # Defer-only: the session never sees our status, so we keep our own hint.
-    expected = "t = 1s" if connected else "t = 1s | Esc ends the episode"
+    expected = "t = 1s | wall 1s" if connected else "t = 1s | wall 1s | Esc ends the episode"
     assert status[reset_entries:] == [expected]
 
 
@@ -1857,7 +1857,51 @@ def test_elapsed_follows_the_wall_clock_when_steps_overrun_the_period() -> None:
     # they took 2s. The reported elapsed follows the clock.
     assert clock.now - started == pytest.approx(2.0)
     updates = [m for m in status[reset_entries:] if m is not None]
-    assert updates == ["t = 2s / ~120s | any key ends the episode"]
+    assert updates == ["t = 1s / ~120s | wall 2s | any key ends the episode"]
+
+
+def test_status_labels_large_wall_time_from_slow_policy_shape() -> None:
+    clock = _PacedClock(overrun=198.8)
+    with pytest.warns(FutureWarning, match="max_steps_hint"):
+        cfg = YamConfig(max_steps_hint=1200)
+    emb, status = _build_with_status(cfg, clock=clock)
+    emb.reset(Scene(id="s", instruction="x"))
+    reset_entries = len(status)
+    started = clock.now
+
+    for _ in range(10):
+        emb.step(Action(data=np.zeros(14)))
+
+    assert clock.now - started == pytest.approx(1989.0)
+    assert status[reset_entries:] == ["t = 1s / ~120s | wall 1989s | any key ends the episode"]
+
+
+@pytest.mark.parametrize("control_hz", [0.0, -1.0])
+def test_status_motion_uses_fallback_when_control_hz_is_nonpositive(control_hz: float) -> None:
+    clock = _PacedClock()
+    with pytest.warns(FutureWarning, match="max_steps_hint"):
+        cfg = YamConfig(control_hz=control_hz, max_steps_hint=1200)
+    emb, status = _build_with_status(cfg, clock=clock)
+    emb.reset(Scene(id="s", instruction="x"))
+    reset_entries = len(status)
+
+    for _ in range(10):
+        emb.step(Action(data=np.zeros(14)))
+
+    assert status[reset_entries:] == ["t = 1s | wall 0s | any key ends the episode"]
+
+
+def test_status_without_horizon_uses_motion_and_labeled_wall_format() -> None:
+    clock = _PacedClock(overrun=3.0)
+    emb, _ = _build_with_status(YamConfig(control_hz=1.0), clock=clock)
+    session = _RecordingSession()
+    emb.connect_operator_session(session)
+    emb.reset(Scene(id="s", instruction="x"))
+    reset_entries = len(session.statuses)
+
+    emb.step(Action(data=np.zeros(14)))
+
+    assert session.statuses[reset_entries:] == ["t = 1s | wall 4s"]
 
 
 def test_homing_time_is_not_charged_to_the_episode() -> None:
@@ -1873,7 +1917,7 @@ def test_homing_time_is_not_charged_to_the_episode() -> None:
 
     assert homing_elapsed > 0.0  # the ramp really did consume fake time
     updates = [m for m in status[reset_entries:] if m is not None]
-    assert updates == ["t = 1s | any key ends the episode"]
+    assert updates == ["t = 1s | wall 1s | any key ends the episode"]
 
 
 def test_status_finishes_with_none_when_operator_ends_episode() -> None:
