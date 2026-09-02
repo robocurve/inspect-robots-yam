@@ -254,10 +254,15 @@ the row is absent when the driver lacks the method.
 Sanctioned updates to pre-existing tests (mechanical, the plan-0021 pattern):
 add `get_motor_temps` returning benign temps to every fake driver —
 `tests/test_embodiment.py:29` (`FakeDriver`), `tests/conftest.py:444`
-(`SettleDriver`), `tests/test_health.py:139`, `tests/test_eef_embodiment.py:72`,
+(`SettleDriver`), `tests/test_eef_embodiment.py:72`,
 `tests/test_depth_reader.py:889`, `tests/test_eval_end_to_end.py:28`,
 `tests/test_camera_reader.py:338`, `tests/test_pose_cli.py:28`. `LegacyDriver`
-(`tests/test_embodiment.py:404`) intentionally stays without it. No other
+(`tests/test_embodiment.py:404`) intentionally stays without it — and so does
+the shared `tests/test_health.py:139` fake: giving it temps would add the
+always-ok temps row to `report.joints` and break the three pre-existing
+row-set pins (`test_health.py:221`, `:529`, `:884`), which must stay
+untouched and which keep covering the legacy-driver health path. The new
+health tests construct their own temps-enabled fake locally. No other
 pre-existing assertion may change; in particular the `OPTION_SLOTS` pin
 (`tests/test_i2rt.py:373-394`) is untouched because a float option adds no
 wizard slot, and `tests/test_api_snapshot.py` is untouched because nothing new
