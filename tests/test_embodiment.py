@@ -453,7 +453,43 @@ def test_motor_temp_guardrail_default_off_never_reads_or_warns(
     assert "thermal guardrail" not in caplog.text
 
 
-def test_motor_temp_mid_run_trip_uses_session_notice_and_skips_motion() -> None:
+def test_motor_temp_trip_parks_even_when_observation_capture_fails() -> None:
+    temperatures = np.full(14, 30.0)
+    temperatures[2] = 80.0
+    driver = FakeDriver(temps_seq=[np.full(14, 30.0), temperatures, temperatures])
+    calls = {"n": 0}
+
+    def flaky_cameras(cfg):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("camera gone")
+        return _cameras(cfg)
+
+    import dataclasses
+
+    cfg = dataclasses.replace(
+        YamConfig(motor_temp_limit=80.0, rest_secs=0.1), cam_height=4, cam_width=4
+    )
+    emb = YAMEmbodiment(
+        cfg,
+        driver_factory=lambda _c: driver,
+        camera_reader=flaky_cameras,
+        operator=_operator(),
+        poll_end=lambda: False,
+        sleep_fn=lambda _s: None,
+        clock=lambda: 0.0,
+    )
+    emb.reset(Scene(id="s", instruction="inspect"))
+    command_count = len(driver.commands)
+
+    with pytest.raises(RuntimeError, match="camera gone"):
+        emb.step(Action(data=np.ones(14)))
+
+    assert len(driver.commands) > command_count
+    assert np.array_equal(driver.commands[-1], DEFAULT_REST_POSE)
+
+
+def test_motor_temp_mid_run_trip_uses_session_notice_skips_policy_motion_and_parks() -> None:
     temperatures = np.full(14, 30.0)
     temperatures[8] = 80.0
     driver = FakeDriver(
@@ -469,7 +505,8 @@ def test_motor_temp_mid_run_trip_uses_session_notice_and_skips_motion() -> None:
 
     assert result.terminated
     assert result.termination_reason == "overheat"
-    assert len(driver.commands) == command_count
+    assert len(driver.commands) == command_count + 30
+    assert np.array_equal(driver.commands[-1], DEFAULT_REST_POSE)
     assert result.info["overheat"] == {
         "slot": 8,
         "label": "right_j1",
@@ -480,6 +517,82 @@ def test_motor_temp_mid_run_trip_uses_session_notice_and_skips_motion() -> None:
     assert session.statuses[-1] is None
     assert len(session.lines) == 1
     assert all(text in session.lines[0] for text in ("right_j1", "motor id 2", "can1", "80"))
+
+
+def test_motor_temp_mid_run_trip_observes_then_parks_even_when_grading_park_off() -> None:
+    cold = np.full(14, 30.0)
+    hot = cold.copy()
+    hot[4] = 80.0
+    trip_pose = np.full(14, 0.2)
+    rest_pose = np.full(14, 0.6)
+    driver = EchoDriver(state=np.full(14, 0.1), temps_seq=[cold, hot, hot])
+    emb, _, _ = _build(
+        YamConfig(
+            motor_temp_limit=80.0,
+            park_before_grade=False,
+            rest_pose=tuple(rest_pose),
+            rest_secs=0.1,
+        ),
+        driver=driver,
+    )
+    session = _RecordingSession()
+    emb.connect_operator_session(session)
+    emb.reset(Scene(id="s", instruction="inspect"))
+    driver.state = trip_pose.copy()
+    command_count = len(driver.commands)
+
+    result = emb.step(Action(data=np.ones(14)))
+
+    assert result.terminated
+    assert result.termination_reason == "overheat"
+    assert len(driver.commands) == command_count + 1
+    assert driver.commands[-1] == pytest.approx(rest_pose)
+    assert result.observation.state["joint_pos"] == pytest.approx(trip_pose)
+    assert session.statuses[-2:] == [
+        "thermal guardrail: parking to rest to cool",
+        None,
+    ]
+
+
+def test_motor_temp_mid_run_trip_parks_to_captured_pose_without_rest_pose() -> None:
+    cold = np.full(14, 30.0)
+    hot = cold.copy()
+    hot[5] = 80.0
+    init_pose = np.full(14, 0.1)
+    trip_pose = np.full(14, 0.3)
+    driver = EchoDriver(state=init_pose.copy(), temps_seq=[cold, hot, hot])
+    emb, _, _ = _build(
+        YamConfig(motor_temp_limit=80.0, rest_pose=None, rest_secs=0.1),
+        driver=driver,
+    )
+    emb.reset(Scene(id="s", instruction="inspect"))
+    driver.state = trip_pose.copy()
+    command_count = len(driver.commands)
+
+    result = emb.step(Action(data=np.ones(14)))
+
+    assert result.terminated
+    assert len(driver.commands) == command_count + 1
+    assert driver.commands[-1] == pytest.approx(init_pose)
+    assert result.observation.state["joint_pos"] == pytest.approx(trip_pose)
+
+
+def test_motor_temp_mid_run_trip_without_park_target_skips_ramp() -> None:
+    hot = np.full(14, 30.0)
+    hot[6] = 80.0
+    driver = FakeDriver(temps=hot)
+    emb, _, _ = _build(
+        YamConfig(motor_temp_limit=80.0, rest_pose=None),
+        driver=driver,
+    )
+
+    with pytest.raises(EmbodimentFault, match="thermal guardrail"):
+        emb.reset(Scene(id="s", instruction="inspect"))
+    result = emb.step(Action(data=np.ones(14)))
+
+    assert result.terminated
+    assert result.termination_reason == "overheat"
+    assert driver.commands == []
 
 
 def test_motor_temp_mid_run_trip_uses_unconnected_operator_notice() -> None:

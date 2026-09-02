@@ -178,3 +178,54 @@ def test_overheat_termination_parks_before_grading_end_to_end() -> None:
     assert driver.post_trip_commands[-1] == pytest.approx(rest_pose)
     assert graded == ["overheat"]
     assert logs[0].results.metrics["task_success"] == 1.0
+
+
+def test_ungraded_unattended_overheat_parks_to_rest_end_to_end() -> None:
+    class HotDriver(_FakeDriver):
+        """Become hot after reset so only the terminal step performs a park."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.temp_reads = 0
+
+        def get_motor_temps(self) -> np.ndarray:
+            self.temp_reads += 1
+            temperatures = np.full(14, 30.0)
+            if self.temp_reads > 1:
+                temperatures[3] = 80.0
+            return temperatures
+
+    driver = HotDriver()
+    rest_pose = np.full(14, 0.5)
+    policy = MolmoAct2Policy(
+        MolmoActConfig(cam_height=4, cam_width=4, num_steps=1),
+        post_fn=_post,
+    )
+    embodiment = YAMEmbodiment(
+        YamConfig(
+            cam_height=4,
+            cam_width=4,
+            motor_temp_limit=80.0,
+            rest_pose=tuple(rest_pose),
+            rest_secs=0.1,
+            park_before_grade=False,
+            unattended=True,
+        ),
+        driver_factory=lambda _cfg: driver,
+        camera_reader=_cameras,
+        sleep_fn=lambda _delay: None,
+        clock=lambda: 0.0,
+    )
+
+    logs = rl_eval(
+        replace(stack(), scenes=stack().scenes[:1], epochs=1),
+        policy,
+        embodiment,
+        sinks=[],
+        seed=0,
+        before_scoring=None,
+    )
+
+    assert logs[0].samples[0].termination_reasons == ("overheat",)
+    assert driver.commands[-1] == pytest.approx(rest_pose)
+    assert driver.closed is False

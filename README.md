@@ -839,12 +839,13 @@ The thermal guardrail compares `motor_temp_limit` with the hotter of the MOS
 and rotor readings for every arm and gripper motor. At episode start, a motor
 at the limit refuses the reset before the arms move. During an episode, a
 confirmed over-limit reading ends the trial with `overheat` while the motors
-still have torque, allowing the normal grading flow to run. Run
+still have torque, allowing the normal grading flow to run. Before returning,
+the trip parks to rest immediately in every mode, including ungraded and
+unattended runs and when `park_before_grade=false`. Thermal safety outranks
+that flag's scene-preservation preference. Run
 `inspect-robots-yam-health` after a long episode to see the hottest motor, then
 choose a limit comfortably below the temperature where the firmware has
-faulted on that rig. A mid-run trip parks immediately only for graded runs with
-`park_before_grade=true`. Ungraded or unattended runs hold until `close()`
-parks the arms.
+faulted on that rig.
 
 `ActServerConfig`: `server_url`, `remedy` (connection-failure recovery
 instruction; defaults to the policy entry's canonical server launch command
