@@ -15,6 +15,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   health report now shows its hottest motor to guide threshold selection
   (#144).
 
+- The setup wizard now offers `motor_temp_limit`, suggests 70 degrees C for a
+  fresh setup, and accepts `none` to leave the thermal guardrail off. The
+  `YamConfig` runtime default remains `None` for backward compatibility (#150).
+
 - `scripts/run_batch.sh`: repeat one task N times from a rig directory with a
   human in the loop. Each trial is its own `./run` process with `--epochs 1`
   forced, so the framework's grading prompt pauses for the operator and the
@@ -53,10 +57,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `park_before_grade=false`. The returned observation still captures the trip
   pose before parking (#150).
 
-- The minimum `inspect-robots` version is now 0.57. The thermal guardrail's
-  park-before-grading behavior depends on the framework's `observe_parked`
-  lifecycle, which first shipped in that release. On older frameworks the
-  plugin's existing `observe_parked` hook was a silent no-op.
+- The minimum `inspect-robots` version is now 0.58. The setup wizard's numeric
+  `motor_temp_limit` prompt depends on the `NumberSlot` protocol first shipped
+  in that release. The thermal guardrail's park-before-grading behavior also
+  depends on the framework's `observe_parked` lifecycle from 0.57 (#150).
 
 - **Breaking (EEF layout):** the Cartesian interface grows from 5 to 7 slots
   per arm — `x, y, z, yaw, pitch, roll, gripper`, 14 total. Old→new per-arm

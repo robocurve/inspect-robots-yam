@@ -34,7 +34,7 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 import numpy as np
 import numpy.typing as npt
 from inspect_robots.approver import GuardrailContribution
-from inspect_robots.conformance import DeviceSlot, OptionSlot
+from inspect_robots.conformance import DeviceSlot, NumberSlot, OptionSlot
 from inspect_robots.embodiment import SELF_PACED, EmbodimentInfo
 from inspect_robots.errors import ConfigError, EmbodimentFault
 from inspect_robots.scene import Scene
@@ -1166,8 +1166,8 @@ class YAMEmbodiment:
         DeviceSlot(arg="right_cam_device", kind="v4l2", label="right camera", group="cameras"),
     )
 
-    # The setup wizard offers these as yes/no questions (core OPTION_SLOTS
-    # protocol, inspect-robots#222) and writes the answers to config.ini.
+    # The setup wizard offers OPTION_SLOTS as yes/no questions and NUMBER_SLOTS
+    # as numeric questions, then writes the answers to config.ini.
     # The behavior contract lives on the matching YamConfig field. The wizard
     # suggestion may diverge from the YamConfig default in either direction:
     # auto_start stays conservative at runtime but the wizard nudges toward
@@ -1179,6 +1179,9 @@ class YAMEmbodiment:
     # is opt-in in both places because it changes the observation contract.
     # EEF orientation is also opt-in because opening tilt axes invalidates the
     # fingertips-down z-floor assumption and requires rig-specific adjustment.
+    # motor_temp_limit stays off by default for backward compatibility, while
+    # the wizard suggests 70 to arm the guardrail on fresh setups; operators can
+    # answer none to retain the off behavior (#150).
     OPTION_SLOTS: ClassVar[tuple[OptionSlot, ...]] = (
         OptionSlot(
             arg="auto_start",
@@ -1201,6 +1204,17 @@ class YAMEmbodiment:
             label="Open EEF pitch/roll tilt axes (eef_orientation; eef_pos rigs only, "
             "raise the eef_low z floor after)",
             default=False,
+        ),
+    )
+
+    NUMBER_SLOTS: ClassVar[tuple[NumberSlot, ...]] = (
+        NumberSlot(
+            arg="motor_temp_limit",
+            label="Motor temperature soft limit in degrees C "
+            "(motor_temp_limit; none disables the thermal guardrail)",
+            default=70,
+            minimum=1,
+            allow_none=True,
         ),
     )
 

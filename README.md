@@ -842,7 +842,8 @@ confirmed over-limit reading ends the trial with `overheat` while the motors
 still have torque, allowing the normal grading flow to run. Before returning,
 the trip parks to rest immediately in every mode, including ungraded and
 unattended runs and when `park_before_grade=false`. Thermal safety outranks
-that flag's scene-preservation preference. Run
+that flag's scene-preservation preference. The setup wizard offers
+`motor_temp_limit` (suggested `70`; answer `none` to leave it off). Run
 `inspect-robots-yam-health` after a long episode to see the hottest motor, then
 choose a limit comfortably below the temperature where the firmware has
 faulted on that rig.

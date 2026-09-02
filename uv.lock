@@ -462,14 +462,14 @@ wheels = [
 
 [[package]]
 name = "inspect-robots"
-version = "0.57.1"
+version = "0.58.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b8/b6/39109c8ef3173e7df0882ffa2c4bf005523f1838bce0a569f2c596606353/inspect_robots-0.57.1.tar.gz", hash = "sha256:83b2d9cfa814eb09e509ff7e875605fa12414aaa6863c098b61755bdf8f8a76f", size = 518523, upload-time = "2026-08-20T10:14:36.799Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/50/f0dd97490039b764aee138304145bd9551d1a92883f85a5e92bd9d81fc68/inspect_robots-0.58.0.tar.gz", hash = "sha256:a9a965634879d4ae813197189945d8525dd6e90ae42fbd7c63fe56d952866058", size = 528590, upload-time = "2026-09-02T16:35:59.813Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/67/4e/d51b7732f81a5241c3031c83ac64f573b6289dc47bcb6ad2b01007877f26/inspect_robots-0.57.1-py3-none-any.whl", hash = "sha256:5cce0657a224e8e083e7274f7a4395767f86bc63188eb6969c8d336b0697b370", size = 200703, upload-time = "2026-08-20T10:14:35.329Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/d8/10ad0d14d4ccf981730ee5d6ed9f394aa7883f10678a617caaae22ba662b/inspect_robots-0.58.0-py3-none-any.whl", hash = "sha256:7939049accab693187c02b64d8da83e82b6182a24aec30d66e37a7dd3178aa9f", size = 204357, upload-time = "2026-09-02T16:35:58.477Z" },
 ]
 
 [[package]]
@@ -527,7 +527,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "inspect-robots", specifier = ">=0.57" },
+    { name = "inspect-robots", specifier = ">=0.58" },
     { name = "inspect-robots-agent", marker = "extra == 'dev'", specifier = ">=0.26.0" },
     { name = "json-numpy", specifier = ">=2.1" },
     { name = "json-numpy", marker = "extra == 'client'", specifier = ">=2.1" },
