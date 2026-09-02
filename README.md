@@ -343,7 +343,7 @@ into the scene.
 `scripts/pack_frames` stages each camera's H.264 CRF 16 evidence MP4 and a
 bit-exact FFV1 Matroska raw archive in `/tmp` at the run's `control_hz`, then
 backs both up with rclone to
-`gdrive-rc:rig-video/<host>/<rig>/<stamp>/` on the `pi05_kaedim_tasks` shared
+`gdrive-sravanthi:rig-video/<host>/<rig>/<stamp>/` on the `pi05_kaedim_tasks` shared
 drive. After the upload is verified and a 600-second grace period has elapsed,
 it deletes the much larger `.npy` inputs and only then moves the MP4s and final
 manifest into the frames directory. The FFV1 files remain in backup and leave

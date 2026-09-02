@@ -34,7 +34,9 @@ import numpy as np
 TOOL_NAME = "pack_frames"
 TOOL_VERSION = "2"
 DEFAULT_FPS = 10.0
-DEFAULT_TEAM_DRIVE = "0AGNB3pVRo9vkUk9PVA"
+# The default remote carries the pi05_kaedim_tasks shared drive (team_drive =
+# 0AGNB3pVRo9vkUk9PVA) in its rclone.conf section, so no per-call flag is needed.
+DEFAULT_REMOTE = "gdrive-sravanthi:rig-video"
 CAMERAS = ("left", "top", "right")
 FRAME_RE = re.compile(r"^scene-0-e0_(left|top|right)_cam_(\d{6,})\.npy$")
 STDERR_TAIL_LINES = 20
@@ -1776,7 +1778,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--grace", type=float, default=600.0)
     parser.add_argument("--no-upload", action="store_true")
     parser.add_argument("--allow-unbacked-delete", action="store_true")
-    parser.add_argument("--remote", default="gdrive-rc:rig-video")
+    parser.add_argument("--remote", default=DEFAULT_REMOTE)
     parser.add_argument("--host-label", default=socket.gethostname().split(".")[0])
     parser.add_argument("--ffmpeg", default=_tool_default("ffmpeg"))
     parser.add_argument("--ffprobe", default=_tool_default("ffprobe"))
@@ -1817,7 +1819,7 @@ def _options(namespace: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         parser.error("--allow-unbacked-delete requires --no-upload")
     extras = namespace.rclone_extra
     if extras is None:
-        extras = ["--drive-team-drive", DEFAULT_TEAM_DRIVE]
+        extras = []
     return PackOptions(
         rig=rig,
         min_height=namespace.min_height,
