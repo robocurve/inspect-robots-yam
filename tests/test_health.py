@@ -126,7 +126,12 @@ class ReaderFactory:
 class FakeDriver:
     """A bimanual driver exposing one canned joint vector and a close marker."""
 
-    def __init__(self, positions: np.ndarray, *, read_error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        positions: np.ndarray,
+        *,
+        read_error: Exception | None = None,
+    ) -> None:
         self.positions = positions
         self.read_error = read_error
         self.closed = 0
@@ -337,6 +342,55 @@ def test_driver_read_exception_closes_and_becomes_driver_fault() -> None:
 
     assert report.joints == (CheckResult("driver", False, "CAN read timed out"),)
     assert driver.closed == 1
+
+
+def test_motor_temperatures_are_a_separate_always_ok_row() -> None:
+    class TempsDriver(FakeDriver):
+        """Expose a canned thermal snapshot in addition to joint positions."""
+
+        def __init__(self, positions: np.ndarray, temperatures: np.ndarray) -> None:
+            super().__init__(positions)
+            self.temperatures = temperatures
+
+        def get_motor_temps(self) -> np.ndarray:
+            return self.temperatures.copy()
+
+    temperatures = np.full(14, 35.0)
+    temperatures[13] = 48.5
+
+    report = run(
+        driver=TempsDriver(good_positions(), temperatures),
+        skip_cameras=True,
+    )
+
+    assert report.joints[-1] == CheckResult("temps", True, "max 48.5 C @ right_gripper")
+    assert all(result.ok for result in report.joints[:-1])
+
+
+def test_motor_temperature_row_is_absent_for_legacy_driver() -> None:
+    class LegacyDriver:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def get_joint_pos(self) -> np.ndarray:
+            return good_positions()
+
+        def close(self) -> None:
+            self.closed = True
+
+    driver = LegacyDriver()
+    report = run_health(
+        configured(),
+        out_path=None,
+        settle_s=0.4,
+        joint_epsilon=0.02,
+        skip_cameras=True,
+        skip_motors=False,
+        driver_factory=lambda _cfg: driver,  # type: ignore[arg-type, return-value]
+    )
+
+    assert [result.name for result in report.joints] == list(packing.DIM_LABELS)
+    assert driver.closed
 
 
 def test_gripper_native_units_are_not_range_checked() -> None:

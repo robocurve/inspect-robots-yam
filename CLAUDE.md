@@ -61,6 +61,9 @@ because absolute joint conformance permits only one 14-D state field.
 
 - `YAMEmbodiment.step()` **always clamps** to `YamConfig.joint_low/high` before
   commanding, independent of any `Approver`. This is the last line of defense.
+- Thermal trips end trials with the non-definitive `"overheat"` reason so the
+  park-for-grading ramp and operator verdict remain reachable. Never make that
+  reason definitive.
 - The declared `control_mode` is `joint_pos` for absolute joint mode,
   `joint_delta` when `joints_are_delta=True`, and `eef_abs_pose` in EEF mode.
   Delta joint commands are converted to absolute *inside* `step()` before the

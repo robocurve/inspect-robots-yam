@@ -28,6 +28,9 @@ class FakeDriver:
     def get_joint_eff(self) -> np.ndarray:
         return np.zeros(14)
 
+    def get_motor_temps(self) -> np.ndarray:
+        return np.full(14, 30.0)
+
     def command_joint_pos(self, target: np.ndarray) -> None:
         self.commands.append(np.asarray(target, dtype=float).copy())
         self.state = np.asarray(target, dtype=float).copy()

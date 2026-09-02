@@ -31,9 +31,14 @@ class FakeDriver:
         self,
         state: np.ndarray | None = None,
         effort: np.ndarray | None = None,
+        temps: np.ndarray | None = None,
+        temps_seq: list[np.ndarray] | None = None,
     ) -> None:
         self.state = np.zeros(14) if state is None else state
         self.effort = np.zeros(14) if effort is None else effort
+        self.temps = np.full(14, 30.0) if temps is None else temps
+        self.temps_seq = list(temps_seq or [])
+        self.temp_reads = 0
         self.commands: list[np.ndarray] = []
         self.closed = False
 
@@ -42,6 +47,12 @@ class FakeDriver:
 
     def get_joint_eff(self) -> np.ndarray:
         return self.effort.copy()
+
+    def get_motor_temps(self) -> np.ndarray:
+        self.temp_reads += 1
+        if self.temps_seq:
+            return self.temps_seq.pop(0).copy()
+        return self.temps.copy()
 
     def command_joint_pos(self, target: np.ndarray) -> None:
         self.commands.append(np.asarray(target, dtype=float).copy())
@@ -426,6 +437,238 @@ def test_joint_eff_requires_updated_injected_driver() -> None:
         RuntimeError,
         match=r"report_joint_eff=true.*get_joint_eff\(\)",
     ):
+        emb.reset(Scene(id="s", instruction="inspect"))
+
+
+def test_motor_temp_guardrail_default_off_never_reads_or_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    emb, driver, _ = _build()
+
+    with caplog.at_level("WARNING", logger="inspect_robots_yam.embodiment"):
+        emb.reset(Scene(id="s", instruction="inspect"))
+        emb.step(Action(data=np.zeros(14)))
+
+    assert driver.temp_reads == 0
+    assert "thermal guardrail" not in caplog.text
+
+
+def test_motor_temp_mid_run_trip_uses_session_notice_and_skips_motion() -> None:
+    temperatures = np.full(14, 30.0)
+    temperatures[8] = 80.0
+    driver = FakeDriver(
+        temps_seq=[np.full(14, 30.0), temperatures, temperatures],
+    )
+    emb, _, _ = _build(YamConfig(motor_temp_limit=80.0), driver=driver)
+    session = _RecordingSession()
+    emb.connect_operator_session(session)
+    emb.reset(Scene(id="s", instruction="inspect"))
+    command_count = len(driver.commands)
+
+    result = emb.step(Action(data=np.ones(14)))
+
+    assert result.terminated
+    assert result.termination_reason == "overheat"
+    assert len(driver.commands) == command_count
+    assert result.info["overheat"] == {
+        "slot": 8,
+        "label": "right_j1",
+        "motor_id": 2,
+        "channel": "can1",
+        "temp": 80.0,
+    }
+    assert session.statuses[-1] is None
+    assert len(session.lines) == 1
+    assert all(text in session.lines[0] for text in ("right_j1", "motor id 2", "can1", "80"))
+
+
+def test_motor_temp_mid_run_trip_uses_unconnected_operator_notice() -> None:
+    lines: list[str] = []
+    statuses: list[str | None] = []
+    temperatures = np.full(14, 30.0)
+    temperatures[0] = 81.0
+    driver = FakeDriver(temps_seq=[np.full(14, 30.0), temperatures, temperatures])
+    cfg = YamConfig(motor_temp_limit=80.0, cam_height=4, cam_width=4)
+    emb = YAMEmbodiment(
+        cfg,
+        driver_factory=lambda _cfg: driver,
+        camera_reader=_cameras,
+        operator=OperatorIO(input_fn=lambda _prompt: "", output_fn=lines.append),
+        poll_end=lambda: False,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+        status_fn=statuses.append,
+    )
+    emb.reset(Scene(id="s", instruction="inspect"))
+
+    result = emb.step(Action(data=np.zeros(14)))
+
+    assert result.terminated
+    assert statuses[-1] is None
+    assert len(lines) == 1
+    assert all(text in lines[0] for text in ("left_j0", "motor id 1", "can0", "81"))
+
+
+def test_motor_temp_confirmation_rejects_glitch_and_uses_fallback_sleep() -> None:
+    hot = np.full(14, 30.0)
+    hot[3] = 80.0
+    driver = FakeDriver(temps_seq=[np.full(14, 30.0), hot, np.full(14, 30.0)])
+    emb, _, sleeps = _build(
+        YamConfig(motor_temp_limit=80.0, control_hz=0.0, rest_secs=0.1),
+        driver=driver,
+    )
+    emb.reset(Scene(id="s", instruction="inspect"))
+    sleeps.clear()
+    command_count = len(driver.commands)
+
+    result = emb.step(Action(data=np.zeros(14)))
+
+    assert not result.terminated
+    assert len(driver.commands) == command_count + 1
+    assert sleeps == [0.1]
+
+
+def test_motor_temp_nonpositive_sentinels_never_trip() -> None:
+    driver = FakeDriver(temps=np.full(14, -1.0))
+    emb, _, _ = _build(
+        YamConfig(motor_temp_limit=0.1, motor_temp_warn_margin=0.01),
+        driver=driver,
+    )
+
+    emb.reset(Scene(id="s", instruction="inspect"))
+    result = emb.step(Action(data=np.zeros(14)))
+
+    assert not result.terminated
+
+
+def test_motor_temp_right_gripper_slot_trips() -> None:
+    hot = np.full(14, 30.0)
+    hot[13] = 85.0
+    driver = FakeDriver(temps_seq=[np.full(14, 30.0), hot, hot])
+    emb, _, _ = _build(YamConfig(motor_temp_limit=80.0), driver=driver)
+    emb.reset(Scene(id="s", instruction="inspect"))
+
+    result = emb.step(Action(data=np.zeros(14)))
+
+    assert result.termination_reason == "overheat"
+    assert result.info["overheat"] == {
+        "slot": 13,
+        "label": "right_gripper",
+        "motor_id": 7,
+        "channel": "can1",
+        "temp": 85.0,
+    }
+
+
+def test_motor_temp_warns_once_per_trial_and_resets(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    driver = FakeDriver(temps=np.full(14, 30.0))
+    emb, _, _ = _build(YamConfig(motor_temp_limit=80.0), driver=driver)
+    emb.reset(Scene(id="s", instruction="inspect"))
+    driver.temps[4] = 72.0
+
+    with caplog.at_level("WARNING", logger="inspect_robots_yam.embodiment"):
+        emb.step(Action(data=np.zeros(14)))
+        emb.step(Action(data=np.zeros(14)))
+        emb.reset(Scene(id="s2", instruction="inspect again"))
+
+    warnings = [
+        record for record in caplog.records if "thermal guardrail warning" in record.message
+    ]
+    assert len(warnings) == 2
+    assert all("left_j4" in record.message for record in warnings)
+
+
+def test_motor_temp_reset_read_warns_inside_margin(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    temperatures = np.full(14, 30.0)
+    temperatures[7] = 75.0
+    emb, _, _ = _build(
+        YamConfig(motor_temp_limit=80.0),
+        driver=FakeDriver(temps=temperatures),
+    )
+
+    with caplog.at_level("WARNING", logger="inspect_robots_yam.embodiment"):
+        emb.reset(Scene(id="s", instruction="inspect"))
+
+    assert "thermal guardrail warning: right_j0" in caplog.text
+
+
+def test_motor_temp_pre_run_gate_faults_before_motion_and_close_does_not_ramp() -> None:
+    hot = np.full(14, 30.0)
+    hot[2] = 82.0
+    driver = FakeDriver(temps_seq=[hot, hot])
+    emb, _, sleeps = _build(YamConfig(motor_temp_limit=80.0), driver=driver)
+
+    with pytest.raises(EmbodimentFault, match="thermal guardrail") as caught:
+        emb.reset(Scene(id="s", instruction="inspect"))
+
+    message = str(caught.value)
+    assert all(text in message for text in ("left_j2", "motor id 3", "can0", "82"))
+    assert driver.commands == []
+    assert sleeps == [0.1]
+    emb.close()
+    assert driver.commands == []
+    assert driver.closed
+
+
+def test_motor_temp_pre_run_confirmation_rejects_glitch() -> None:
+    hot = np.full(14, 30.0)
+    hot[1] = 80.0
+    driver = FakeDriver(temps_seq=[hot, np.full(14, 30.0)])
+    emb, _, _ = _build(YamConfig(motor_temp_limit=80.0), driver=driver)
+
+    observation = emb.reset(Scene(id="s", instruction="inspect"))
+
+    assert observation.instruction == "inspect"
+    assert driver.commands
+
+
+def test_motor_temp_warm_second_reset_faults_and_close_still_ramps() -> None:
+    cold = np.full(14, 30.0)
+    hot = cold.copy()
+    hot[9] = 83.0
+    driver = FakeDriver(temps_seq=[cold, hot, hot])
+    emb, _, _ = _build(
+        YamConfig(motor_temp_limit=80.0, rest_secs=0.1),
+        driver=driver,
+    )
+    emb.reset(Scene(id="s", instruction="inspect"))
+    first_trial_commands = len(driver.commands)
+
+    with pytest.raises(EmbodimentFault, match="thermal guardrail"):
+        emb.reset(Scene(id="s2", instruction="inspect again"))
+
+    assert len(driver.commands) == first_trial_commands
+    emb.close()
+    assert len(driver.commands) > first_trial_commands
+    assert driver.closed
+
+
+def test_motor_temp_limit_requires_updated_injected_driver() -> None:
+    class LegacyDriver:
+        def get_joint_pos(self) -> np.ndarray:
+            return np.zeros(14)
+
+        def command_joint_pos(self, target: np.ndarray) -> None:
+            del target
+
+        def close(self) -> None:
+            pass
+
+    driver = LegacyDriver()
+    emb = YAMEmbodiment(
+        YamConfig(cam_height=4, cam_width=4, motor_temp_limit=80.0),
+        driver_factory=lambda _cfg: cast(BimanualDriver, driver),
+        camera_reader=_cameras,
+        operator=_operator(),
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(RuntimeError, match=r"motor_temp_limit.*get_motor_temps"):
         emb.reset(Scene(id="s", instruction="inspect"))
 
 

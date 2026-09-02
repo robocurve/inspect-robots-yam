@@ -217,10 +217,14 @@ def _run_motors(
     joint_epsilon: float,
     driver_factory: embodiment.DriverFactory,
 ) -> tuple[CheckResult, ...]:
+    temperatures: npt.NDArray[np.float64] | None = None
     try:
         driver = driver_factory(cfg)
         try:
             positions = packing.validate_dim(driver.get_joint_pos())
+            get_motor_temps = getattr(driver, "get_motor_temps", None)
+            if callable(get_motor_temps):
+                temperatures = packing.validate_dim(get_motor_temps())
         finally:
             driver.close()
     except Exception as exc:
@@ -241,6 +245,15 @@ def _run_motors(
         else:
             detail = ""
         results.append(CheckResult(name=name, ok=not detail, detail=detail))
+    if temperatures is not None:
+        hottest = int(np.argmax(temperatures))
+        results.append(
+            CheckResult(
+                name="temps",
+                ok=True,
+                detail=f"max {temperatures[hottest]:g} C @ {packing.DIM_LABELS[hottest]}",
+            )
+        )
     return tuple(results)
 
 

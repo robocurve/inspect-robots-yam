@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- An opt-in motor thermal guardrail checks every arm and gripper before reset
+  motion and before each step, warns as the configured limit approaches, and
+  ends a hot trial on the grading screen while torque remains. This avoids the
+  DM firmware cutoff that can strand an arm limp in its current pose. The rig
+  health report now shows its hottest motor to guide threshold selection
+  (#144).
+
 - `scripts/run_batch.sh`: repeat one task N times from a rig directory with a
   human in the loop. Each trial is its own `./run` process with `--epochs 1`
   forced, so the framework's grading prompt pauses for the operator and the

@@ -485,6 +485,10 @@ class SettleDriver:
         """Report a canned packed effort vector."""
         return np.zeros(14)
 
+    def get_motor_temps(self) -> np.ndarray:
+        """Report benign packed motor temperatures."""
+        return np.full(14, 30.0)
+
     def command_joint_pos(self, target: np.ndarray) -> None:
         """Record the target and restart the convergence countdown."""
         self.commands.append(np.asarray(target, dtype=float).copy())

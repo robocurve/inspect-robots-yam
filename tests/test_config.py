@@ -42,6 +42,12 @@ def test_yam_defaults() -> None:
     assert cfg.control_interface == "joints"
 
 
+def test_motor_temp_defaults() -> None:
+    cfg = YamConfig()
+    assert cfg.motor_temp_limit is None
+    assert cfg.motor_temp_warn_margin == 10.0
+
+
 def test_pose_config_defaults() -> None:
     cfg = YamConfig()
     assert cfg.start_pose is None
@@ -81,6 +87,34 @@ def test_yam_from_kwargs() -> None:
     cfg = YamConfig.from_kwargs(left_channel="canA", control_hz=25.0)
     assert cfg.left_channel == "canA"
     assert cfg.control_hz == 25.0
+
+
+def test_motor_temp_from_kwargs() -> None:
+    cfg = YamConfig.from_kwargs(motor_temp_limit=75.0, motor_temp_warn_margin=5.0)
+    assert cfg.motor_temp_limit == 75.0
+    assert cfg.motor_temp_warn_margin == 5.0
+
+
+@pytest.mark.parametrize("limit", [0.0, -1.0, np.nan, np.inf, -np.inf])
+def test_motor_temp_limit_validation(limit: float) -> None:
+    with pytest.raises(ValueError, match="motor_temp_limit must be finite and > 0"):
+        YamConfig(motor_temp_limit=limit)
+
+
+@pytest.mark.parametrize("margin", [-1.0, np.nan, np.inf, -np.inf])
+def test_motor_temp_warn_margin_validation(margin: float) -> None:
+    with pytest.raises(ValueError, match="motor_temp_warn_margin must be finite and >= 0"):
+        YamConfig(motor_temp_warn_margin=margin)
+
+
+def test_motor_temp_warn_margin_must_be_below_limit() -> None:
+    with pytest.raises(ValueError, match="motor_temp_warn_margin must be less"):
+        YamConfig(motor_temp_limit=10.0, motor_temp_warn_margin=10.0)
+
+
+def test_motor_temp_warn_margin_rejects_none_from_kwargs() -> None:
+    with pytest.raises(ValueError, match="motor_temp_warn_margin cannot be none"):
+        YamConfig.from_kwargs(motor_temp_warn_margin=None)
 
 
 def test_start_pose_and_home_pose_are_mutually_exclusive() -> None:

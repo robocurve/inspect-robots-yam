@@ -171,7 +171,7 @@ class OperatorSessionLike(Protocol):
 
 @runtime_checkable
 class BimanualDriver(Protocol):
-    """The minimal 14-D joint-position and effort driver the embodiment needs."""
+    """The minimal 14-D joint-position, effort, and temperature driver contract."""
 
     def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]:
         """Read both arm poses in radians and driver-native gripper units."""
@@ -179,6 +179,10 @@ class BimanualDriver(Protocol):
 
     def get_joint_eff(self) -> npt.NDArray[np.floating[Any]]:
         """Read packed arm and gripper estimated torque in raw N·m."""
+        ...
+
+    def get_motor_temps(self) -> npt.NDArray[np.floating[Any]]:
+        """Read packed max(MOS, rotor) temperatures in degrees C."""
         ...
 
     def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None:
@@ -299,6 +303,16 @@ def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cov
             left_eff = np.append(left_obs["joint_eff"], left_obs["gripper_eff"])
             right_eff = np.append(right_obs["joint_eff"], right_obs["gripper_eff"])
             return packing.pack(left_eff, right_eff)
+
+        def get_motor_temps(self) -> npt.NDArray[np.floating[Any]]:
+            def _arm_temps(arm: Any) -> npt.NDArray[np.float64]:
+                states = arm.motor_chain.read_states()
+                return np.asarray(
+                    [max(state.temp_mos, state.temp_rotor) for state in states],
+                    dtype=np.float64,
+                )
+
+            return packing.pack(_arm_temps(left), _arm_temps(right))
 
         def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None:
             lo, ro = packing.split(target)
@@ -1288,6 +1302,7 @@ class YAMEmbodiment:
         self._t_started = 0.0
         self.num_steps = 0
         self.settle_timeouts = 0
+        self._motor_temp_warned = False
         # Set when the per-trial timeout budget is exhausted; suppresses further
         # settling for the rest of the trial. Cleared at reset() entry.
         self._settle_disabled = False
@@ -1496,6 +1511,7 @@ class YAMEmbodiment:
         # captured from a possibly mid-motion pose, for every trial thereafter.
         self.settle_timeouts = 0
         self._settle_disabled = False
+        self._motor_temp_warned = False
         # Ahead of the homing settle below, which names the scene if it has to
         # report a budget exhaustion; set later it would report the previous
         # trial's instruction, or None on the first.
@@ -1547,6 +1563,16 @@ class YAMEmbodiment:
                     poses.pose_path(self._cfg.pose_dir, stored.name),
                 )
             self._driver = self._driver_factory(self._cfg)
+        if self._cfg.motor_temp_limit is not None:
+            overheat = self._confirmed_overheat(self._cfg.motor_temp_limit)
+            if overheat is not None:
+                slot, temp = overheat
+                label, motor_id, channel = self._motor_identity(slot)
+                raise EmbodimentFault(
+                    f"thermal guardrail: {label} (motor id {motor_id}, {channel}) at "
+                    f"{temp:g} C >= limit {self._cfg.motor_temp_limit:g} C at episode "
+                    "start; let the rig cool or raise motor_temp_limit"
+                )
         if self._cfg.control_interface == "eef_pos" and (
             self._left_kinematics is None or self._right_kinematics is None
         ):
@@ -1657,6 +1683,38 @@ class YAMEmbodiment:
     def step(self, action: Action) -> StepResult:
         """Clamp + command one action, pace to the control rate, then maybe end."""
         driver = self._require_driver()
+        if self._cfg.motor_temp_limit is not None:
+            overheat = self._confirmed_overheat(self._cfg.motor_temp_limit)
+            if overheat is not None:
+                slot, temp = overheat
+                label, motor_id, channel = self._motor_identity(slot)
+                notice = (
+                    f"thermal guardrail: ending trial before motion; {label} "
+                    f"(motor id {motor_id}, {channel}) at {temp:g} C >= limit "
+                    f"{self._cfg.motor_temp_limit:g} C"
+                )
+                self._status(None)
+                if self._session is not None:
+                    self._session.write_line(notice)
+                else:
+                    self._operator.output_fn(notice)
+                logger.warning(notice)
+                # The framework records the policy action even though this hot-path
+                # return deliberately does not execute it on the arm.
+                return StepResult(
+                    observation=self._observe(self._instruction),
+                    terminated=True,
+                    termination_reason="overheat",
+                    info={
+                        "overheat": {
+                            "slot": slot,
+                            "label": label,
+                            "motor_id": motor_id,
+                            "channel": channel,
+                            "temp": temp,
+                        }
+                    },
+                )
         self.num_steps += 1
         if self._cfg.control_interface == "eef_pos":
             cmd = packing.validate_dim(action.data, len(EEF_DIM_LABELS))
@@ -2024,6 +2082,62 @@ class YAMEmbodiment:
         if self._driver is None:
             raise RuntimeError("step() called before reset() (or after close())")
         return self._driver
+
+    def _read_motor_temps(self) -> Vec:
+        """Read the opt-in packed thermal snapshot from an updated driver."""
+        driver = self._require_driver()
+        get_motor_temps = getattr(driver, "get_motor_temps", None)
+        if not callable(get_motor_temps):
+            raise RuntimeError(
+                "motor_temp_limit is set but the injected driver lacks get_motor_temps()"
+            )
+        temps = packing.validate_dim(get_motor_temps())
+        self._warn_motor_temps(temps)
+        return temps
+
+    def _warn_motor_temps(self, temps: Vec) -> None:
+        """Log the first per-trial reading inside the configured warning margin."""
+        limit = self._cfg.motor_temp_limit
+        if limit is None or self._motor_temp_warned:
+            return
+        candidates = np.flatnonzero(
+            (temps > 0) & (temps >= limit - self._cfg.motor_temp_warn_margin)
+        )
+        if not candidates.size:
+            return
+        slot = int(candidates[int(np.argmax(temps[candidates]))])
+        temp = float(temps[slot])
+        label, motor_id, channel = self._motor_identity(slot)
+        logger.warning(
+            "thermal guardrail warning: %s (motor id %d, %s) at %g C; limit %g C",
+            label,
+            motor_id,
+            channel,
+            temp,
+            limit,
+        )
+        self._motor_temp_warned = True
+
+    def _confirmed_overheat(self, limit: float) -> tuple[int, float] | None:
+        """Return the hottest twice-over-limit motor, ignoring one-frame glitches."""
+        first = self._read_motor_temps()
+        initially_hot = (first > 0) & (first >= limit)
+        if not np.any(initially_hot):
+            return None
+        hz = self._cfg.control_hz if self._cfg.control_hz > 0 else 10.0
+        self._sleep(1.0 / hz)
+        second = self._read_motor_temps()
+        confirmed = initially_hot & (second > 0) & (second >= limit)
+        slots = np.flatnonzero(confirmed)
+        if not slots.size:
+            return None
+        slot = int(slots[int(np.argmax(second[slots]))])
+        return slot, float(second[slot])
+
+    def _motor_identity(self, slot: int) -> tuple[str, int, str]:
+        """Map one packed slot to its label, CAN motor id, and arm channel."""
+        channel = self._cfg.left_channel if slot < packing.ARM_WIDTH else self._cfg.right_channel
+        return packing.DIM_LABELS[slot], slot % packing.ARM_WIDTH + 1, channel
 
     def _send(self, cmd: Vec) -> Vec:
         """Clamp to joint limits (safety backstop) and de-normalize grippers."""
