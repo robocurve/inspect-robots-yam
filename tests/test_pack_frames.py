@@ -1017,3 +1017,27 @@ def test_default_fps_reads_eval_embodiment_info() -> None:
     assert pack_frames._default_fps({"embodiment_info": {"control_hz": 25}}) == 25.0
     assert pack_frames._default_fps({"eval": {"embodiment_info": {"control_hz": True}}}) == 10.0
     assert pack_frames._default_fps({}) == 10.0
+
+
+def test_packed_kept_with_npy_stays_eligible(tmp_path: Path) -> None:
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    (frames_dir / "scene-0-e0_top_cam_000000.npy").write_bytes(b"x")
+    mp4 = frames_dir / "scene-0-e0_top_cam.mp4"
+    mp4.write_bytes(b"video")
+    stat = mp4.stat()
+    manifest = {
+        "state": "packed-kept",
+        "streams": {
+            "top": {
+                "file": mp4.name,
+                "sha256": pack_frames._sha256(mp4),
+                "bytes": stat.st_size,
+                "mtime": stat.st_mtime,
+            }
+        },
+    }
+    (frames_dir / "pack_manifest.json").write_text(json.dumps(manifest))
+    assert pack_frames._manifest_is_packed(frames_dir) is False
+    (frames_dir / "scene-0-e0_top_cam_000000.npy").unlink()
+    assert pack_frames._manifest_is_packed(frames_dir) is True

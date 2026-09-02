@@ -340,6 +340,11 @@ def _manifest_is_packed(
     manifest = _load_pack_manifest(frames_dir)
     if manifest is None or manifest.get("state") not in {"packed", "packed-kept"}:
         return False
+    if manifest.get("state") == "packed-kept" and any(frames_dir.glob("*.npy")):
+        # A --keep pass left the raw frames in place; the run stays eligible so a
+        # later pass can archive and delete them. Only once the .npy are gone does
+        # packed-kept behave like packed.
+        return False
     if not _manifest_outputs_match(frames_dir, manifest, verify=verify):
         target = logger if logger is not None else logging.getLogger(TOOL_NAME)
         target.warning(
