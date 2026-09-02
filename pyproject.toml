@@ -20,7 +20,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "inspect-robots>=0.51",  # session-owned end-gesture hint on footer statuses (plan 0062)
+    "inspect-robots>=0.57",  # observe_parked lifecycle used by thermal grading (plan 0028)
     "numpy>=1.24",
     "requests>=2.31",
     "json-numpy>=2.1",

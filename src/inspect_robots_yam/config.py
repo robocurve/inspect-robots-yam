@@ -204,6 +204,11 @@ class YamConfig(_FromKwargs):
     collision_table: bool = True
     collision_table_height: float | None = None
     collision_penetration_threshold: float | None = None
+    # Soft motor-temperature cutoff in degrees C. None disables both thermal
+    # gates; every arm and gripper slot uses the same conservative limit.
+    motor_temp_limit: float | None = None
+    # Warn once per trial this many degrees below the configured thermal limit.
+    motor_temp_warn_margin: float = 10.0
     # Wait for the arm to reach each commanded pose before observing, so a
     # chunked policy plans from a converged view. None disables the wait; a
     # tolerance must exceed the rig's steady-state offset (run
@@ -306,6 +311,8 @@ class YamConfig(_FromKwargs):
                 "collision_table_height cannot be none; use collision_table=false "
                 "to remove the table"
             )
+        if "motor_temp_warn_margin" in flat and flat["motor_temp_warn_margin"] is None:
+            raise ValueError("motor_temp_warn_margin cannot be none; provide a non-negative value")
         if flat.get("collision_table") is False and flat.get("collision_table_height") is not None:
             raise ValueError(
                 "collision_table_height contradicts collision_table=false; remove the "
@@ -327,6 +334,17 @@ class YamConfig(_FromKwargs):
             )
         if not np.isfinite(self.gripper_stroke_s) or self.gripper_stroke_s <= 0:
             raise ValueError("gripper_stroke_s must be finite and > 0")
+        if self.motor_temp_limit is not None and (
+            not np.isfinite(self.motor_temp_limit) or self.motor_temp_limit <= 0
+        ):
+            raise ValueError("motor_temp_limit must be finite and > 0 when set")
+        if not np.isfinite(self.motor_temp_warn_margin) or self.motor_temp_warn_margin < 0:
+            raise ValueError("motor_temp_warn_margin must be finite and >= 0")
+        if (
+            self.motor_temp_limit is not None
+            and self.motor_temp_warn_margin >= self.motor_temp_limit
+        ):
+            raise ValueError("motor_temp_warn_margin must be less than motor_temp_limit")
         valid_interfaces = {"eef_pos", "joints"}
         if self.control_interface not in valid_interfaces:
             raise ValueError(

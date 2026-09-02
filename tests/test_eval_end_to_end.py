@@ -6,9 +6,12 @@ horizon still parks the arms at the captured init pose on close."""
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from inspect_robots import eval as rl_eval
+from kitchenbench.tasks import stack
 
 from inspect_robots_yam.config import MolmoActConfig, YamConfig
 from inspect_robots_yam.embodiment import YAMEmbodiment
@@ -27,6 +30,9 @@ class _FakeDriver:
 
     def get_joint_eff(self) -> np.ndarray:
         return np.zeros(14)
+
+    def get_motor_temps(self) -> np.ndarray:
+        return np.full(14, 30.0)
 
     def command_joint_pos(self, target: np.ndarray) -> None:
         self.commands.append(np.asarray(target, dtype=float).copy())
@@ -105,3 +111,70 @@ def test_eval_scores_success_end_to_end() -> None:
     log = logs[0]
     assert log.status == "success"
     assert log.results.metrics["task_success"] == 1.0
+
+
+def test_overheat_termination_parks_before_grading_end_to_end() -> None:
+    class HotDriver(_FakeDriver):
+        """Become hot after reset and record commands issued after the trip."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.temp_reads = 0
+            self.hot_seen = False
+            self.post_trip_commands: list[np.ndarray] = []
+
+        def get_motor_temps(self) -> np.ndarray:
+            self.temp_reads += 1
+            temperatures = np.full(14, 30.0)
+            if self.temp_reads > 1:
+                temperatures[2] = 80.0
+                self.hot_seen = True
+            return temperatures
+
+        def command_joint_pos(self, target: np.ndarray) -> None:
+            super().command_joint_pos(target)
+            if self.hot_seen:
+                self.post_trip_commands.append(np.asarray(target, dtype=float).copy())
+
+    driver = HotDriver()
+    rest_pose = np.full(14, 0.6)
+    graded: list[str | None] = []
+
+    def grade_overheat(record, scene) -> None:
+        del scene
+        graded.append(record.termination_reason)
+        record.operator_judgement = "y"
+
+    policy = MolmoAct2Policy(
+        MolmoActConfig(cam_height=4, cam_width=4, num_steps=1),
+        post_fn=_post,
+    )
+    embodiment = YAMEmbodiment(
+        YamConfig(
+            cam_height=4,
+            cam_width=4,
+            motor_temp_limit=80.0,
+            rest_pose=tuple(rest_pose),
+            rest_secs=0.1,
+        ),
+        driver_factory=lambda _cfg: driver,
+        camera_reader=_cameras,
+        operator=OperatorIO(input_fn=lambda _prompt: "", output_fn=lambda _message: None),
+        poll_end=lambda: False,
+        sleep_fn=lambda _delay: None,
+        clock=lambda: 0.0,
+    )
+
+    logs = rl_eval(
+        replace(stack(), scenes=stack().scenes[:1], epochs=1),
+        policy,
+        embodiment,
+        sinks=[],
+        seed=0,
+        before_scoring=grade_overheat,
+    )
+
+    assert logs[0].samples[0].termination_reasons == ("overheat",)
+    assert driver.post_trip_commands[-1] == pytest.approx(rest_pose)
+    assert graded == ["overheat"]
+    assert logs[0].results.metrics["task_success"] == 1.0

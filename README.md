@@ -817,6 +817,8 @@ measured),
 geometry), `collision_table` (default `True`; set `False` for no table plane),
 `collision_table_height`, `collision_penetration_threshold` (optional collision
 model overrides),
+`motor_temp_limit` (degrees C; `none` by default, which disables the thermal
+guardrail), `motor_temp_warn_margin` (degrees C below the limit; default `10.0`),
 `settle_tolerance` (radians; `none` by default, which disables settling; see
 *Settling before observing*), `settle_timeout_s` (default `1.0`),
 `settle_timeout_budget` (default `20`),
@@ -831,6 +833,18 @@ line the real horizon automatically; the hint is only a fallback for direct
 The current factory value is available for inspection as
 `inspect_robots_yam.config.DEFAULT_REST_POSE`; this is an informational constant,
 not a stable import.
+
+The thermal guardrail compares `motor_temp_limit` with the hotter of the MOS
+and rotor readings for every arm and gripper motor. At episode start, a motor
+at the limit refuses the reset before the arms move. During an episode, a
+confirmed over-limit reading ends the trial with `overheat` while the motors
+still have torque, allowing the normal grading flow to run. Run
+`inspect-robots-yam-health` after a long episode to see the hottest motor, then
+choose a limit comfortably below the temperature where the firmware has
+faulted on that rig. A mid-run trip parks immediately only for graded runs with
+`park_before_grade=true`. Ungraded or unattended runs hold until `close()`
+parks the arms.
+
 `ActServerConfig`: `server_url`, `remedy` (connection-failure recovery
 instruction; defaults to the policy entry's canonical server launch command
 plus a docs link), `endpoint`, `num_steps` (the wire field: the server's
