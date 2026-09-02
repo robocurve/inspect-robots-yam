@@ -1,6 +1,6 @@
 # 0023 — Pack camera frames to H.264 evidence video (+ Drive backup)
 
-Status: in progress (2026-09-01). Issue #145, PR #146. Companion: rig-dashboard `feat/adopt-packed-clips`.
+Status: backlog executed 2026-09-02 (65 runs, 0 failures, 250 GiB on Drive). Issue #145, PR #146. Companion: rig-dashboard `feat/adopt-packed-clips`.
 Where a step below conflicts with the "Amendments" section, the amendments win.
 
 
