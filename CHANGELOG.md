@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- `scripts/run_batch.sh`: repeat one task N times from a rig directory with a
+  human in the loop. Each trial is its own `./run` process with `--epochs 1`
+  forced, so the framework's grading prompt pauses for the operator and the
+  arms are parked with torque released before the script asks for a scene
+  reset; the next trial starts on Enter, after discarding keystrokes typed
+  during the park ramp. A trial that exits uncleanly gets a check-the-arms
+  warning instead of the torque-off claim. Per-trial verdicts are pulled from
+  the eval logs into `<log-dir>/batches/<stamp>.tsv`, echoed per trial, and
+  tallied at the end. Before each trial launches it saves a top-camera JPEG of
+  the reset scene as `batch_<stamp>/trial_NN_<run-id>_start.jpg`
+  (`--no-snapshots` to skip). Any other `--epochs` value is rejected because
+  within-process epochs hold torque at home between trials.
+
 ### Fixed
 
 - The operator's elapsed counter now reads the wall clock instead of the step
