@@ -6,7 +6,8 @@ Issue: #144. Branch: `feat/thermal-guardrail`.
 
 A motor that reaches the DM firmware's internal over-temperature cutoff fails
 hard: the CAN parse raises from the driver's control thread
-(`i2rt/motor_drivers/dm_driver.py:314`, error nibbles `0xB`/`0xC`), the motor
+(`i2rt/motor_drivers/dm_driver.py:313-315`; the over-temperature error codes
+`0xB`/`0xC` are defined in `i2rt/motor_drivers/utils.py:97-98`), the motor
 chain exits, and torque is gone wherever the arm happens to be. Observed on a
 real run 2026-09-01 (rig on `can_can2`, motor id 2, DM4340, log
 `adhoc_de62db89.json`): the trial ended cleanly only because a human was
@@ -45,9 +46,12 @@ This plan adds a soft, plugin-owned thermal limit with two gates:
   inference plus one step; burning an LLM call to grade a trial that never
   started is wrong. Issue #144 asked for the grading screen in both cases;
   this plan deliberately deviates for the start case and documents that in the
-  PR. Refusing at `reset()` entry, before the homing ramp, commands no motion:
-  the arm is wherever it already was, and `close()` still releases torque
-  (its park declines while `_init_pose` is None, `embodiment.py:1707-1708`).
+  PR. Refusing before the homing ramp commands no **arm** motion (the driver
+  factory's gripper calibration, `embodiment.py:284-290`, has already run by
+  the time temps are readable; unavoidable and low-energy), and `close()`
+  releases torque in place because its park is guarded by
+  `if self._init_pose is not None:` (`embodiment.py:1771`) — see the placement
+  invariant in Changes step 4.
 - **Temperature source:** `MotorInfo.temp_mos`/`temp_rotor` are parsed from
   every DM feedback frame (`dm_driver.py:320-328`, filled at `:705-706`) and
   ride the same cached snapshot `joint_eff` comes from, refreshed >100 Hz by
@@ -55,8 +59,10 @@ This plan adds a soft, plugin-owned thermal limit with two gates:
   behind `temp_record_flag`, which `get_yam_robot` never sets, so the `_Real`
   adapter reads `robot.motor_chain.read_states()` per arm instead: public,
   takes the DM `state_lock` (`dm_driver.py:691-719`), needs no remapping
-  (temps have no sign/direction correction, unlike pos/vel/eff at
-  `motor_chain_robot.py:467-476`), and includes the gripper motor slot.
+  (the vel/eff sign correction lives inside `read_states` itself,
+  `dm_driver.py:707-708`, and does not touch temps), and includes the gripper
+  motor slot (`get_yam_robot` appends motor `0x07`, `get_robot.py:296-300`,
+  so each arm always yields 7 slots for `packing.pack`).
 - **No upstream threshold exists to inherit.** Neither i2rt nor the DM
   constants carry any temperature limit (only the error codes); the sim's
   idle values are 35/40 C. Any default would be invented, so the limit is
@@ -76,18 +82,22 @@ This plan adds a soft, plugin-owned thermal limit with two gates:
      finite and > 0 when set.
    - `motor_temp_warn_margin: float = 10.0`: a `logger.warning` fires once per
      trial when any motor reaches `limit - margin` (only meaningful when the
-     limit is set). Validated finite and >= 0.
+     limit is set). Validated finite and >= 0. `from_kwargs` additionally
+     rejects `motor_temp_warn_margin=none` with a curated `ValueError` (the
+     `collision_table_height` precedent, `config.py:304-308`); an unguarded
+     `None` would reach the finiteness check as a raw `TypeError`.
    No bool flag: a single optional float is the whole surface, so the
    `from_kwargs` bool guard (`config.py:288-302`) gains no entry, and the CLI
-   literal `none` maps to None = off, which is exactly the intended meaning.
+   literal `none` for the **limit** maps to None = off, which is exactly the
+   intended meaning.
 
 2. **`embodiment.py` — driver protocol.** `BimanualDriver` gains
    `get_motor_temps(self) -> npt.NDArray[np.floating[Any]]: ...`
    (`embodiment.py:173-192`): shape `(14,)`, degrees C, per motor the max of
    MOS and rotor so one number per slot is compared; values <= 0 mean "no
-   data" (i2rt's `-1` sentinel, `utils.py:67-68`) and are never treated as
-   cold. The `_Real` adapter (inside the existing
-   `# pragma: no cover - real hardware` seam, `embodiment.py:256-317`)
+   data" (i2rt's `-1` sentinel, `i2rt/motor_drivers/utils.py:67-68`) and are
+   never treated as cold. The `_Real` adapter (inside the existing
+   `# pragma: no cover - real hardware` seam starting at `embodiment.py:269`)
    implements it via `read_states()` per arm + `packing.pack`, mirroring
    `get_joint_eff` (`:296-301`).
 
@@ -99,30 +109,45 @@ This plan adds a soft, plugin-owned thermal limit with two gates:
    `motor_temp_limit is not None`: the default config performs zero extra
    driver calls, keeping the existing contract byte-identical.
 
-4. **`embodiment.py` — pre-run gate in `reset()`.** After the driver connects
-   and before the homing ramp (i.e. alongside the existing fail-fast gates,
-   `embodiment.py:1506-1548`; the no-cameras `ConfigError` and the
-   `auto_start` stdin check stay first and are unchanged): read temps; any
-   valid reading >= limit raises
-   `EmbodimentFault("thermal guardrail: motor <slot> at <T> C >= limit <L> C "
-   "at episode start; let the rig cool or raise motor_temp_limit")`.
-   The existing gate ordering, the stand-clear gate, and the
-   `_home_gate_confirmed` retry semantics (`:1278-1282`) are all retained
-   unchanged; the thermal gate is purely additive before any motion.
+4. **`embodiment.py` — pre-run gate in `reset()`.** Placement invariant, in
+   one sentence: **the gate sits between the driver connect
+   (`self._driver = self._driver_factory(...)`, `embodiment.py:1550`) and the
+   `_init_pose` capture (`:1554-1561`), so a trip leaves `_init_pose` None and
+   `close()` releases torque in place instead of ramping
+   (`embodiment.py:1771`).** The earlier fail-fast gates (no-cameras
+   `ConfigError`, `auto_start` stdin check, `embodiment.py:1506-1548`) stay
+   first and unchanged, as do the stand-clear gate and the
+   `_home_gate_confirmed` retry semantics (`:1278-1282`). The gate: read
+   temps; any valid reading >= limit raises
+   `EmbodimentFault("thermal guardrail: <label> (<channel>) at <T> C >= "
+   "limit <L> C at episode start; let the rig cool or raise "
+   "motor_temp_limit")` where `<label>` is `packing.DIM_LABELS[slot]` and
+   `<channel>` is `cfg.left_channel`/`right_channel` by slot half. The
+   warn-margin warning (step 5) also fires from this read when applicable,
+   since reset is when cooling is cheapest.
 
 5. **`embodiment.py` — mid-run gate in `step()`.** At `step()` entry, before
    the motion is played (the pose-hold during a slow policy's thinking time is
    exactly when heat soaks in, and a hot motor should not be given more work):
    read temps; if any valid reading >= limit, re-read once after
    `sleep_fn(1 / control_hz)` and trip only if the same motor is still hot
-   (one glitched frame never ends a trial). On trip: emit one visible line
-   through the session/operator (the settle-budget precedent at
-   `embodiment.py:2088-2104` explains why `logger` and status lines, not
-   `StepResult.info`, are the human-visible channel), skip the motion
-   entirely, and return
-   `StepResult(observation=self._observe(None), terminated=True,
+   (one glitched frame never ends a trial). On trip: close the status line
+   (`self._status(None)`) and emit one visible line naming
+   `packing.DIM_LABELS[slot]`, the arm's CAN channel
+   (`cfg.left_channel`/`right_channel` by slot half), and the temperature —
+   mirroring the operator-end precedent at `embodiment.py:1683-1695` (the
+   settle-budget rationale at `:2088-2104` explains why visible lines, not
+   `StepResult.info`, are the human-facing channel). Then skip the motion
+   entirely and return
+   `StepResult(observation=self._observe(self._instruction), terminated=True,
    termination_reason="overheat", info={..., "overheat": {"slot": i,
-   "temp": t}})`.
+   "label": ..., "channel": ..., "temp": t}})`.
+   Durability of the details: `StepResult.info` is in-memory only, so the
+   durable trace of a trip is `termination_reason="overheat"` in the eval log
+   plus the visible console line and the `logger` record; issue #144's
+   "motor id/channel/temperature" ask is met by putting all three in that
+   visible line and in the pre-run fault message (this is a documented
+   weakening — no stock sink persists per-step info).
    The step-side hard clamp on every commanded target (`_send`,
    `embodiment.py:2028-2033`; root CLAUDE.md "Safety lives in step()") is
    retained untouched: the thermal gate adds an early return before the
@@ -134,10 +159,13 @@ This plan adds a soft, plugin-owned thermal limit with two gates:
    from the same read.
 
 6. **`health.py`** — `_run_motors` (`health.py:214-244`) additionally reads
-   temps when the built driver provides `get_motor_temps` and appends them to
-   the check detail (`temp_max=<T> C @ slot <i>`), so operators can measure
-   real operating temperatures before choosing a limit. No pass/fail change:
-   health has no config to compare against.
+   temps when the built driver provides `get_motor_temps` and reports them as
+   a **separate, always-`ok=True` `CheckResult` row** (`temps: max <T> C @
+   <label>`), read before the `driver.close()` in the `finally`. It must NOT
+   be appended to the existing per-joint detail strings: `_run_motors`
+   computes `ok=not detail` (`health.py:210`, `:243`), so appending would turn
+   passing rows into FAULT. No pass/fail change: health has no config to
+   compare against.
 
 ## Retained invariants (restated at the point of modification)
 
@@ -146,6 +174,18 @@ This plan adds a soft, plugin-owned thermal limit with two gates:
 - The termination reason is non-definitive, so the park-for-grading ramp and
   the operator verdict prompt both still run (the plan-0013 rationale for
   `operator_end` being non-definitive applies verbatim to `"overheat"`).
+  Caveat, stated in the README too: `observe_parked()` runs only in graded
+  runs with `park_before_grade=true` (`eval.py:570-576`). In an ungraded or
+  unattended run a mid-run trip terminates the trial without an immediate
+  park; the arms hold pose under torque until `close()` parks them — still
+  strictly better than the firmware cutoff, which drops torque entirely.
+- Multi-trial semantics: within one eval, a mid-run trip grades that trial,
+  and the **next** trial's pre-run gate then raises `EmbodimentFault`, which
+  halts the whole eval (`eval.py:535-543`) — there is no per-trial cooldown
+  retry inside a run. The halt path's `close()` ramps to rest pose (its
+  `_init_pose` was captured by the earlier successful reset), which is
+  intended: parking a still-warm rig is exactly the safe end state. Per-trial
+  retry semantics exist only across separate processes (`run_batch`).
 - Construction stays inert: no temperature is read in `__init__`; the first
   read happens inside `reset()` after the lazy driver connect.
 - With `motor_temp_limit` unset (the default), no new driver method is called
@@ -162,22 +202,27 @@ fake pops per read, mirroring `SettleDriver`'s read counting):
   across a full reset+step cycle (fake counts reads) and raises no warnings.
 - mid-run trip: temps at limit on both reads -> `terminated=True`,
   `termination_reason == "overheat"`, no command appended for that step,
-  `info["overheat"]["slot"]` names the hot motor, one visible line emitted.
+  `info["overheat"]` carries slot/label/channel/temp, the visible line names
+  the joint label, channel, and temperature, and the status line was closed.
 - glitch immunity: first read hot, confirmation read cool -> motion plays,
   no termination; the confirmation sleep used `sleep_fn` (captured).
 - sentinel: temps of `-1` never trip even with a tiny limit.
 - gripper slot 13 trips like an arm slot.
 - warn margin: `limit - margin <= t < limit` -> `logger.warning` once
-  (caplog), not twice across two steps, cleared by the next `reset()`.
+  (caplog), not twice across two steps, cleared by the next `reset()`; the
+  same warning also fires from the reset-time read (separate test branch).
 - pre-run gate: hot at reset -> `pytest.raises(EmbodimentFault,
-  match="thermal guardrail")` and `drv.commands == []` (no motion commanded).
+  match="thermal guardrail")` and `drv.commands == []` (no motion commanded),
+  message names the joint label and channel.
 - legacy driver: `motor_temp_limit` set + driver without `get_motor_temps` ->
   `RuntimeError` matching `motor_temp_limit.*get_motor_temps`.
 
 `tests/test_config.py`: default None; `from_kwargs` binding; rejection of
-zero/negative/non-finite limit and negative/non-finite margin.
-`tests/test_health.py`: detail string contains `temp_max` when the fake driver
-reports temps; absent when the driver lacks the method.
+zero/negative/non-finite limit, negative/non-finite margin, and
+`motor_temp_warn_margin=None` (curated `ValueError`, not `TypeError`).
+`tests/test_health.py`: a separate always-ok temps row appears when the fake
+driver reports temps (and every pre-existing motor row keeps its verdict);
+the row is absent when the driver lacks the method.
 
 Sanctioned updates to pre-existing tests (mechanical, the plan-0021 pattern):
 add `get_motor_temps` returning benign temps to every fake driver —
@@ -213,8 +258,9 @@ is exported.
   forced exception for effort (plan 0021), not a pattern to extend.
 - No upstream i2rt change (`temp_record_flag` stays untouched; `read_states()`
   suffices).
-- No cooldown/auto-resume logic: once tripped, the trial is over; the next
-  trial's pre-run gate decides whether the rig is ready again.
+- No cooldown/auto-resume logic: once tripped, the trial is over, and the
+  next reset's gate fault ends the eval (see Retained invariants for the
+  exact multi-trial semantics).
 
 ## Risks
 
