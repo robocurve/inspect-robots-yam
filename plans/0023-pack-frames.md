@@ -1,6 +1,7 @@
 # 0023 — Pack camera frames to H.264 evidence video (+ Drive backup)
 
-Status: in progress (2026-09-01). Companion PRs: rig-dashboard `feat/adopt-packed-clips`.
+Status: in progress (2026-09-01). Issue #145, PR #146. Companion: rig-dashboard `feat/adopt-packed-clips`.
+Where a step below conflicts with the "Amendments" section, the amendments win.
 
 
 ## Context
@@ -49,7 +50,7 @@ rig-dashboard/                              (branch feat/adopt-packed-clips)
   CLAUDE.md, README.md                      MOD
 rig-{1,2,6}/pack-frames -> ../inspect-robots-yam/.claude/worktrees/pack-frames/scripts/pack_frames   NEW symlinks
 rig-{1,2,6}/CLAUDE.md                       MOD  gotcha + usage
-~/.config/rclone/rclone.conf                MOD  add no new remote; pass --drive-team-drive 0AGNB3pVRo9vkUk9PVA (pi05_kaedim_tasks)
+~/.config/rclone/rclone.conf                MOD  add [gdrive-robocurve] remote (same token, team_drive=0ACXvkf_ip4sPUk9PVA)
 memory: frames-pack.md (+ MEMORY.md line); update run-batch-script.md, rig-dashboard.md
 ```
 
@@ -74,7 +75,7 @@ CLI: `--run LOG.json | --all | --status`; `--rig DIR` (default cwd, must contain
 `logs/`); `--min-height 360` (applies to `--run` too, so the batch hook never packs 224x224 runs;
 pass `--min-height 0` to override); `--limit N`; `--dry-run`; `--keep` (never unlink); `--force`
 (skip grace); `--grace 600`; `--no-upload`; `--allow-unbacked-delete` (refused unless `--no-upload`
-also given); `--remote gdrive-rc:rig-video (flag --drive-team-drive 0AGNB3pVRo9vkUk9PVA, shared drive pi05_kaedim_tasks)`; `--host-label` (default `hostname -s`);
+also given); `--remote gdrive-rc:rig-video`; `--host-label` (default `hostname -s`);
 `--ffmpeg/--ffprobe/--rclone` (default `~/.local/bin/*` if present else PATH); `--threads 8`;
 `--crf 16`; `--preset slow`; `--psnr-min 35`; `--sample-every 200`. Exit codes: 0 packed,
 3 skipped/not eligible, 1 failure, 2 usage.
@@ -203,22 +204,22 @@ Review Codex's diff with `git diff -- tests/` separately; no pre-existing test m
 
 ## Step 6: end-to-end on one small real run before trusting deletion
 
-1. Add the rclone remote (Step 7.1) and `rclone mkdir gdrive-rc:rig-video (flag --drive-team-drive 0AGNB3pVRo9vkUk9PVA, shared drive pi05_kaedim_tasks)-test`.
+1. Add the rclone remote (Step 7.1) and `rclone mkdir gdrive-rc:rig-video-test`.
 2. `cd ~/robocurve/robocurve/rig-1 && ./pack-frames --status`; pick the 201-frame run
    (`logs/frames/20260901_193641_5847f8ba`).
-3. `./pack-frames --run logs/<name>.json --keep --remote gdrive-rc:rig-video (flag --drive-team-drive 0AGNB3pVRo9vkUk9PVA, shared drive pi05_kaedim_tasks)-test`: check
+3. `./pack-frames --run logs/<name>.json --keep --remote gdrive-rc:rig-video-test`: check
    three MP4s + manifest in the dir, ffprobe counts 67 per stream, `rclone ls` shows them, dashboard
    row (after Step 4 deploy) shows/plays clips.
 4. Re-run with `--force` and no `--keep`: `.npy` gone, manifest `packed`, dashboard clips still
    present, `inspect-robots view <log> -o /tmp/x.html --no-video --frames-budget 12` succeeds,
    `inspect-robots video <log>` exits "no frames found" (expected).
-5. Re-run again -> exit 3 "already packed". `rclone purge gdrive-rc:rig-video (flag --drive-team-drive 0AGNB3pVRo9vkUk9PVA, shared drive pi05_kaedim_tasks)-test`.
+5. Re-run again -> exit 3 "already packed". `rclone purge gdrive-rc:rig-video-test`.
 
 ## Step 7: backlog runbook
 
 1. rclone: append to `~/.config/rclone/rclone.conf` a `[gdrive-robocurve]` section, `type = drive`,
    same `token` as `gdrive-rc`, `team_drive = 0ACXvkf_ip4sPUk9PVA`. Verify `rclone lsd
-   gdrive-robocurve:`; `rclone mkdir gdrive-rc:rig-video (flag --drive-team-drive 0AGNB3pVRo9vkUk9PVA, shared drive pi05_kaedim_tasks)`.
+   gdrive-rc:`; `rclone mkdir gdrive-rc:rig-video`.
 2. Deploy dashboard first: merge PR, `cd ~/robocurve/robocurve/rig-dashboard && ./stop && git pull
    && ./start`; confirm no tracebacks in the `dashboard` tmux session.
 3. Launch per rig in tmux, rig-2 first (smallest dirs), at most 2 concurrent while trials are live:
@@ -226,7 +227,7 @@ Review Codex's diff with `git diff -- tests/` separately; no pre-existing test m
    tmux new -d -s pack-rig2 'cd ~/robocurve/robocurve/rig-2 && ./pack-frames --all --min-height 360 2>&1 | tee -a logs/pack/all_$(date +%F_%H%M).log'
    ```
    then `pack-rig6`, `pack-rig1`. Monitor: `tail -f ~/robocurve/robocurve/rig-*/logs/pack/all_*.log`,
-   `df -h /`, `./pack-frames --status`, `rclone size gdrive-rc:rig-video (flag --drive-team-drive 0AGNB3pVRo9vkUk9PVA, shared drive pi05_kaedim_tasks)`.
+   `df -h /`, `./pack-frames --status`, `rclone size gdrive-rc:rig-video`.
    Estimate: 1.24 M frames at ~200 fps per worker, 8 threads, nice 19 -> about 2-3 h with 2-3
    workers; upload 5-10 GB ~10 min. Expect ~845 GB freed.
 4. Hung trials (rig-1 tty pts/19, rig-2 pts/0): their dirs have no JSON so `--all` skips them.
@@ -234,7 +235,7 @@ Review Codex's diff with `git diff -- tests/` separately; no pre-existing test m
    framework can write the cancelled JSON; those dirs then become packable. rig-6's `run-batch` is
    idle at its reset prompt.
 5. Post-pack: `./pack-frames --status` shows 0 unpacked >= 360 on each rig; `rclone check --one-way`
-   per rig against `gdrive-rc:rig-video (flag --drive-team-drive 0AGNB3pVRo9vkUk9PVA, shared drive pi05_kaedim_tasks)/omen/<rig>`; open three packed rows on the dashboard
+   per rig against `gdrive-rc:rig-video/omen/<rig>`; open three packed rows on the dashboard
    and play clips; `df -h /`.
 6. After the three `run-batch` processes exit: `git pull` main checkout, re-point `run-batch` and
    `pack-frames` symlinks to `../inspect-robots-yam/scripts/...`, remove both worktrees.
@@ -245,13 +246,37 @@ Review Codex's diff with `git diff -- tests/` separately; no pre-existing test m
   `run-batch` packs each trial in the background (`./pack-frames`, logs in `logs/pack/`); single
   `./run` runs need `./pack-frames --run logs/<name>.json`; packed dirs keep MP4s + manifest, lose
   `.npy` (transcript stills vanish, dashboard clips come from the MP4s); backup path
-  `gdrive-rc:rig-video (flag --drive-team-drive 0AGNB3pVRo9vkUk9PVA, shared drive pi05_kaedim_tasks)/omen/<rig>/<stamp>/`; 224x224 runs stay `.npy`.
+  `gdrive-rc:rig-video/omen/<rig>/<stamp>/`; 224x224 runs stay `.npy`.
 - inspect-robots-yam README section + CHANGELOG entry; rig-dashboard docs per Step 4.
 - Memory `frames-pack.md` (+ MEMORY.md line); update `run-batch-script.md` (merged, re-pointed) and
   `rig-dashboard.md` (adoption).
 - Follow-ups to file: own OAuth client_id for rclone Drive (shared id retires 2026); upstream
   inspect-robots issue to log observed joint state per step and to store frames compressed at
   capture time.
+
+## Amendments from the independent critique (applied to the Codex briefs)
+
+- Drive target is the `pi05_kaedim_tasks` shared drive (id 0AGNB3pVRo9vkUk9PVA), reached via the
+  existing `gdrive-rc` remote plus `--drive-team-drive` (no new remote section: copying the OAuth
+  token is classifier-blocked). Every `--remote` is `gdrive-rc:rig-video`.
+- Stage on tmpfs: encode, verify and upload from a per-run scratch dir under `/tmp` (31 GB tmpfs);
+  delete `.npy` first, then move MP4s + manifest into the frames dir, then `rclone copyto` the final
+  manifest. Nothing is written to the full root disk before the `.npy` are gone.
+- Stale-tmp glob `scene-0-e0_*_cam.mp4.tmp*` (faststart writes a second scratch file).
+- `rclone check` covers the three MP4s only; the manifest is re-uploaded after its state change.
+- Re-hash staged MP4s against the manifest immediately before unlinking `.npy`.
+- Packed detection compares size+mtime first; sha256 only on mismatch or `--verify`.
+- Lock and logs live under `<logs-dir>/pack/` where logs-dir is the run JSON's parent, so the hook
+  and the packer agree; ENOSPC on the log file falls back to stderr.
+- Hook uses `nice -n 19 ionice -c3`.
+- Dashboard `_adopt_local` hardlinks first and falls back to copy on OSError.
+- Dashboard `_mark_no_clips` no longer adds LOCAL keys to `_handled`, so an in-process render failure
+  is retried by adoption without a restart. Sanctioned pre-existing test edit: the remote render test
+  now expects 4 ssh calls (ls 15 s, video 300 s, two cats 120 s).
+- PR #146 is stacked on `feat/run-batch` (base branch) because `gh pr merge` is classifier-blocked
+  for Fable; the user merges #143 and GitHub retargets #146 to main.
+- Runbook order: Ctrl-C the two hung trials BEFORE launching the backlog so their writers cannot
+  race the first packs for the freed space.
 
 ## Failure handling summary
 

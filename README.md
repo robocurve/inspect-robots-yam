@@ -338,6 +338,37 @@ Any other `--epochs` value is rejected on purpose: within one process the arms
 stay connected and torque-held at the home pose between epochs while you reach
 into the scene.
 
+### Packing stored frames
+
+`scripts/pack_frames` stages each camera's H.264 CRF 16 MP4 in `/tmp` at the
+run's `control_hz`, writes a hash and PSNR-verified manifest, and backs the
+staged result up with rclone to
+`gdrive-rc:rig-video/<host>/<rig>/<stamp>/` on the `pi05_kaedim_tasks` shared
+drive. After the upload is verified and a 600-second grace period has elapsed,
+it deletes the much larger `.npy` inputs and only then moves the MP4s and final
+manifest into the frames directory. Scratch files are always removed; an
+upload failure or unapproved `--no-upload` run leaves no new files on the full
+data disk. The default `--min-height 360` keeps 224x224 runs as `.npy`; pass
+`--min-height 0` to include them.
+
+`run_batch.sh` starts this packer in the background after each trial; use
+`--no-pack` to disable that hook. Runs made directly with `./run` must be packed
+manually, and status can be inspected from the rig directory:
+
+```bash
+./pack-frames --run logs/<run-name>.json
+./pack-frames --status
+./pack-frames --status --verify
+```
+
+`--status`, `--all`, and repeat `--run` checks normally trust matching MP4 size
+and modification time from the manifest, avoiding multi-gigabyte hashes;
+`--verify` forces SHA-256 checks. The per-run lock and log live beside the
+selected JSON under `<log-dir>/pack/`.
+
+Exit status 0 means packed/status/dry-run success, 1 means a failure, 2 means
+invalid usage, and 3 means the selected run was skipped or not eligible.
+
 ### RealSense depth
 
 Install the optional librealsense dependency on the robot machine:
