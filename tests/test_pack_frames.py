@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -39,6 +40,9 @@ def _make_rig(
     width: int = 4,
     count: int = 2,
     status: str = "success",
+    started_at: str | None = None,
+    created: str | None = None,
+    policy: str | None = None,
 ) -> tuple[Path, Path, Path]:
     rig = root
     (rig / "config.ini").write_text("[defaults]\n", encoding="utf-8")
@@ -51,16 +55,21 @@ def _make_rig(
                 _frame(height, width, camera_index * 20 + step),
             )
     log_path = rig / "logs" / f"{name}.json"
-    log_path.write_text(
-        json.dumps(
-            {
-                "status": status,
-                "stats": {"frames_dir": str(frames_dir.relative_to(rig))},
-                "embodiment_info": {"control_hz": 30},
-            }
-        ),
-        encoding="utf-8",
-    )
+    stats = {"frames_dir": str(frames_dir.relative_to(rig))}
+    if started_at is not None:
+        stats["started_at"] = started_at
+    payload: dict[str, Any] = {
+        "status": status,
+        "stats": stats,
+        "embodiment_info": {"control_hz": 30},
+    }
+    if created is not None or policy is not None:
+        payload["eval"] = {}
+        if created is not None:
+            payload["eval"]["created"] = created
+        if policy is not None:
+            payload["eval"]["policy"] = policy
+    log_path.write_text(json.dumps(payload), encoding="utf-8")
     return rig, log_path, frames_dir
 
 
@@ -91,13 +100,15 @@ class _FakeStdin:
         return len(data)
 
     def close(self) -> None:
-        self.output.write_bytes(b"fake-mp4")
+        marker = b"fake-ffv1" if ".ffv1.mkv" in self.output.name else b"fake-mp4"
+        self.output.write_bytes(marker)
 
 
 class _FakeProcess:
-    def __init__(self, argv: list[str]) -> None:
+    def __init__(self, argv: list[str], *, decoded: bytes | None = None) -> None:
         self.argv = argv
-        self.stdin = _FakeStdin(Path(argv[-1]))
+        self.stdin = _FakeStdin(Path(argv[-1])) if decoded is None else None
+        self.stdout = io.BytesIO(decoded) if decoded is not None else None
 
     def kill(self) -> None:
         pass
@@ -114,18 +125,31 @@ class FakeTools:
         rclone_failure: bool = False,
         corrupt_after_check: bool = False,
         copyto_failure: bool = False,
+        corrupt_raw_decode: bool = False,
+        rclone_timeout: bool = False,
     ) -> None:
         self.frames_dir = frames_dir
         self.rclone_failure = rclone_failure
         self.corrupt_after_check = corrupt_after_check
         self.copyto_failure = copyto_failure
+        self.corrupt_raw_decode = corrupt_raw_decode
+        self.rclone_timeout = rclone_timeout
         self.commands: list[list[str]] = []
+        self.run_timeouts: list[tuple[list[str], float | None]] = []
         self.encode_outputs: list[Path] = []
         self.frames_dir_at_encode: list[set[str]] = []
         self.scratch_at_encode: list[set[str]] = []
 
     def popen(self, argv: list[str], **_kwargs: Any) -> _FakeProcess:
         self.commands.append(argv)
+        if argv[-1] == "-" and any(".ffv1.mkv" in value for value in argv):
+            camera = re.search(r"_(left|top|right)_cam", " ".join(argv))
+            assert camera is not None
+            files = sorted(self.frames_dir.glob(f"scene-0-e0_{camera.group(1)}_cam_*.npy"))
+            decoded = bytearray(b"".join(np.load(path).tobytes() for path in files))
+            if self.corrupt_raw_decode and decoded:
+                decoded[len(decoded) // 2] ^= 1
+            return _FakeProcess(argv, decoded=bytes(decoded))
         output = Path(argv[-1])
         self.encode_outputs.append(output)
         self.frames_dir_at_encode.append({path.name for path in self.frames_dir.iterdir()})
@@ -134,6 +158,7 @@ class FakeTools:
 
     def run(self, argv: list[str], **_kwargs: Any) -> Any:
         self.commands.append(argv)
+        self.run_timeouts.append((argv, _kwargs.get("timeout")))
         if argv[1:2] == ["-version"]:
             return _completed(stdout=b"ffmpeg fake 1.0\n")
         if "-count_packets" in argv:
@@ -142,13 +167,14 @@ class FakeTools:
             files = sorted(self.frames_dir.glob(f"scene-0-e0_{camera.group(1)}_cam_*.npy"))
             first = np.load(files[0], mmap_mode="r")
             height, width = first.shape[:2]
+            is_raw = ".ffv1.mkv" in Path(argv[-1]).name
             payload = {
                 "streams": [
                     {
-                        "nb_frames": str(len(files)),
+                        "nb_frames": "N/A" if is_raw else str(len(files)),
                         "nb_read_packets": str(len(files)),
-                        "width": width + width % 2,
-                        "height": height + height % 2,
+                        "width": width if is_raw else width + width % 2,
+                        "height": height if is_raw else height + height % 2,
                     }
                 ]
             }
@@ -168,6 +194,8 @@ class FakeTools:
                 decoded.extend(padded.tobytes())
             return _completed(stdout=bytes(decoded))
         if argv[0] == "rclone" or argv[0].endswith("/rclone"):
+            if self.rclone_timeout and argv[1] == "copy":
+                raise subprocess.TimeoutExpired(argv, _kwargs.get("timeout"))
             if self.rclone_failure and argv[1] == "copy":
                 return _completed(returncode=1, stderr=b"upload failed")
             if self.copyto_failure and argv[1] == "copyto":
@@ -238,7 +266,130 @@ def test_eligibility_packed_hash_and_height(tmp_path: Path) -> None:
     (frames_dir / "pack_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     assert pack_frames.check_eligible(pack_frames.load_run(log_path, rig), 360) == "already packed"
     mp4.write_bytes(b"changed")
-    assert pack_frames.check_eligible(pack_frames.load_run(log_path, rig), 0) is None
+    assert pack_frames.check_eligible(pack_frames.load_run(log_path, rig), 0) == "already packed"
+
+
+def test_since_filter_uses_started_at_and_created_fallback(tmp_path: Path) -> None:
+    rig, old_log, _old_frames = _make_rig(
+        tmp_path,
+        "old",
+        started_at="2026-08-13T03:27:59+00:00",
+    )
+    _rig, new_log, _new_frames = _make_rig(
+        tmp_path,
+        "new",
+        started_at="2026-08-13T03:29:00+00:00",
+    )
+    _rig, fallback_log, _fallback_frames = _make_rig(
+        tmp_path,
+        "fallback",
+        created="2026-08-13T03:30:00Z",
+    )
+    since = pack_frames._since_argument("2026-08-13T03:28:00+00:00")
+
+    assert (
+        pack_frames.check_eligible(
+            pack_frames.load_run(old_log, rig),
+            since=since,
+        )
+        == "started 2026-08-13T03:27 before --since"
+    )
+    assert pack_frames.check_eligible(pack_frames.load_run(new_log, rig), since=since) is None
+    assert pack_frames.check_eligible(pack_frames.load_run(fallback_log, rig), since=since) is None
+    assert (
+        pack_frames.main(
+            [
+                "--run",
+                str(fallback_log),
+                "--rig",
+                str(rig),
+                "--since",
+                "2026-08-13T03:28:00Z",
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+
+    _rig, missing_log, _missing_frames = _make_rig(tmp_path, "missing-time")
+    assert (
+        pack_frames.check_eligible(
+            pack_frames.load_run(missing_log, rig),
+            since=since,
+        )
+        == "no start timestamp for --since"
+    )
+    assert pack_frames._since_argument("2026-08-13T03:28:00").utcoffset() is not None
+
+
+def test_policy_filter_matches_eval_policy(tmp_path: Path) -> None:
+    rig, molmo_log, _molmo_frames = _make_rig(tmp_path, "molmo", policy="molmoact2")
+    _rig, pi05_log, _pi05_frames = _make_rig(tmp_path, "pi05", policy="pi05")
+    _rig, missing_log, _missing_frames = _make_rig(tmp_path, "missing-policy")
+
+    assert (
+        pack_frames.check_eligible(
+            pack_frames.load_run(molmo_log, rig),
+            policies=("pi05",),
+        )
+        == "policy molmoact2 not in (pi05)"
+    )
+    assert (
+        pack_frames.check_eligible(
+            pack_frames.load_run(pi05_log, rig),
+            policies=("pi05",),
+        )
+        is None
+    )
+    assert (
+        pack_frames.check_eligible(
+            pack_frames.load_run(missing_log, rig),
+            policies=("pi05",),
+        )
+        == "policy <none> not in (pi05)"
+    )
+
+
+def test_status_counts_since_and_policy_skip_reasons(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rig, _old_log, _old_frames = _make_rig(
+        tmp_path,
+        "old",
+        started_at="2026-08-13T03:27:00+00:00",
+        policy="pi05",
+    )
+    _rig, _molmo_log, _molmo_frames = _make_rig(
+        tmp_path,
+        "molmo",
+        started_at="2026-08-13T03:29:00+00:00",
+        policy="molmoact2",
+    )
+    _rig, _pi05_log, _pi05_frames = _make_rig(
+        tmp_path,
+        "pi05",
+        started_at="2026-08-13T03:29:00+00:00",
+        policy="pi05",
+    )
+
+    assert (
+        pack_frames.main(
+            [
+                "--status",
+                "--rig",
+                str(rig),
+                "--since",
+                "2026-08-13T03:28:00+00:00",
+                "--policy",
+                "pi05",
+            ]
+        )
+        == 0
+    )
+    output = capsys.readouterr().out
+    assert "1  started 2026-08-13T03:27 before --since" in output
+    assert "1  policy molmoact2 not in (pi05)" in output
 
 
 def test_packed_detection_uses_metadata_fast_path_and_verify_hashes(
@@ -425,12 +576,21 @@ def test_upload_success_checks_only_mp4s_and_copyto_is_last(
         popen=tools.popen,
     )
     assert result == 0
-    assert states == ["encoded", "uploaded", "packed", "packed"]
+    assert states == ["encoded", "uploaded", "packed", "packed", "packed"]
     rclone_commands = [command for command in tools.commands if command[0] == "rclone"]
     assert [command[1] for command in rclone_commands] == ["copy", "check", "copyto"]
+    rclone_timeouts = [timeout for command, timeout in tools.run_timeouts if command[0] == "rclone"]
+    assert rclone_timeouts == [6 * 60 * 60, 30 * 60, 10 * 60]
+    for command in rclone_commands:
+        assert "--contimeout" in command
+        assert "--timeout" in command
+        assert "--retries" in command
+        assert "--low-level-retries" in command
     copy_command, check_command, copyto_command = rclone_commands
     assert "pack_manifest.json" in copy_command
     assert "pack_manifest.json" not in check_command
+    assert "scene-0-e0_*_cam.ffv1.mkv" in copy_command
+    assert "scene-0-e0_*_cam.ffv1.mkv" in check_command
     for camera in ("left", "top", "right"):
         name = f"scene-0-e0_{camera}_cam.mp4"
         assert name in check_command
@@ -438,6 +598,9 @@ def test_upload_success_checks_only_mp4s_and_copyto_is_last(
     assert copyto_command[-1].endswith("/pack_manifest.json")
     final = json.loads((frames_dir / "pack_manifest.json").read_text(encoding="utf-8"))
     assert final["state"] == "packed"
+    assert final["raw_verified"] == "bit-exact"
+    assert set(final["raw"]) == {"left", "top", "right"}
+    assert not list(frames_dir.glob("*.ffv1.mkv"))
 
 
 def test_stale_temporary_outputs_are_removed_in_frames_and_scratch(
@@ -611,6 +774,166 @@ def test_force_skips_sleep(tmp_path: Path) -> None:
     assert result == 0
 
 
+def test_raw_none_skips_ffv1_and_manifest_keys(tmp_path: Path) -> None:
+    rig, log_path, frames_dir = _make_rig(tmp_path)
+    tools = FakeTools(frames_dir)
+    result = pack_frames.main(
+        _main_args(
+            rig,
+            log_path,
+            "--raw",
+            "none",
+            "--no-upload",
+            "--allow-unbacked-delete",
+            "--keep",
+            "--force",
+        ),
+        run=tools.run,
+        popen=tools.popen,
+    )
+    assert result == 0
+    assert not any(".ffv1.mkv" in output.name for output in tools.encode_outputs)
+    manifest = json.loads((frames_dir / "pack_manifest.json").read_text(encoding="utf-8"))
+    assert "raw" not in manifest
+    assert "raw_verified" not in manifest
+
+
+def test_raw_bit_exact_verification_rejects_corrupted_byte(tmp_path: Path) -> None:
+    _rig, _log_path, frames_dir = _make_rig(tmp_path)
+    stream = pack_frames.discover_streams(frames_dir)["left"]
+    raw_path = tmp_path / "scene-0-e0_left_cam.ffv1.mkv"
+    raw_path.write_bytes(b"fake-ffv1")
+    tools = FakeTools(frames_dir, corrupt_raw_decode=True)
+    with pytest.raises(pack_frames.PackError, match="decoded bytes differ"):
+        pack_frames.verify_raw_bit_exact(
+            raw_path,
+            stream,
+            4,
+            360,
+            "ffmpeg",
+            popen=tools.popen,
+        )
+
+
+def test_post_deletion_move_failure_preserves_scratch_and_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rig, log_path, frames_dir = _make_rig(tmp_path)
+    tools = FakeTools(frames_dir)
+
+    def failed_move(_source: str, _destination: str) -> None:
+        raise OSError("move failed")
+
+    monkeypatch.setattr(pack_frames.shutil, "move", failed_move)
+    result = pack_frames.main(
+        _main_args(rig, log_path, "--force"),
+        run=tools.run,
+        popen=tools.popen,
+    )
+    assert result == 1
+    scratch_dirs = list((rig / "scratch").glob("pack_frames-*"))
+    assert len(scratch_dirs) == 1
+    assert "staged outputs preserved at" in capsys.readouterr().err
+    manifest = json.loads((frames_dir / "pack_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["state"] == "packed"
+    assert not list(frames_dir.glob("*.npy"))
+    info = pack_frames.load_run(log_path, rig)
+    assert pack_frames.check_eligible(info, 0) == "already packed"
+
+
+def test_unlink_failure_is_counted_and_remaining_frame_is_not_reencoded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig, log_path, frames_dir = _make_rig(tmp_path)
+    failed_frame = sorted(frames_dir.glob("*.npy"))[0]
+    real_unlink = Path.unlink
+
+    def flaky_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path == failed_frame:
+            raise OSError("busy")
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    tools = FakeTools(frames_dir)
+    result = pack_frames.main(
+        _main_args(rig, log_path, "--force"),
+        run=tools.run,
+        popen=tools.popen,
+    )
+    assert result == 0
+    assert failed_frame.is_file()
+    manifest = json.loads((frames_dir / "pack_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["npy_unlink_failures"] == 1
+    assert pack_frames.check_eligible(pack_frames.load_run(log_path, rig), 0) == "already packed"
+
+
+def test_rclone_timeout_keeps_raw_frames_and_discards_scratch(tmp_path: Path) -> None:
+    rig, log_path, frames_dir = _make_rig(tmp_path)
+    tools = FakeTools(frames_dir, rclone_timeout=True)
+    result = pack_frames.main(
+        _main_args(rig, log_path, "--force"),
+        run=tools.run,
+        popen=tools.popen,
+    )
+    assert result == 1
+    assert len(list(frames_dir.glob("*.npy"))) == 6
+    assert not (frames_dir / "pack_manifest.json").exists()
+    assert not list((rig / "scratch").glob("pack_frames-*"))
+
+
+def test_keep_raw_local_moves_lossless_archives(tmp_path: Path) -> None:
+    rig, log_path, frames_dir = _make_rig(tmp_path)
+    tools = FakeTools(frames_dir)
+    result = pack_frames.main(
+        _main_args(
+            rig,
+            log_path,
+            "--no-upload",
+            "--allow-unbacked-delete",
+            "--keep-raw-local",
+            "--force",
+        ),
+        run=tools.run,
+        popen=tools.popen,
+    )
+    assert result == 0
+    assert len(list(frames_dir.glob("*.ffv1.mkv"))) == 3
+
+
+def test_status_reports_raw_coverage_and_live_dirs_not_orphans(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rig, _raw_log, raw_frames = _make_rig(tmp_path, "raw-packed")
+    _rig, _old_log, old_frames = _make_rig(tmp_path, "old-packed")
+    for frames_dir, raw_verified in ((raw_frames, "bit-exact"), (old_frames, None)):
+        manifest: dict[str, Any] = {"state": "packed", "streams": {}}
+        if raw_verified is not None:
+            manifest["raw_verified"] = raw_verified
+        (frames_dir / "pack_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    live_frames = rig / "logs" / "frames" / "live-stamp"
+    live_frames.mkdir()
+    np.save(live_frames / "scene-0-e0_left_cam_000000.npy", _frame(360, 4, 1))
+    (rig / "logs" / "active.live.json").write_text(
+        json.dumps({"stats": {"frames_dir": str(live_frames.relative_to(rig))}}),
+        encoding="utf-8",
+    )
+    orphan = rig / "logs" / "frames" / "orphan-stamp"
+    orphan.mkdir()
+    np.save(orphan / "scene-0-e0_left_cam_000000.npy", _frame(360, 4, 2))
+
+    assert pack_frames.main(["--status", "--rig", str(rig)]) == 0
+    output = capsys.readouterr().out
+    assert "packed raw           1" in output
+    assert "packed no raw        1" in output
+    assert "live dirs            1" in output
+    assert "orphan dirs          1" in output
+
+
 @pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="ffmpeg and ffprobe are required for the integration test",
@@ -659,6 +982,9 @@ def test_ffmpeg_integration(tmp_path: Path) -> None:
     assert result == 0
     manifest = json.loads((frames_dir / "pack_manifest.json").read_text(encoding="utf-8"))
     assert manifest["state"] == "packed-kept"
+    assert manifest["raw_verified"] == "bit-exact"
+    assert set(manifest["raw"]) == {"left", "top", "right"}
+    assert not list(frames_dir.glob("*.ffv1.mkv"))
     assert not list(scratch_dir.glob("pack_frames-*"))
     for camera in ("left", "top", "right"):
         mp4 = frames_dir / f"scene-0-e0_{camera}_cam.mp4"

@@ -314,7 +314,7 @@ for ((i = 1; i <= trials; i++)); do
   if [[ $pack -eq 1 && -f "$log_path" ]]; then
     if [[ -x ./pack-frames ]]; then
       mkdir -p "$log_dir/pack"
-      setsid nohup nice -n 19 ionice -c3 ./pack-frames --run "$log_path" >>"$log_dir/pack/batch.log" 2>&1 </dev/null &
+      setsid nohup nice -n 19 ionice -c3 ./pack-frames --threads 2 --run "$log_path" >>"$log_dir/pack/batch.log" 2>&1 </dev/null &
       echo "packing frames in the background (log: $log_dir/pack/batch.log)"
     else
       echo "run_batch: warning: ./pack-frames not found; frames left as .npy" >&2

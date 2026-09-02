@@ -1,4 +1,4 @@
-"""Pack stored robot camera frames into verified H.264 videos and optionally upload them.
+"""Pack stored robot frames into H.264 evidence video and lossless FFV1 raw archives.
 
 All encoded artifacts are staged under ``--scratch-dir`` (``/tmp`` by default), so the frame
 directory is not written until upload verification and raw-frame deletion are complete. An
@@ -32,12 +32,22 @@ from typing import IO, Any, cast
 import numpy as np
 
 TOOL_NAME = "pack_frames"
-TOOL_VERSION = "1"
+TOOL_VERSION = "2"
 DEFAULT_FPS = 10.0
 DEFAULT_TEAM_DRIVE = "0AGNB3pVRo9vkUk9PVA"
 CAMERAS = ("left", "top", "right")
 FRAME_RE = re.compile(r"^scene-0-e0_(left|top|right)_cam_(\d{6,})\.npy$")
 STDERR_TAIL_LINES = 20
+RCLONE_RETRY_ARGS = (
+    "--contimeout",
+    "60s",
+    "--timeout",
+    "300s",
+    "--retries",
+    "3",
+    "--low-level-retries",
+    "10",
+)
 
 RunCallable = Callable[..., Any]
 PopenCallable = Callable[..., Any]
@@ -61,6 +71,8 @@ class RunInfo:
     status: str | None
     log_mtime: float
     load_error: str | None = None
+    started_at: datetime | None = None
+    policy: str | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +111,10 @@ class PackOptions:
     psnr_min: float
     sample_every: int
     scratch_dir: Path
+    raw: str
+    keep_raw_local: bool
+    since: datetime | None
+    policies: tuple[str, ...]
 
 
 def _tool_default(name: str) -> str:
@@ -154,6 +170,28 @@ def _frames_dir_candidates(frames_dir: str, rig: Path, log_path: Path) -> tuple[
     return first, log_path.parent / "frames" / stamp
 
 
+def _parse_iso8601(value: Any) -> datetime | None:
+    """Parse an ISO-8601 instant, accepting ``Z`` and making naive values local-aware."""
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.astimezone()
+    return parsed
+
+
+def _since_argument(value: str) -> datetime:
+    """Parse a command-line ``--since`` value or raise an argparse usage error."""
+    parsed = _parse_iso8601(value)
+    if parsed is None:
+        raise argparse.ArgumentTypeError("must be a valid ISO-8601 timestamp")
+    return parsed
+
+
 def load_run(log_path: Path, rig: Path) -> RunInfo:
     """Load one run log and resolve its frame directory without raising on bad JSON."""
     log_path = log_path.resolve()
@@ -191,6 +229,12 @@ def load_run(log_path: Path, rig: Path) -> RunInfo:
         )
 
     stats = data.get("stats")
+    eval_data = data.get("eval")
+    started_at = _parse_iso8601(stats.get("started_at")) if isinstance(stats, dict) else None
+    if started_at is None and isinstance(eval_data, dict):
+        started_at = _parse_iso8601(eval_data.get("created"))
+    policy_value = eval_data.get("policy") if isinstance(eval_data, dict) else None
+    policy = policy_value if isinstance(policy_value, str) else None
     stored = stats.get("frames_dir") if isinstance(stats, dict) else None
     if not isinstance(stored, str) or not stored:
         return RunInfo(
@@ -202,6 +246,8 @@ def load_run(log_path: Path, rig: Path) -> RunInfo:
             str(data.get("status")) if data.get("status") is not None else None,
             mtime,
             "log has no stats.frames_dir",
+            started_at,
+            policy,
         )
     candidates = _frames_dir_candidates(stored, rig.resolve(), log_path)
     frames_dir = next((candidate for candidate in candidates if candidate.is_dir()), candidates[1])
@@ -214,6 +260,8 @@ def load_run(log_path: Path, rig: Path) -> RunInfo:
         _default_fps(data),
         status,
         mtime,
+        started_at=started_at,
+        policy=policy,
     )
 
 
@@ -226,18 +274,24 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _manifest_is_packed(frames_dir: Path, *, verify: bool = False) -> bool:
-    """Check a packed manifest, hashing only changed metadata unless verification is forced."""
+def _load_pack_manifest(frames_dir: Path) -> dict[str, Any] | None:
+    """Load a frame directory's pack manifest when it is a JSON object."""
     manifest_path = frames_dir / "pack_manifest.json"
     try:
         with manifest_path.open(encoding="utf-8") as handle:
             manifest = json.load(handle)
     except (OSError, ValueError):
-        return False
-    # Only a fully packed manifest counts: "packed-kept" runs still hold their
-    # .npy files and must stay eligible so a later pass can delete them.
-    if not isinstance(manifest, dict) or manifest.get("state") != "packed":
-        return False
+        return None
+    return manifest if isinstance(manifest, dict) else None
+
+
+def _manifest_outputs_match(
+    frames_dir: Path,
+    manifest: dict[str, Any],
+    *,
+    verify: bool,
+) -> bool:
+    """Check local MP4 metadata, hashing only changed metadata unless forced."""
     streams = manifest.get("streams")
     if not isinstance(streams, dict) or not streams:
         return False
@@ -270,6 +324,56 @@ def _manifest_is_packed(frames_dir: Path, *, verify: bool = False) -> bool:
     return True
 
 
+def _manifest_is_packed(
+    frames_dir: Path,
+    *,
+    verify: bool = False,
+    logger: logging.Logger | None = None,
+) -> bool:
+    """Treat final manifests as authoritative even when local media are missing or changed.
+
+    Once state is ``packed`` or ``packed-kept``, raw frames may already be partly or wholly gone,
+    so an output mismatch is warned about but never triggers re-encoding. Metadata/hash mismatch
+    permits re-encoding only for pre-deletion ``encoded``/``uploaded`` manifests while their full
+    NumPy set is still present; :func:`check_eligible` enforces that second condition.
+    """
+    manifest = _load_pack_manifest(frames_dir)
+    if manifest is None or manifest.get("state") not in {"packed", "packed-kept"}:
+        return False
+    if not _manifest_outputs_match(frames_dir, manifest, verify=verify):
+        target = logger if logger is not None else logging.getLogger(TOOL_NAME)
+        target.warning(
+            "packed manifest in %s does not match local MP4s; refusing unsafe re-encode",
+            frames_dir,
+        )
+    return True
+
+
+def _npy_set_matches_manifest(frames_dir: Path, manifest: dict[str, Any]) -> bool:
+    """Return whether every stream timeline recorded before deletion is still present."""
+    recorded = manifest.get("streams")
+    if not isinstance(recorded, dict) or not recorded:
+        return False
+    try:
+        current = discover_streams(frames_dir)
+    except PackError:
+        return False
+    if set(current) != set(recorded):
+        return False
+    for camera, stream in current.items():
+        expected = recorded.get(camera)
+        if not isinstance(expected, dict):
+            return False
+        if (
+            len(stream.frames) != expected.get("frames")
+            or stream.first_step != expected.get("first_step")
+            or stream.last_step != expected.get("last_step")
+            or [list(gap) for gap in stream.gaps] != expected.get("gaps")
+        ):
+            return False
+    return True
+
+
 def _npy_shape(path: Path) -> tuple[int, ...]:
     """Read only a NumPy file header and return its declared shape."""
     try:
@@ -284,10 +388,27 @@ def _npy_shape(path: Path) -> tuple[int, ...]:
     return tuple(int(value) for value in shape)
 
 
-def check_eligible(info: RunInfo, min_height: int = 360, *, verify: bool = False) -> str | None:
-    """Return a human-readable skip reason, or ``None`` when a run is packable."""
+def check_eligible(
+    info: RunInfo,
+    min_height: int = 360,
+    *,
+    verify: bool = False,
+    logger: logging.Logger | None = None,
+    since: datetime | None = None,
+    policies: Sequence[str] = (),
+) -> str | None:
+    """Return a skip reason while preventing re-encode after deletion has begun."""
     if info.load_error is not None:
         return info.load_error
+    if since is not None:
+        if info.started_at is None:
+            return "no start timestamp for --since"
+        if info.started_at < since:
+            started = info.started_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M")
+            return f"started {started} before --since"
+    if policies and info.policy not in policies:
+        policy = info.policy if info.policy is not None else "<none>"
+        return f"policy {policy} not in ({', '.join(policies)})"
     if info.status == "started":
         return "status is started"
     live_path = info.log_path.with_name(f"{info.run_name}.live.json")
@@ -296,11 +417,18 @@ def check_eligible(info: RunInfo, min_height: int = 360, *, verify: bool = False
     frames_dir = info.frames_dir
     if frames_dir is None or not frames_dir.is_dir():
         return "frames directory missing"
-    if _manifest_is_packed(frames_dir, verify=verify):
+    if _manifest_is_packed(frames_dir, verify=verify, logger=logger):
         return "already packed"
     frame_paths = sorted(frames_dir.glob("*.npy"))
     if not frame_paths:
         return "frames directory has no .npy files"
+    manifest = _load_pack_manifest(frames_dir)
+    if (
+        manifest is not None
+        and manifest.get("state") in {"encoded", "uploaded"}
+        and not _npy_set_matches_manifest(frames_dir, manifest)
+    ):
+        return "partial .npy set after interrupted packing; refusing re-encode"
     try:
         shape = _npy_shape(frame_paths[0])
     except PackError as exc:
@@ -420,6 +548,53 @@ def _ffmpeg_argv(
     ]
 
 
+def _raw_ffmpeg_argv(
+    options: PackOptions,
+    width: int,
+    height: int,
+    fps: float,
+    output: Path,
+) -> list[str]:
+    """Build the pinned lossless FFV1 command for one exact-dimension RGB stream."""
+    return [
+        options.ffmpeg,
+        "-hide_banner",
+        "-nostats",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        f"{width}x{height}",
+        "-framerate",
+        f"{fps:g}",
+        "-i",
+        "-",
+        "-c:v",
+        "ffv1",
+        "-level",
+        "3",
+        "-pix_fmt",
+        "gbrp",
+        "-g",
+        "1",
+        "-slices",
+        "4",
+        "-slicecrc",
+        "1",
+        "-threads",
+        str(options.threads),
+        "-fps_mode",
+        "passthrough",
+        "-f",
+        "matroska",
+        str(output),
+    ]
+
+
 def _stderr_tail(fd: int, name: str) -> str:
     """Close and read the tail of a temporary subprocess stderr file."""
     os.close(fd)
@@ -502,6 +677,64 @@ def encode_stream(
     return argv, width, height
 
 
+def encode_raw_stream(
+    stream: StreamInfo,
+    output: Path,
+    fps: float,
+    options: PackOptions,
+    *,
+    popen: PopenCallable = subprocess.Popen,
+) -> tuple[list[str], int, int]:
+    """Pipe one camera stream to lossless FFV1 and return argv and exact dimensions."""
+    first = _load_frame(stream.frames[0][1])
+    height, width = int(first.shape[0]), int(first.shape[1])
+    expected_shape = first.shape
+    argv = _raw_ffmpeg_argv(options, width, height, fps, output)
+    stderr_fd, stderr_name = tempfile.mkstemp(suffix=".ffmpeg.log")
+    try:
+        process = popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_fd,
+        )
+    except OSError as exc:
+        os.close(stderr_fd)
+        Path(stderr_name).unlink(missing_ok=True)
+        raise PackError(f"could not launch ffmpeg ({options.ffmpeg}): {exc}") from exc
+
+    stream_error: str | None = None
+    broken_pipe = False
+    stdin = cast("IO[bytes]", process.stdin)
+    try:
+        try:
+            for _step, path in stream.frames:
+                frame = _load_frame(path)
+                if frame.shape != expected_shape:
+                    raise PackError(
+                        f"frame shape changed from {expected_shape} to {frame.shape} at {path.name}"
+                    )
+                stdin.write(np.ascontiguousarray(frame).tobytes())
+        except PackError as exc:
+            stream_error = str(exc)
+            process.kill()
+        except (BrokenPipeError, OSError):
+            broken_pipe = True
+        try:
+            stdin.close()
+        except (BrokenPipeError, OSError):
+            broken_pipe = True
+        returncode = int(process.wait())
+    finally:
+        tail = _stderr_tail(stderr_fd, stderr_name)
+    if stream_error is None and (broken_pipe or returncode != 0):
+        stream_error = tail or f"ffmpeg exited with code {returncode}"
+    if stream_error is not None:
+        output.unlink(missing_ok=True)
+        raise PackError(f"{stream.camera} FFV1 encode failed: {stream_error}")
+    return argv, width, height
+
+
 def _completed_text(value: Any) -> str:
     """Convert a subprocess output field to readable text."""
     if isinstance(value, bytes):
@@ -516,9 +749,10 @@ def probe_frame_count(
     expected_height: int,
     ffprobe: str,
     *,
+    require_nb_frames: bool = True,
     run: RunCallable = subprocess.run,
 ) -> None:
-    """Require ffprobe packet, frame, and padded-dimension counts to match the input."""
+    """Require ffprobe packet, optional frame, and dimension counts to match the input."""
     argv = [
         ffprobe,
         "-v",
@@ -542,13 +776,19 @@ def probe_frame_count(
     try:
         payload = json.loads(_completed_text(completed.stdout))
         stream = payload["streams"][0]
-        frames = int(stream["nb_frames"])
         packets = int(stream["nb_read_packets"])
         width = int(stream["width"])
         height = int(stream["height"])
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise PackError(f"invalid ffprobe output for {mp4.name}: {exc}") from exc
-    if frames != expected_frames or packets != expected_frames:
+    raw_frames = stream.get("nb_frames")
+    frames: int | None = None
+    if raw_frames not in {None, "N/A"}:
+        try:
+            frames = int(raw_frames)
+        except (TypeError, ValueError) as exc:
+            raise PackError(f"invalid ffprobe frame count for {mp4.name}: {raw_frames}") from exc
+    if packets != expected_frames or (require_nb_frames and frames != expected_frames):
         raise PackError(
             f"{mp4.name}: expected {expected_frames} frames, ffprobe reported "
             f"{frames} frames and {packets} packets"
@@ -627,6 +867,90 @@ def verify_psnr(
     return samples
 
 
+def _read_exact(handle: IO[bytes], size: int) -> bytes:
+    """Read up to exactly ``size`` bytes, retrying when a pipe returns a short chunk."""
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining:
+        chunk = handle.read(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def verify_raw_bit_exact(
+    raw_path: Path,
+    stream: StreamInfo,
+    width: int,
+    height: int,
+    ffmpeg: str,
+    *,
+    popen: PopenCallable = subprocess.Popen,
+) -> None:
+    """Stream-decode a complete FFV1 archive and compare every RGB byte with its NumPy frame."""
+    argv = [
+        ffmpeg,
+        "-v",
+        "error",
+        "-i",
+        str(raw_path),
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-",
+    ]
+    stderr_fd, stderr_name = tempfile.mkstemp(suffix=".ffmpeg.log")
+    try:
+        process = popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=stderr_fd,
+        )
+    except OSError as exc:
+        os.close(stderr_fd)
+        Path(stderr_name).unlink(missing_ok=True)
+        raise PackError(f"could not launch ffmpeg ({ffmpeg}): {exc}") from exc
+
+    frame_bytes = height * width * 3
+    decoded = cast("IO[bytes]", process.stdout)
+    error: str | None = None
+    try:
+        try:
+            for step, source_path in stream.frames:
+                actual = _read_exact(decoded, frame_bytes)
+                if len(actual) != frame_bytes:
+                    error = (
+                        f"{raw_path.name}: short decoded frame at step {step}: "
+                        f"{len(actual)} of {frame_bytes} bytes"
+                    )
+                    break
+                expected = np.ascontiguousarray(_load_frame(source_path)).tobytes()
+                if actual != expected:
+                    error = f"{raw_path.name}: decoded bytes differ at step {step}"
+                    break
+            if error is None and decoded.read(1):
+                error = f"{raw_path.name}: decoded output contains extra frame data"
+        except (OSError, PackError) as exc:
+            error = str(exc)
+        if error is not None:
+            process.kill()
+        decoded.close()
+        returncode = int(process.wait())
+    finally:
+        tail = _stderr_tail(stderr_fd, stderr_name)
+    if error is not None:
+        raise PackError(error)
+    if returncode != 0:
+        raise PackError(
+            f"{raw_path.name}: lossless verification decode failed: "
+            f"{tail or f'ffmpeg exited with code {returncode}'}"
+        )
+
+
 def _iso_now() -> str:
     """Return a UTC ISO-8601 timestamp with second precision."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -662,17 +986,19 @@ def _remote_path(options: PackOptions, info: RunInfo) -> str:
     return f"{options.remote.rstrip('/')}/{options.host_label}/{options.rig.name}/{info.stamp}/"
 
 
-def _rclone_mp4_includes() -> list[str]:
-    """Return rclone include arguments for the three packed camera outputs."""
+def _rclone_media_includes(*, include_raw: bool) -> list[str]:
+    """Return rclone include arguments for immutable packed media outputs."""
     includes: list[str] = []
     for camera in CAMERAS:
         includes.extend(["--include", f"scene-0-e0_{camera}_cam.mp4"])
+    if include_raw:
+        includes.extend(["--include", "scene-0-e0_*_cam.ffv1.mkv"])
     return includes
 
 
-def _rclone_copy_includes() -> list[str]:
+def _rclone_copy_includes(*, include_raw: bool) -> list[str]:
     """Return rclone include arguments for camera outputs plus the initial manifest."""
-    includes = _rclone_mp4_includes()
+    includes = _rclone_media_includes(include_raw=include_raw)
     includes.extend(["--include", "pack_manifest.json"])
     return includes
 
@@ -684,12 +1010,14 @@ def upload(
     *,
     run: RunCallable = subprocess.run,
 ) -> None:
-    """Copy staged artifacts and verify only the immutable MP4s at the destination."""
-    copy_includes = _rclone_copy_includes()
-    check_includes = _rclone_mp4_includes()
+    """Copy staged artifacts and verify all immutable media at the destination."""
+    include_raw = options.raw == "ffv1"
+    copy_includes = _rclone_copy_includes(include_raw=include_raw)
+    check_includes = _rclone_media_includes(include_raw=include_raw)
     copy_argv = [
         options.rclone,
         "copy",
+        *RCLONE_RETRY_ARGS,
         "--checksum",
         "--transfers",
         "4",
@@ -703,15 +1031,19 @@ def upload(
     check_argv = [
         options.rclone,
         "check",
+        *RCLONE_RETRY_ARGS,
         "--one-way",
         *options.rclone_extra,
         *check_includes,
         str(frames_dir),
         remote_path,
     ]
-    for action, argv in (("copy", copy_argv), ("check", check_argv)):
+    calls = (("copy", copy_argv, 6 * 60 * 60), ("check", check_argv, 30 * 60))
+    for action, argv, timeout in calls:
         try:
-            completed = run(argv, capture_output=True, check=False)
+            completed = run(argv, capture_output=True, check=False, timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            raise PackError(f"rclone {action} timed out after {timeout}s") from exc
         except OSError as exc:
             raise PackError(f"could not launch rclone ({options.rclone}): {exc}") from exc
         if completed.returncode != 0:
@@ -725,23 +1057,25 @@ def upload_final_manifest(
     options: PackOptions,
     *,
     run: RunCallable = subprocess.run,
-) -> str | None:
-    """Upload the final-state manifest, returning an error string instead of raising."""
+) -> None:
+    """Upload the final-state manifest, raising a pack error for callers to downgrade."""
     argv = [
         options.rclone,
         "copyto",
+        *RCLONE_RETRY_ARGS,
         *options.rclone_extra,
         str(manifest_path),
         f"{remote_path.rstrip('/')}/pack_manifest.json",
     ]
     try:
-        completed = run(argv, capture_output=True, check=False)
+        completed = run(argv, capture_output=True, check=False, timeout=10 * 60)
+    except subprocess.TimeoutExpired as exc:
+        raise PackError("rclone copyto timed out after 600s") from exc
     except OSError as exc:
-        return f"could not launch rclone ({options.rclone}): {exc}"
+        raise PackError(f"could not launch rclone ({options.rclone}): {exc}") from exc
     if completed.returncode != 0:
         error = _completed_text(completed.stderr).strip()
-        return f"rclone copyto failed: {error or completed.returncode}"
-    return None
+        raise PackError(f"rclone copyto failed: {error or completed.returncode}")
 
 
 def _logger_for(path: Path) -> logging.Logger:
@@ -774,6 +1108,7 @@ def _manifest_base(
     info: RunInfo,
     options: PackOptions,
     stream_manifests: dict[str, dict[str, Any]],
+    raw_manifests: dict[str, dict[str, Any]],
     argv_by_camera: dict[str, list[str]],
     remote_path: str,
     created: str,
@@ -784,7 +1119,7 @@ def _manifest_base(
         relative_log = str(info.log_path.relative_to(options.rig))
     except ValueError:
         relative_log = str(info.log_path)
-    return {
+    manifest: dict[str, Any] = {
         "tool": TOOL_NAME,
         "version": TOOL_VERSION,
         "host": options.host_label,
@@ -803,7 +1138,12 @@ def _manifest_base(
         "state": "encoded",
         "remote": remote_path,
         "npy_bytes_freed": 0,
+        "npy_unlink_failures": 0,
     }
+    if raw_manifests:
+        manifest["raw"] = raw_manifests
+        manifest["raw_verified"] = "bit-exact"
+    return manifest
 
 
 def _set_manifest_state(
@@ -822,30 +1162,37 @@ def _set_manifest_state(
 
 
 def _cleanup_stale_temporary_outputs(directory: Path) -> None:
-    """Remove legacy and ffmpeg-created temporary MP4 files from a directory."""
+    """Remove legacy and ffmpeg-created temporary media files from a directory."""
     for stale in directory.glob("scene-0-e0_*_cam.mp4.tmp*"):
+        stale.unlink(missing_ok=True)
+    for stale in directory.glob("scene-0-e0_*_cam.ffv1.mkv.tmp*"):
         stale.unlink(missing_ok=True)
 
 
 def _verify_staged_hashes(scratch: Path, manifest: dict[str, Any]) -> None:
-    """Re-hash every staged MP4 and require agreement with its manifest digest."""
+    """Re-hash every staged media file and require agreement with its manifest digest."""
     streams = manifest.get("streams")
     if not isinstance(streams, dict) or not streams:
         raise PackError("staged manifest has no streams")
-    for camera, stream in streams.items():
-        if not isinstance(stream, dict):
-            raise PackError(f"staged manifest stream {camera} is invalid")
-        name = stream.get("file")
-        expected = stream.get("sha256")
-        if not isinstance(name, str) or not isinstance(expected, str):
-            raise PackError(f"staged manifest stream {camera} has no file hash")
-        path = scratch / name
-        try:
-            actual = _sha256(path)
-        except OSError as exc:
-            raise PackError(f"cannot re-hash staged MP4 {name}: {exc}") from exc
-        if actual != expected:
-            raise PackError(f"staged MP4 hash mismatch: {name}")
+    groups = [("stream", streams)]
+    raw = manifest.get("raw")
+    if isinstance(raw, dict) and raw:
+        groups.append(("raw stream", raw))
+    for label, group in groups:
+        for camera, stream in group.items():
+            if not isinstance(stream, dict):
+                raise PackError(f"staged manifest {label} {camera} is invalid")
+            name = stream.get("file")
+            expected = stream.get("sha256")
+            if not isinstance(name, str) or not isinstance(expected, str):
+                raise PackError(f"staged manifest {label} {camera} has no file hash")
+            path = scratch / name
+            try:
+                actual = _sha256(path)
+            except OSError as exc:
+                raise PackError(f"cannot re-hash staged media {name}: {exc}") from exc
+            if actual != expected:
+                raise PackError(f"staged media hash mismatch: {name}")
 
 
 def _manifest_file_names(path: Path) -> set[str]:
@@ -881,24 +1228,30 @@ def _warn_foreign_outputs(
             )
 
 
-def _move_staged_artifacts(
+def _move_staged_media(
     scratch: Path,
     frames_dir: Path,
     manifest: dict[str, Any],
+    *,
+    keep_raw_local: bool,
 ) -> Path:
-    """Move verified MP4s and their manifest into the frame directory and refresh metadata."""
+    """Move verified media after the safety manifest exists locally and refresh metadata."""
     streams = cast("dict[str, dict[str, Any]]", manifest["streams"])
-    for stream in streams.values():
-        name = cast("str", stream["file"])
-        shutil.move(str(scratch / name), str(frames_dir / name))
-    staged_manifest = scratch / "pack_manifest.json"
+    groups = [streams]
+    raw = manifest.get("raw")
+    if keep_raw_local and isinstance(raw, dict):
+        groups.append(raw)
+    for group in groups:
+        for stream in group.values():
+            name = cast("str", stream["file"])
+            shutil.move(str(scratch / name), str(frames_dir / name))
     destination_manifest = frames_dir / "pack_manifest.json"
-    shutil.move(str(staged_manifest), str(destination_manifest))
-    for stream in streams.values():
-        output = frames_dir / cast("str", stream["file"])
-        stat = output.stat()
-        stream["bytes"] = stat.st_size
-        stream["mtime"] = stat.st_mtime
+    for group in groups:
+        for stream in group.values():
+            output = frames_dir / cast("str", stream["file"])
+            stat = output.stat()
+            stream["bytes"] = stat.st_size
+            stream["mtime"] = stat.st_mtime
     write_manifest(destination_manifest, manifest)
     return destination_manifest
 
@@ -914,7 +1267,14 @@ def _pack_locked(
     sleep: SleepCallable,
 ) -> int:
     """Run the complete pack state machine while the rig lock is held."""
-    reason = check_eligible(info, options.min_height, verify=options.verify)
+    reason = check_eligible(
+        info,
+        options.min_height,
+        verify=options.verify,
+        logger=logger,
+        since=options.since,
+        policies=options.policies,
+    )
     if reason is not None:
         logger.info("skipped: %s", reason)
         return 3
@@ -933,7 +1293,11 @@ def _pack_locked(
     )
     if options.dry_run:
         final_action = "keep" if options.keep else "delete"
-        logger.info("dry-run: would encode, verify, upload, and %s", final_action)
+        logger.info(
+            "dry-run: would encode H.264%s, verify, upload, and %s",
+            " plus FFV1" if options.raw == "ffv1" else "",
+            final_action,
+        )
         return 0
 
     try:
@@ -943,9 +1307,16 @@ def _pack_locked(
         logger.error("failed to create scratch directory: %s", exc)
         return 1
     initial_files = {path for stream in streams.values() for _step, path in stream.frames}
+    deleted = False
+    completed = False
+    local_manifest_written = False
+    unlink_failures = 0
+    freed_bytes = 0
+    manifest: dict[str, Any] | None = None
     try:
         _cleanup_stale_temporary_outputs(scratch)
         final_outputs: dict[str, Path] = {}
+        raw_outputs: dict[str, Path] = {}
         argv_by_camera: dict[str, list[str]] = {}
         source_dimensions: dict[str, tuple[int, int]] = {}
         psnr_by_camera: dict[str, list[list[float | int]]] = {}
@@ -983,7 +1354,39 @@ def _pack_locked(
             final = scratch / f"scene-0-e0_{camera}_cam.mp4"
             os.replace(temporary, final)
             final_outputs[camera] = final
+            if options.raw == "ffv1":
+                raw_temporary = scratch / f"scene-0-e0_{camera}_cam.ffv1.mkv.tmp"
+                _raw_argv, raw_width, raw_height = encode_raw_stream(
+                    stream,
+                    raw_temporary,
+                    info.control_hz,
+                    options,
+                    popen=popen,
+                )
+                if (raw_width, raw_height) != (width, height):
+                    raise PackError(f"{camera} raw encoder dimensions changed unexpectedly")
+                probe_frame_count(
+                    raw_temporary,
+                    len(stream.frames),
+                    width,
+                    height,
+                    options.ffprobe,
+                    require_nb_frames=False,
+                    run=run,
+                )
+                verify_raw_bit_exact(
+                    raw_temporary,
+                    stream,
+                    width,
+                    height,
+                    options.ffmpeg,
+                    popen=popen,
+                )
+                raw_final = scratch / f"scene-0-e0_{camera}_cam.ffv1.mkv"
+                os.replace(raw_temporary, raw_final)
+                raw_outputs[camera] = raw_final
         stream_manifests: dict[str, dict[str, Any]] = {}
+        raw_manifests: dict[str, dict[str, Any]] = {}
         for camera, stream in streams.items():
             final = final_outputs[camera]
             width, height = source_dimensions[camera]
@@ -1001,12 +1404,26 @@ def _pack_locked(
                 "gaps": [list(gap) for gap in stream.gaps],
                 "psnr_samples": psnr_by_camera[camera],
             }
+            raw_final = raw_outputs.get(camera)
+            if raw_final is not None:
+                raw_stat = raw_final.stat()
+                raw_manifests[camera] = {
+                    "file": raw_final.name,
+                    "codec": "ffv1",
+                    "sha256": _sha256(raw_final),
+                    "bytes": raw_stat.st_size,
+                    "mtime": raw_stat.st_mtime,
+                    "frames": len(stream.frames),
+                    "width": width,
+                    "height": height,
+                }
         remote_path = _remote_path(options, info)
         created = _iso_now()
         manifest = _manifest_base(
             info,
             options,
             stream_manifests,
+            raw_manifests,
             argv_by_camera,
             remote_path,
             created,
@@ -1045,6 +1462,8 @@ def _pack_locked(
 
         if options.keep:
             _set_manifest_state(manifest_path, manifest, "packed-kept")
+            write_manifest(frames_dir / "pack_manifest.json", manifest)
+            local_manifest_written = True
         else:
             current_streams = discover_streams(frames_dir)
             current_files = {
@@ -1052,38 +1471,69 @@ def _pack_locked(
             }
             if current_files != initial_files:
                 raise PackError("frame file set changed during packing; refusing deletion")
+            deleted = True
             for path in sorted(initial_files):
-                path.unlink()
-            _set_manifest_state(
-                manifest_path,
-                manifest,
-                "packed",
-                npy_bytes_freed=npy_bytes,
-            )
+                size = 0
+                with contextlib.suppress(OSError):
+                    size = path.stat().st_size
+                try:
+                    path.unlink()
+                    freed_bytes += size
+                except OSError as exc:
+                    unlink_failures += 1
+                    logger.error("failed to unlink %s: %s", path, exc)
+            manifest["state"] = "packed"
+            manifest["updated"] = _iso_now()
+            manifest["npy_bytes_freed"] = freed_bytes
+            manifest["npy_unlink_failures"] = unlink_failures
+            write_manifest(frames_dir / "pack_manifest.json", manifest)
+            local_manifest_written = True
+            write_manifest(manifest_path, manifest)
             logger.info(
-                "packed: deleted %d .npy files and freed %d bytes",
+                "packed: deleted %d of %d .npy files, freed %d bytes, %d unlink failures",
+                len(initial_files) - unlink_failures,
                 len(initial_files),
-                npy_bytes,
+                freed_bytes,
+                unlink_failures,
             )
 
-        final_manifest = _move_staged_artifacts(scratch, frames_dir, manifest)
+        final_manifest = _move_staged_media(
+            scratch,
+            frames_dir,
+            manifest,
+            keep_raw_local=options.keep_raw_local,
+        )
         if not options.no_upload:
-            final_error = upload_final_manifest(
-                final_manifest,
-                remote_path,
-                options,
-                run=run,
-            )
-            if final_error is not None:
-                logger.warning("final manifest upload failed after backup: %s", final_error)
+            try:
+                upload_final_manifest(
+                    final_manifest,
+                    remote_path,
+                    options,
+                    run=run,
+                )
+            except PackError as exc:
+                logger.warning("final manifest upload failed after backup: %s", exc)
         if options.keep:
             logger.info("packed-kept: retained %d .npy files", len(initial_files))
+        completed = True
         return 0
-    except (OSError, PackError) as exc:
+    except Exception as exc:
         logger.error("failed: %s", exc)
         return 1
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        if deleted and not local_manifest_written and manifest is not None:
+            manifest["state"] = "packed"
+            manifest["updated"] = _iso_now()
+            manifest["npy_bytes_freed"] = freed_bytes
+            manifest["npy_unlink_failures"] = unlink_failures
+            try:
+                write_manifest(frames_dir / "pack_manifest.json", manifest)
+            except PackError as manifest_exc:
+                logger.error("failed to write post-deletion safety manifest: %s", manifest_exc)
+        if deleted and not completed:
+            logger.error("staged outputs preserved at %s", scratch)
+        else:
+            shutil.rmtree(scratch, ignore_errors=True)
 
 
 def pack_one(
@@ -1160,7 +1610,13 @@ def _run_all(
     candidates: list[tuple[int, Path]] = []
     for log_path in _all_logs(options.rig):
         info = load_run(log_path, options.rig)
-        reason = check_eligible(info, options.min_height, verify=options.verify)
+        reason = check_eligible(
+            info,
+            options.min_height,
+            verify=options.verify,
+            since=options.since,
+            policies=options.policies,
+        )
         if reason is not None:
             skipped += 1
             print(f"skipped {log_path.name}: {reason}")
@@ -1220,6 +1676,8 @@ def _print_status(options: PackOptions) -> int:
     packable_count = 0
     packable_bytes = 0
     packed_count = 0
+    packed_with_raw = 0
+    packed_without_raw = 0
     remaining_bytes = 0
     reasons: Counter[str] = Counter()
     referenced: set[Path] = set()
@@ -1227,9 +1685,20 @@ def _print_status(options: PackOptions) -> int:
         info = load_run(log_path, options.rig)
         if info.frames_dir is not None:
             referenced.add(info.frames_dir.resolve())
-        reason = check_eligible(info, options.min_height, verify=options.verify)
+        reason = check_eligible(
+            info,
+            options.min_height,
+            verify=options.verify,
+            since=options.since,
+            policies=options.policies,
+        )
         if reason == "already packed":
             packed_count += 1
+            manifest = _load_pack_manifest(info.frames_dir) if info.frames_dir is not None else None
+            if manifest is not None and manifest.get("raw_verified") == "bit-exact":
+                packed_with_raw += 1
+            else:
+                packed_without_raw += 1
             continue
         if reason is not None:
             reasons[reason] += 1
@@ -1243,6 +1712,15 @@ def _print_status(options: PackOptions) -> int:
         packable_count += 1
         packable_bytes += size
         remaining_bytes += size
+
+    live_dirs: set[Path] = set()
+    for live_path in sorted((options.rig / "logs").glob("*.live.json")):
+        live_info = load_run(live_path, options.rig)
+        if live_info.frames_dir is not None and live_info.frames_dir.is_dir():
+            resolved = live_info.frames_dir.resolve()
+            referenced.add(resolved)
+            live_dirs.add(resolved)
+    live_bytes = sum(_directory_npy_bytes(directory)[0] for directory in live_dirs)
 
     orphan_count = 0
     orphan_bytes = 0
@@ -1261,6 +1739,9 @@ def _print_status(options: PackOptions) -> int:
     print("frame pack status")
     print(f"packable        {packable_count:6d}  {packable_bytes / 1_000_000_000:9.3f} GB")
     print(f"packed          {packed_count:6d}")
+    print(f"packed raw      {packed_with_raw:6d}")
+    print(f"packed no raw   {packed_without_raw:6d}")
+    print(f"live dirs       {len(live_dirs):6d}  {live_bytes / 1_000_000_000:9.3f} GB")
     for reason, count in sorted(reasons.items()):
         print(f"skipped         {count:6d}  {reason}")
     print(
@@ -1281,6 +1762,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--rig", type=Path, default=Path.cwd())
     parser.add_argument("--min-height", type=int, default=360)
     parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--since", type=_since_argument)
+    parser.add_argument("--policy", action="append")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--keep", action="store_true")
@@ -1300,6 +1783,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--psnr-min", type=float, default=35.0)
     parser.add_argument("--sample-every", type=int, default=200)
     parser.add_argument("--scratch-dir", type=Path, default=Path("/tmp"))
+    parser.add_argument("--raw", choices=("ffv1", "none"), default="ffv1")
+    parser.add_argument("--keep-raw-local", action="store_true")
     return parser
 
 
@@ -1350,6 +1835,10 @@ def _options(namespace: argparse.Namespace, parser: argparse.ArgumentParser) -> 
         psnr_min=namespace.psnr_min,
         sample_every=namespace.sample_every,
         scratch_dir=scratch_dir,
+        raw=namespace.raw,
+        keep_raw_local=namespace.keep_raw_local,
+        since=namespace.since,
+        policies=tuple(namespace.policy or ()),
     )
 
 
