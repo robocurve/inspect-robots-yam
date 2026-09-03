@@ -33,6 +33,9 @@
 # way the plugin's V4L2 reader does; a camera failure warns and never blocks
 # the trial. --no-snapshots turns it off.
 #
+# After each completed trial, a detached low-priority hook packs stored camera
+# frames in the background. Pass --no-pack to leave the raw .npy files alone.
+#
 # Per-trial verdicts are collected from each run's eval log and written to
 # <log-dir>/batches/<stamp>.tsv, with a tally printed at the end. Ctrl-C
 # cancels the running trial (the framework writes a cancelled log and parks
@@ -50,6 +53,7 @@ usage: run_batch.sh [-n N] [--] <./run arguments...>
 
   -n, --trials N   number of trials (default 20)
   --no-snapshots   skip the top-camera JPEG taken before each trial
+  --no-pack        do not pack stored frames after each trial
   -h, --help       this text
 
 Everything else goes to ./run unchanged (plus a forced --epochs 1), e.g.
@@ -63,10 +67,12 @@ die() { echo "run_batch: $*" >&2; exit 2; }
 
 trials=20
 snapshots=1
+pack=1
 run_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --no-snapshots) snapshots=0; shift ;;
+    --no-pack) pack=0; shift ;;
     -n|--trials)
       [[ $# -ge 2 ]] || die "$1 needs a value"
       trials="$2"; shift 2 ;;
@@ -304,6 +310,16 @@ for ((i = 1; i <= trials; i++)); do
   echo
   echo "trial $i/$trials: judged ${bold}$jd${reset} ($st, $tr, ${du}s) — so far $yes success / $no failure / $partial partial"
   echo "${dim}log: $log_path${reset}"
+
+  if [[ $pack -eq 1 && -f "$log_path" ]]; then
+    if [[ -x ./pack-frames ]]; then
+      mkdir -p "$log_dir/pack"
+      setsid nohup nice -n 19 ionice -c3 ./pack-frames --threads 2 --run "$log_path" >>"$log_dir/pack/batch.log" 2>&1 </dev/null &
+      echo "packing frames in the background (log: $log_dir/pack/batch.log)"
+    else
+      echo "run_batch: warning: ./pack-frames not found; frames left as .npy" >&2
+    fi
+  fi
 
   if [[ $interrupted -eq 1 ]]; then
     echo "run_batch: interrupted — stopping after trial $i"

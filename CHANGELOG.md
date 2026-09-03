@@ -19,6 +19,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   fresh setup, and accepts `none` to leave the thermal guardrail off. The
   `YamConfig` runtime default remains `None` for backward compatibility (#150).
 
+- `scripts/pack_frames.py` and its rig-directory wrapper encode stored camera
+  frames as verified H.264 MP4s plus bit-exact lossless FFV1 archives staged on
+  `/tmp`, back both up with rclone before deletion, safely reclaim the raw frame
+  space before moving the packed artifacts onto disk, and offer metadata-fast
+  status checks with optional `--verify` hashes. FFV1 can be disabled with
+  `--raw none` or retained locally with `--keep-raw-local`.
+  `scripts/run_batch.sh` launches the packer at idle I/O priority after each
+  trial by default and provides `--no-pack` to disable the background hook.
+
 - `scripts/run_batch.sh`: repeat one task N times from a rig directory with a
   human in the loop. Each trial is its own `./run` process with `--epochs 1`
   forced, so the framework's grading prompt pauses for the operator and the
