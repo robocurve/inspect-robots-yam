@@ -1787,7 +1787,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--threads", type=int, default=8)
     parser.add_argument("--crf", type=int, default=16)
     parser.add_argument("--preset", default="slow")
-    parser.add_argument("--psnr-min", type=float, default=35.0)
+    parser.add_argument("--psnr-min", type=float, default=32.0)
     parser.add_argument("--sample-every", type=int, default=200)
     parser.add_argument("--scratch-dir", type=Path, default=Path("/tmp"))
     parser.add_argument("--raw", choices=("ffv1", "none"), default="ffv1")
