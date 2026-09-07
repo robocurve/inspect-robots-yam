@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A standalone MuJoCo viewer accepts LLM `move_to` targets in each arm's base
+  frame, with slow playback, pause, command stepping, and JSONL replay. It uses
+  the pinned i2rt YAM + LINEAR_4310 visual model and the existing agent/YAM
+  command pipeline with an ideal in-memory driver. Install the `viewer` extra
+  and run `scripts/mujoco_viewer.py`; see `scripts/MUJOCO_VIEWER.md`.
+
 - An opt-in motor thermal guardrail checks every arm and gripper before reset
   motion and before each step, warns as the configured limit approaches, and
   ends a hot trial on the grading screen while torque remains. This avoids the

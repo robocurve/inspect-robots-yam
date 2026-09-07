@@ -442,6 +442,24 @@ prompts are skipped and every episode runs to `max_steps`, scoring as a failure.
 For attended runs that only want to drop the Enter gates, use `auto_start=true`
 instead; `unattended` wins when both are set.
 
+## Preview LLM motion in MuJoCo
+
+The standalone [YAM viewer](scripts/MUJOCO_VIEWER.md) accepts the same `move_to`
+targets as an LLM run and displays two arms with slow playback, pause, and
+command stepping. Positions use each arm's own base frame. It runs locally
+without hardware, cameras, or an LLM server.
+
+```bash
+# macOS and Linux
+uv run --extra viewer python scripts/mujoco_viewer.py
+```
+
+Paste `{"targets":{"left_x":0.34,"right_gripper":0.2}}` into its terminal.
+Use `--config /path/to/config.ini` to load the rig's EEF motion settings and
+measured base placement. The default display uses illustrative parallel bases.
+The preview tracks commands ideally; it does not simulate physical tracking or
+collision avoidance.
+
 ## Drive the arms with an LLM (agent mode)
 
 With the [inspect-robots-agent](https://github.com/robocurve/inspect-robots/tree/main/plugins/inspect-robots-agent)

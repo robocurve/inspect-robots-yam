@@ -19,6 +19,8 @@ repos:
       - id: check-toml
       - id: check-merge-conflict
       - id: check-added-large-files
+        # Exact upstream arm meshes; provenance and MIT license sit beside them.
+        exclude: ^scripts/assets/yam_viewer/assets/link[23]\.stl$
 
   - repo: local
     hooks:

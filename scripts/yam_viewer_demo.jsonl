@@ -1,0 +1,3 @@
+{"targets":{"left_x":0.34,"right_x":0.34},"note":"Reach both grasp points forward in their own base frames."}
+{"targets":{"left_z":0.25,"right_z":0.25,"left_gripper":0.25,"right_gripper":0.25},"note":"Lift and partly close both grippers."}
+{"targets":{"left_x":0.30,"right_x":0.30,"left_z":0.20,"right_z":0.20,"left_gripper":1,"right_gripper":1},"note":"Return near the working start pose and open."}
