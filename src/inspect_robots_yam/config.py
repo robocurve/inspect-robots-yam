@@ -294,7 +294,8 @@ class YamConfig(_FromKwargs):
         # The CLI parses the literal `none` to Python None, which is falsy: an
         # unvalidated None here would silently flip a boolean off (opting out
         # of a safety gate, removing the table plane, dropping the effort
-        # report, or suppressing the pre-grade park) instead of the "library
+        # report, suppressing the pre-grade park, or bringing the arms up on a
+        # stiff servo instead of gravity-compensated) instead of the "library
         # default" that `none` means
         # everywhere else.
         for flag in (
@@ -303,6 +304,7 @@ class YamConfig(_FromKwargs):
             "report_joint_eff",
             "park_before_grade",
             "eef_orientation",
+            "zero_gravity_mode",
         ):
             if flag in flat and not isinstance(flat[flag], bool):
                 raise ValueError(f"{flag} must be true or false, got {flat[flag]!r}")
