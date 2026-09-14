@@ -75,8 +75,8 @@ EEF_DIM_LABELS: tuple[str, ...] = tuple(
 # Pitch and roll ship pinned at (0, 0): the axes exist in the layout but are
 # not commandable until an operator widens their bounds, which keeps default
 # behavior identical to the historical yaw-only interface.
-_EEF_ARM_LOW = (0.15, -0.25, 0.03, -np.pi, 0.0, 0.0, 0.0)
-_EEF_ARM_HIGH = (0.48, 0.25, 0.40, np.pi, 0.0, 0.0, 1.0)
+_EEF_ARM_LOW = (0.15, -0.30, 0.03, -np.pi, 0.0, 0.0, 0.0)
+_EEF_ARM_HIGH = (0.48, 0.30, 0.40, np.pi, 0.0, 0.0, 1.0)
 DEFAULT_EEF_LOW: tuple[float, ...] = _EEF_ARM_LOW * 2
 DEFAULT_EEF_HIGH: tuple[float, ...] = _EEF_ARM_HIGH * 2
 _EEF_YAW_INDICES = (3, 10)

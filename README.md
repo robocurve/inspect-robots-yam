@@ -526,7 +526,7 @@ yaw 0). Orientation interpolation does not wrap. A yaw move from `3.1` to
 `-3.1` sweeps through zero instead of taking the short path, so use
 intermediate yaw targets for near-±π regrasps.
 
-The default workspace per arm is x `[0.15, 0.48]`, y `[-0.25, 0.25]`, and z
+The default workspace per arm is x `[0.15, 0.48]`, y `[-0.30, 0.30]`, and z
 `[0.03, 0.40]`, with yaw `[-π, π]`, pitch and roll pinned at `[0, 0]`,
 and gripper `[0, 1]`. Pinned axes are declared but not commandable. The
 default behaves exactly like the historical yaw-only interface. Opening
