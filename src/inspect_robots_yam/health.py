@@ -342,11 +342,13 @@ def run_health(
     )
 
 
-def _parse_scalar(text: str) -> bool | int | float | str:
+def _parse_scalar(text: str) -> bool | int | float | str | None:
     """Parse basic CLI scalars, intentionally more simply than the framework parser."""
     lowered = text.lower()
     if lowered in {"true", "false"}:
         return lowered == "true"
+    if lowered == "none":
+        return None
     try:
         return int(text)
     except ValueError:

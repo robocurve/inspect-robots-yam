@@ -43,6 +43,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `inspect-robots-yam-health` now parses `"none"` as `None` when supplied in
+  `-E key=value` CLI overrides, matching the behavior of `inspect-robots-yam-pose`
+  and allowing nullable configuration keys like `motor_temp_limit`,
+  `settle_tolerance`, and `start_pose` to be unset without raising type or value
+  errors.
+
 - The operator status line now compares motion-budget seconds with the
   estimated motion horizon and shows elapsed wall time as a separate labeled
   value. Slow policy calls therefore remain visible without making the budget
