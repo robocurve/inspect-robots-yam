@@ -43,6 +43,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `YamConfig` now validates joint bounds ordering and finiteness (`joint_low`
+  cannot exceed `joint_high` and both must be finite), and verifies that
+  `home_pose`, `rest_pose`, `rest_secs`, and gripper stroke boundaries
+  (`gripper_open`, `gripper_closed`) contain only finite values.
+
 - The operator status line now compares motion-budget seconds with the
   estimated motion horizon and shows elapsed wall time as a separate labeled
   value. Slow policy calls therefore remain visible without making the budget

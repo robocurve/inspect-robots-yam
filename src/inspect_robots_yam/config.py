@@ -378,6 +378,10 @@ class YamConfig(_FromKwargs):
         for name in ("joint_low", "joint_high"):
             if len(getattr(self, name)) != TOTAL_DIM:
                 raise ValueError(f"{name} must have {TOTAL_DIM} entries")
+        if not np.all(np.isfinite(self.low)) or not np.all(np.isfinite(self.high)):
+            raise ValueError("joint_low and joint_high must contain only finite values")
+        if np.any(self.low > self.high):
+            raise ValueError("joint_low must not exceed joint_high in any dimension")
         for name in ("eef_low", "eef_high"):
             if len(getattr(self, name)) != len(EEF_DIM_LABELS):
                 raise ValueError(f"{name} must have {len(EEF_DIM_LABELS)} entries")
@@ -455,8 +459,11 @@ class YamConfig(_FromKwargs):
             or self.settle_timeout_budget < 1
         ):
             raise ValueError("settle_timeout_budget must be a positive integer")
-        if self.home_pose is not None and len(self.home_pose) != TOTAL_DIM:
-            raise ValueError(f"home_pose must have {TOTAL_DIM} entries")
+        if self.home_pose is not None:
+            if len(self.home_pose) != TOTAL_DIM:
+                raise ValueError(f"home_pose must have {TOTAL_DIM} entries")
+            if not bool(np.all(np.isfinite(self.home_pose))):
+                raise ValueError("home_pose must contain only finite values")
         if self.start_pose is not None and self.home_pose is not None:
             raise ValueError("start_pose and home_pose are mutually exclusive; set only one key")
         if self.start_pose is not None:
@@ -466,9 +473,12 @@ class YamConfig(_FromKwargs):
                 raise ValueError(f"invalid start_pose: {exc}") from None
         if not isinstance(self.pose_dir, str) or not self.pose_dir.strip():
             raise ValueError("pose_dir must be a non-empty string")
-        if self.rest_pose is not None and len(self.rest_pose) != TOTAL_DIM:
-            raise ValueError(f"rest_pose must have {TOTAL_DIM} entries")
-        if self.rest_secs <= 0:
+        if self.rest_pose is not None:
+            if len(self.rest_pose) != TOTAL_DIM:
+                raise ValueError(f"rest_pose must have {TOTAL_DIM} entries")
+            if not bool(np.all(np.isfinite(self.rest_pose))):
+                raise ValueError("rest_pose must contain only finite values")
+        if not np.isfinite(self.rest_secs) or self.rest_secs <= 0:
             raise ValueError("rest_secs must be > 0")
         if self.max_steps_hint is not None and self.max_steps_hint < 1:
             raise ValueError("max_steps_hint must be >= 1")
@@ -554,7 +564,11 @@ class YamConfig(_FromKwargs):
             not (s > 0) or not np.isfinite(s) for s in self.step_limits
         ):
             raise ValueError(f"step_limits must be {TOTAL_DIM} finite positive entries")
-        if self.gripper_open == self.gripper_closed:
+        if (
+            not np.isfinite(self.gripper_open)
+            or not np.isfinite(self.gripper_closed)
+            or self.gripper_open == self.gripper_closed
+        ):
             raise ValueError(
                 "gripper_open and gripper_closed must differ (the gripper stroke "
                 "would be zero and observations could not be normalized)"
