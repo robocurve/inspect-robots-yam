@@ -30,6 +30,7 @@ without hardware; the real i2rt connection is a pragma'd default.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import time
 from collections.abc import Callable, Mapping
@@ -126,6 +127,16 @@ def run_hold_check(
     emit: EmitFn = _print_flushed,
 ) -> HoldResult:
     """Command the current pose once, then watch drift for ``duration_s``."""
+    if not math.isfinite(duration_s) or duration_s <= 0:
+        raise ValueError("duration_s must be finite and > 0")
+    if not math.isfinite(interval_s) or interval_s <= 0:
+        raise ValueError("interval_s must be finite and > 0")
+    if interval_s > duration_s:
+        raise ValueError("interval_s cannot exceed duration_s")
+    if not math.isfinite(settle_rad) or settle_rad < 0:
+        raise ValueError("settle_rad must be finite and >= 0")
+    if not math.isfinite(trend_rad) or trend_rad < 0:
+        raise ValueError("trend_rad must be finite and >= 0")
     pose = np.asarray(robot.get_joint_pos(), dtype=np.float64)
     emit(f"start pose: {np.round(pose, 3).tolist()}")
     robot.command_joint_pos(pose)  # one command, like a chunk ending
@@ -214,6 +225,17 @@ def main(
         help="ignore wizard-configured channels (left/right will be unavailable)",
     )
     args = parser.parse_args(argv)
+
+    if not math.isfinite(args.duration_s) or args.duration_s <= 0:
+        parser.error("--duration-s must be finite and > 0")
+    if not math.isfinite(args.interval_s) or args.interval_s <= 0:
+        parser.error("--interval-s must be finite and > 0")
+    if args.interval_s > args.duration_s:
+        parser.error("--interval-s cannot exceed --duration-s")
+    if not math.isfinite(args.settle_rad) or args.settle_rad < 0:
+        parser.error("--settle-rad must be finite and >= 0")
+    if not math.isfinite(args.trend_rad) or args.trend_rad < 0:
+        parser.error("--trend-rad must be finite and >= 0")
 
     requested_channel = args.channel
     channel = requested_channel

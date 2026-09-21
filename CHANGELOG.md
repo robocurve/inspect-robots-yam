@@ -43,6 +43,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `inspect-robots-yam-holdcheck` now validates `--duration-s`, `--interval-s`,
+  `--settle-rad`, and `--trend-rad` inputs. Non-positive or non-finite durations
+  and intervals, intervals exceeding the duration, and negative or non-finite
+  thresholds are now rejected with clear usage errors rather than hanging the
+  process in an infinite loop or returning a false pass.
+
 - The operator status line now compares motion-budget seconds with the
   estimated motion horizon and shows elapsed wall time as a separate labeled
   value. Slow policy calls therefore remain visible without making the budget
