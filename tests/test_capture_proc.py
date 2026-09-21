@@ -119,10 +119,18 @@ def _record_unregisters(
 ) -> list[tuple[str, str]]:
     """Record child unregister calls without mutating this process's tracker."""
     unregisters: list[tuple[str, str]] = []
+    orig_unregister = capture_proc.resource_tracker.unregister
+
+    def _unregister(name: str, kind: str) -> None:
+        if kind == "shared_memory":
+            unregisters.append((name, kind))
+        else:
+            orig_unregister(name, kind)
+
     monkeypatch.setattr(
         capture_proc.resource_tracker,
         "unregister",
-        lambda name, kind: unregisters.append((name, kind)),
+        _unregister,
     )
     return unregisters
 

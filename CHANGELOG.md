@@ -61,6 +61,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `_OpenCVCameraReader` now retries failed V4L2 camera device opens up to 5 times
+  at 1.0 s intervals before failing, accommodating device lock release latency
+  between rapid back-to-back CLI invocations (#74, #101).
+
 - A mid-run thermal trip now ramps the arms to their rest pose from inside
   `step()` before terminating, including ungraded and unattended runs and when
   `park_before_grade=false`. The returned observation still captures the trip
