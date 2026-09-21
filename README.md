@@ -695,18 +695,21 @@ motions, or replace the operator and physical e-stop.
 ## Safety
 
 - **Hard clamp backstop.** Every command is clipped to `YamConfig.joint_low/high`
-  *inside* `step()`, independent of any Inspect Robots `Approver`: unclamped model
-  outputs can never reach the motors. **Set the arm slots to your real YAM joint
-  limits** (the defaults are conservative placeholders: joints ±π, gripper 0–1).
-  But note the limits are in *policy units* per the table below: gripper slots 6
-  and 13 stay normalized 0–1, only slots 0–5 and 7–12 are radians.
+  and per-step `YamConfig.step_limits` *inside* `step()`, independent of any
+  Inspect Robots `Approver`: unclamped model outputs can never reach the motors.
+  **Set the arm slots to your real YAM joint limits** (the defaults are conservative
+  placeholders: joints ±π, gripper 0–1). But note the limits are in *policy units*
+  per the table below: gripper slots 6 and 13 stay normalized 0–1, only slots 0–5
+  and 7–12 are radians.
 - **Use `ClampApprover`** on hardware for a second layer.
 - **Zero-gravity handoff jump.** The arms connect in zero-gravity mode by default
   (`YamConfig(zero_gravity_mode=True)`, passed through to the i2rt driver).
-  Homing and rest-pose motions ramp at `control_hz`, but the first *policy*
-  action in joint mode is still a stiff PD command that can jump from wherever
-  the arm ended up. Nothing bounds the per-step joint delta in absolute joint
-  mode yet (tracked as a known issue). EEF mode applies a 0.2-rad-per-joint
+  Homing and rest-pose motions ramp at `control_hz` with guaranteed arrival. Every
+  command path enforces a per-step delta clamp (`YamConfig.step_limits`, default
+  0.2 rad/step), preventing violent leaps on the first stiff PD command out of
+  zero-g or during wild policy actions. If the arm starts outside configured
+  limits, the delta clamp walks the arm back toward the valid range at no more
+  than `step_limits` per tick. EEF mode additionally applies a 0.2-rad-per-joint
   per-step IK backstop, but a six-joint branch transit can still move the EEF
   tens of centimetres because rate-clamped intermediate configurations are not
   IK solutions. Reset always moves the arms through the full homing ramp, and

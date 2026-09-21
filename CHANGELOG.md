@@ -61,6 +61,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Every command path inside `YAMEmbodiment._send()` now enforces per-step joint delta
+  limits (`YamConfig.step_limits`, default 0.2 rad/step per arm joint), bounding
+  commanded motion on all modes including the first stiff PD command out of zero-g.
+  When starting outside configured joint limits, the delta clamp walks the arm back
+  toward valid bounds at no more than `step_limits` per step. `_ramp_to()` guarantees
+  target arrival by dynamically sizing ramp steps to satisfy `step_limits` (#2, #26).
+
 - A mid-run thermal trip now ramps the arms to their rest pose from inside
   `step()` before terminating, including ungraded and unattended runs and when
   `park_before_grade=false`. The returned observation still captures the trip
