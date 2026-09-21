@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Run this wrapper from a rig directory containing ./config.ini and ./logs.
+set -euo pipefail
+[[ -f ./config.ini && -d ./logs ]] || { echo "pack_frames: run from a rig directory (needs ./config.ini and ./logs)" >&2; exit 2; }
+py=../shared/.venv/bin/python
+[[ -x "$py" ]] || py=python3
+exec "$py" "$(dirname "$(readlink -f "$0")")/pack_frames.py" "$@"
