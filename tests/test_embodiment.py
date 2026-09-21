@@ -2253,3 +2253,48 @@ def test_observe_names_the_camera_that_dropped_a_frame() -> None:
     emb._camera_reader = _dropped_frame
     with pytest.raises(ValueError, match="camera 'left_cam' returned no frame"):
         emb.reset(Scene(id="s", instruction="x"))
+
+
+def test_consecutive_collision_holds_terminate_at_collision_hold_limit() -> None:
+    emb, _, _ = _build(YamConfig(collision_hold_limit=3))
+    emb.reset(Scene(id="s", instruction="x"))
+
+    act_blocked = Action(data=DEFAULT_JOINT_HOME_POSE, meta={"collision_blocked": True})
+    r1 = emb.step(act_blocked)
+    assert not r1.terminated
+
+    r2 = emb.step(act_blocked)
+    assert not r2.terminated
+
+    r3 = emb.step(act_blocked)
+    assert r3.terminated
+    assert r3.termination_reason == "collision_hold_limit"
+
+
+def test_consecutive_collision_holds_counter_resets_on_unblocked_action() -> None:
+    emb, _, _ = _build(YamConfig(collision_hold_limit=3))
+    emb.reset(Scene(id="s", instruction="x"))
+
+    act_blocked = Action(data=DEFAULT_JOINT_HOME_POSE, meta={"collision_blocked": True})
+    act_safe = Action(data=DEFAULT_JOINT_HOME_POSE)
+
+    assert not emb.step(act_blocked).terminated
+    assert not emb.step(act_blocked).terminated
+    assert not emb.step(act_safe).terminated
+    # Counter reset: 2 more blocked steps do not terminate
+    assert not emb.step(act_blocked).terminated
+    assert not emb.step(act_blocked).terminated
+    # 3rd consecutive blocked step terminates
+    r = emb.step(act_blocked)
+    assert r.terminated
+    assert r.termination_reason == "collision_hold_limit"
+
+
+def test_disabled_collision_hold_limit_in_embodiment_allows_indefinite_holds() -> None:
+    emb, _, _ = _build(YamConfig(collision_hold_limit=None))
+    emb.reset(Scene(id="s", instruction="x"))
+
+    act_blocked = Action(data=DEFAULT_JOINT_HOME_POSE, meta={"collision_blocked": True})
+    for _ in range(60):
+        r = emb.step(act_blocked)
+        assert not r.terminated

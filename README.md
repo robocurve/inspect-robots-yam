@@ -829,7 +829,9 @@ measured),
 `collision_left_base_yaw`, `collision_right_base_yaw` (optional measured rig
 geometry), `collision_table` (default `True`; set `False` for no table plane),
 `collision_table_height`, `collision_penetration_threshold` (optional collision
-model overrides),
+model overrides), `collision_hold_limit` (default `50`; breaks hold livelocks by
+terminating the episode with reason `collision_hold_limit` after N consecutive blocked
+steps; `none` disables),
 `motor_temp_limit` (degrees C; `none` by default, which disables the thermal
 guardrail), `motor_temp_warn_margin` (degrees C below the limit; default `10.0`),
 `settle_tolerance` (radians; `none` by default, which disables settling; see

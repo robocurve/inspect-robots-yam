@@ -121,6 +121,12 @@ class _FromKwargs:
         return cls(**flat)
 
 
+def validate_hold_limit(value: object, name: str = "collision_hold_limit") -> None:
+    """Validate that a collision hold limit is a positive integer or None."""
+    if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
+        raise ValueError(f"{name} must be a positive integer or None")
+
+
 @dataclass(frozen=True)
 class YamConfig(_FromKwargs):
     """Static configuration for a bimanual YAM embodiment."""
@@ -222,6 +228,7 @@ class YamConfig(_FromKwargs):
     motor_temp_limit: float | None = None
     # Warn once per trial this many degrees below the configured thermal limit.
     motor_temp_warn_margin: float = 10.0
+    collision_hold_limit: int | None = 50
     # Wait for the arm to reach each commanded pose before observing, so a
     # chunked policy plans from a converged view. None disables the wait; a
     # tolerance must exceed the rig's steady-state offset (run
@@ -485,6 +492,7 @@ class YamConfig(_FromKwargs):
                 not isinstance(value, int) or isinstance(value, bool) or value < 16
             ):
                 raise ValueError(f"{key} must be an integer of at least 16 or unset")
+        validate_hold_limit(self.collision_hold_limit, "collision_hold_limit")
         valid_realsense_capture = {"inline", "process"}
         if self.realsense_capture not in valid_realsense_capture:
             raise ValueError(

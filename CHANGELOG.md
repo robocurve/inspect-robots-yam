@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `collision_hold_limit` (default 50) breaks collision hold livelocks by
+  terminating the episode with reason `"collision_hold_limit"` after N
+  consecutive blocked actions, converting indefinite holds into diagnosable
+  failures without aborting the entire evaluation run (#111, #117).
+
 - `capture_width` / `capture_height` (default 640 × 480, unchanged behaviour)
   set the native size requested from the cameras on both the RealSense and the
   V4L2 paths, with intrinsics scaled from that size. Rigs that need every pixel

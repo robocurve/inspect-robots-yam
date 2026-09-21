@@ -1317,6 +1317,7 @@ class YAMEmbodiment:
         # settling for the rest of the trial. Cleared at reset() entry.
         self._settle_disabled = False
         self._bound_max_steps: int | None = None
+        self._consecutive_collision_holds = 0
 
         docs = _DOCS_EEF_POS if self._cfg.control_interface == "eef_pos" else _DOCS_JOINTS
         docs_extra = self._cfg.docs_extra.strip()
@@ -1523,6 +1524,7 @@ class YAMEmbodiment:
         self._settle_disabled = False
         self._motor_temp_warned = False
         self._motor_temp_no_data_warned = False
+        self._consecutive_collision_holds = 0
         # Ahead of the homing settle below, which names the scene if it has to
         # report a budget exhaustion; set later it would report the previous
         # trial's instruction, or None on the first.
@@ -1749,6 +1751,11 @@ class YAMEmbodiment:
                     },
                 )
         self.num_steps += 1
+        meta = getattr(action, "meta", None)
+        if isinstance(meta, dict) and meta.get("collision_blocked"):
+            self._consecutive_collision_holds += 1
+        else:
+            self._consecutive_collision_holds = 0
         if self._cfg.control_interface == "eef_pos":
             cmd = packing.validate_dim(action.data, len(EEF_DIM_LABELS))
             target = self._step_eef(cmd, driver)
@@ -1769,6 +1776,17 @@ class YAMEmbodiment:
         self._emit_status()
 
         obs = self._observe(self._instruction)
+        if (
+            self._cfg.collision_hold_limit is not None
+            and self._consecutive_collision_holds >= self._cfg.collision_hold_limit
+        ):
+            self._status(None)
+            return StepResult(
+                observation=obs,
+                terminated=True,
+                termination_reason="collision_hold_limit",
+                info=settle_info,
+            )
         # Unattended runs have no operator: skip the end poll entirely; the
         # episode runs to the framework's max_steps.
         if not self._cfg.unattended and not self._deferred_operator_end and self._poll_end():
