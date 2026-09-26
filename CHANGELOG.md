@@ -43,6 +43,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `inspect-robots-yam-holdcheck` now releases the arm through
+  `close_robot_safely`, like the embodiment. It called i2rt's `close()`
+  directly, which closes the CAN socket while the chain's control thread is
+  still running, so every holdcheck ended with the `fd=-1` traceback from #28.
+
 - The operator status line now compares motion-budget seconds with the
   estimated motion horizon and shows elapsed wall time as a separate labeled
   value. Slow policy calls therefore remain visible without making the budget
