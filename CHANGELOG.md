@@ -43,6 +43,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The collision guardrail now sweeps each trial's first action from the named
+  `start_pose` when one is configured. It started from `home_pose` or the
+  factory home instead, so a policy holding a raised start pose could be
+  checked along a path through the table and held at the folded factory home,
+  one uncapped jump away from where the arms actually were.
+
 - The operator status line now compares motion-budget seconds with the
   estimated motion horizon and shows elapsed wall time as a separate labeled
   value. Slow policy calls therefore remain visible without making the budget
