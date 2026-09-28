@@ -678,19 +678,30 @@ The run refuses to start when the configured home pose is already in collision
 under the effective geometry. Correct the `collision_*` geometry fields or set
 `collision_guardrail=false` after verifying that an opt-out is appropriate.
 
-The guardrail supports only 14-D absolute `joint_pos` actions. It refuses EEF
-and `joint_delta` spaces because an approver sees Cartesian targets or deltas
-before the embodiment converts them. Those modes continue with a skip warning.
+The action approver supports 14-D absolute `joint_pos` actions. EEF mode instead
+checks joint commands **after IK and joint-limit clamping**, immediately before
+sending them to the driver. With `collision_guardrail=true`, it sweeps from fresh
+measured joint positions to the proposed command, including the starting pose.
+This applies to EEF task steps, homing, and parking. A predicted collision or
+non-finite input raises `SafetyAbort` before the command is sent. Missing MuJoCo
+fails closed in this mode. Joint-delta mode still skips collision checking.
 
-The checker models commanded poses, not measured arm motion. Physical motion can
+EEF sweep samples use `sweep_resolution` without a 64-sample cap. These sampled
+geometric checks do not guarantee a continuous or Cartesian physical path. Rig
+geometry must still be measured; props and camera mounts are not modeled. An
+abort during parking still runs the existing driver teardown (torque release),
+so an obstructed park can leave an arm away from its gravity-stable rest pose.
+
+The joint action approver models commanded poses; the EEF boundary additionally
+checks the measured starting pose. Neither tracks continuous physical motion, which can
 lag or sag away from checked waypoints, including with the default
 `zero_gravity_mode=true`, so do not reduce clearance margins to zero.
 `build_yam_guardrails` remains available for programmatic chains and strict
 abort behavior.
 
 This guardrail reduces collision risk. It does not model props, certify a
-continuous path, observe the measured arm trajectory, check reset or park
-motions, or replace the operator and physical e-stop.
+continuous path, observe the continuous arm trajectory, or replace the operator
+and physical e-stop. Joint-mode reset and park motions remain unchecked.
 
 ## Safety
 
@@ -717,9 +728,11 @@ motions, or replace the operator and physical e-stop.
 - **EEF reachability and collision limits.** Iteration-cap non-convergence uses
   the solver's finite last iterate as best effort, and the next `eef_state`
   reports the true result. IK branch flips are joint-rate-clamped and repeated
-  reversals hold the whole affected arm temporarily. These controls do not
-  check collisions or guarantee a Cartesian path during a clamped branch
-  transit. Raised work surfaces also need a raised EEF z minimum: the default
+  reversals hold the whole affected arm temporarily. These IK controls do not
+  themselves check collisions or guarantee a Cartesian
+  path during a clamped branch transit. Enable `collision_guardrail` for the
+  post-IK joint sweep described above. Raised work surfaces also need a raised
+  EEF z minimum: the default
   `z_min=0.03` leaves only about 19 mm nominal fingertip clearance over a table
   at the arm-base plane, less up to 5 mm of IK error.
 - **Park pose must rest under gravity.** On close, the arms ramp back to an

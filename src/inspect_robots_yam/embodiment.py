@@ -1295,6 +1295,7 @@ class YAMEmbodiment:
         self._driver: BimanualDriver | None = None
         self._left_kinematics: _ArmKinematics | None = None
         self._right_kinematics: _ArmKinematics | None = None
+        self._eef_collision_checker: Any = None
         self._eef_home_validated = False
         self._init_pose: Vec | None = None
         self._resolved_start_pose: Vec | None = None
@@ -1415,6 +1416,19 @@ class YAMEmbodiment:
                 warnings=(
                     "collision guardrail disabled by config; set collision_guardrail=true "
                     "after measuring collision_*_base_pos",
+                    *eef_warnings,
+                )
+            )
+        if self._cfg.control_interface == "eef_pos":
+            # Cartesian targets cannot be reviewed by the joint-space approver.
+            # Validate converted commands at the hardware boundary instead.
+            from inspect_robots_yam.collision import CollisionChecker, _config_from_yam
+
+            self._eef_collision_checker = CollisionChecker(_config_from_yam(self._cfg))
+            return GuardrailContribution(
+                warnings=(
+                    "EEF collision guardrail active: measured-to-command joint sweeps; "
+                    "unsafe motion aborts before motor commands (including home/park)",
                     *eef_warnings,
                 )
             )
@@ -2184,6 +2198,22 @@ class YAMEmbodiment:
 
     def _send(self, cmd: Vec) -> Vec:
         """Clamp to joint limits (safety backstop) and de-normalize grippers."""
+        if self._cfg.control_interface == "eef_pos" and self._cfg.collision_guardrail:
+            from inspect_robots.errors import SafetyAbort
+
+            from inspect_robots_yam.collision import CollisionChecker, _config_from_yam
+
+            # Reject invalid IK output before clipping can turn infinity into
+            # an apparently valid joint limit. Never send an unchecked fallback.
+            if not np.all(np.isfinite(cmd)):
+                raise SafetyAbort("EEF collision guardrail: non-finite joint command")
+            if self._eef_collision_checker is None:
+                self._eef_collision_checker = CollisionChecker(_config_from_yam(self._cfg))
+            measured = self._norm_grippers(
+                packing.validate_dim(self._require_driver().get_joint_pos())
+            )
+            target = np.clip(cmd, self._cfg.low, self._cfg.high)
+            self._eef_collision_checker.check_motion(measured, target)
         clamped = np.clip(cmd, self._cfg.low, self._cfg.high)
         physical = self._denorm_grippers(clamped)
         self._require_driver().command_joint_pos(physical)
