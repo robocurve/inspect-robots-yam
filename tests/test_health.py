@@ -1469,3 +1469,24 @@ def test_a_non_integer_capture_size_in_config_ini_is_a_usage_error(
         main(["--watch"], env=env)
     assert exc_info.value.code == 2
     assert "capture_width in" in capsys.readouterr().err
+
+
+def test_skip_cameras_ignores_configured_capture_sizes(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A motors-only check is not blocked by a camera size it never uses."""
+    env, _ = write_config(tmp_path, {"capture_width": "8", "capture_height": "480"})
+
+    report = HealthReport((), True, (), False, None)
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return report
+
+    assert main(["--skip-cameras"], env=env, run=capture) == 0
+    assert seen[0].capture_width == 640  # the bad configured size never applied
+    err = capsys.readouterr().err
+    assert "capture_width" not in err
+    assert "devices: from" not in err  # sizes alone are not device attribution

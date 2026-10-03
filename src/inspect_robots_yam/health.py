@@ -475,6 +475,10 @@ def main(
         else load_yam_defaults(os.environ if env is None else env, extra_keys=_CAPTURE_SIZE_KEYS)
     )
     config_args: dict[str, Any] = dict(yam_defaults.args)
+    if args.skip_cameras:
+        # No camera runs, so a bad configured size must not block a motors check.
+        for key in _CAPTURE_SIZE_KEYS:
+            config_args.pop(key, None)
     # load_yam_defaults returns strings (built for device names); sizes are ints.
     for key in _CAPTURE_SIZE_KEYS & config_args.keys():
         try:
@@ -500,7 +504,7 @@ def main(
             }:
                 config_args.pop(key, None)
 
-    contributed_keys = config_args.keys() - explicit_keys
+    contributed_keys = config_args.keys() - explicit_keys - _CAPTURE_SIZE_KEYS
     config_values = {**config_args, **extras, **flag_values}
     if contributed_keys:
         print(
