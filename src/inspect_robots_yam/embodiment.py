@@ -579,7 +579,9 @@ class _OpenCVCameraReader:
         cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000)
         # V4L2 silently falls back to another mode when a size is unsupported.
         # Verify here, before _open_all starts the drain thread: VideoCapture
-        # has no locking, so no property read may race that thread.
+        # has no locking, so no property read may race that thread. Known gap:
+        # if the driver does not report a size (0) and warm-up yields no frame,
+        # frames later published by the drain thread are not size-checked.
         delivered = (
             round(float(cap.get(cv2.CAP_PROP_FRAME_WIDTH))),
             round(float(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))),
@@ -621,9 +623,10 @@ class _OpenCVCameraReader:
         raise RuntimeError(
             f"{name} ({device}) delivered {delivered[0]}x{delivered[1]} instead of the "
             f"requested {requested[0]}x{requested[1]}; the camera does not support that "
-            f"size. fix: list supported sizes with `v4l2-ctl --list-formats-ext -d "
-            f"{device}` and set {slot}_capture_width/{slot}_capture_height (or "
-            f"capture_width/capture_height) to one of them"
+            f"size in YUYV, the format this reader uses. fix: list supported sizes "
+            f"with `v4l2-ctl --list-formats-ext -d {device}` and pick a YUYV size "
+            f"(sizes listed only under MJPG are not usable) for "
+            f"{slot}_capture_width/{slot}_capture_height (or capture_width/capture_height)"
         )
 
     def _drain(self, name: str, cap: Any, stop: threading.Event, generation: int) -> None:

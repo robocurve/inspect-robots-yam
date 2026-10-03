@@ -534,3 +534,20 @@ def test_unreported_size_falls_back_to_checking_the_first_frame() -> None:
     )
     _OPENED.append(ok_reader)
     assert "top_cam" in ok_reader(YamConfig())  # a matching first frame passes
+
+
+def test_a_later_camera_failing_the_size_check_releases_the_earlier_ones() -> None:
+    caps = {
+        "/dev/cam0": FakeCapture(),
+        "/dev/cam1": FakeCapture(delivered=(320.0, 240.0)),
+        "/dev/cam2": FakeCapture(),
+    }
+    reader = _OpenCVCameraReader(
+        DEVICES, cv2_module=FakeCv2(caps), sleep_fn=lambda s: None, clock=Clock()
+    )
+    _OPENED.append(reader)
+    with pytest.raises(RuntimeError, match=r"left_cam \(/dev/cam1\) delivered 320x240"):
+        reader(YamConfig())
+    assert caps["/dev/cam0"].released
+    assert caps["/dev/cam1"].released
+    assert reader._caps == {}
