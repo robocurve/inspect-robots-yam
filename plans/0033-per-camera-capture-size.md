@@ -31,12 +31,18 @@ Per-slot overrides in the existing per-slot style (`top_cam_device`,
   slot's colour capture size.
 
 Validation in `__post_init__`, matching the rig-wide fields: each pair is set
-both-or-neither; values are ints >= 16, bools rejected.
+both-or-neither; values are ints >= 16, bools rejected. A slot's
+`{slot}_depth_capture_*` pair is rejected unless `{slot}_depth_serial` is set,
+since slot sources are exclusive (`config.py:533-541`) and depth overrides on a
+V4L2 slot would otherwise be ignored silently. No setup wizard enumerates
+these fields; `config.ini` and `-E` reach them through `from_kwargs`.
 
 Accessors used everywhere instead of reading the fields directly:
 
 - `capture_size_for(camera) -> tuple[int, int]`
-- `depth_capture_size_for(camera) -> tuple[int, int] | None`
+- `depth_capture_size_for(camera) -> tuple[int, int]`: always resolved, in this
+  order: slot depth override, rig-wide depth, then the camera's colour capture
+  size.
 
 `camera` is the reader-facing name (`"top_cam"`, `"left_cam"`, `"right_cam"`).
 The slot is the prefix before `_cam`. An unknown name raises `ValueError`. The
@@ -51,7 +57,8 @@ greps for `capture_width` to find them.
 
 Readers take per-camera maps instead of one size. Each keeps its existing
 single-size keyword for backward compatibility with direct constructors and
-tests, used as the default for cameras missing from the map:
+tests, used as the default for cameras missing from the map. New parameters are
+keyword-only (after `*`):
 
 - `_OpenCVCameraReader(devices, capture_size=(640, 480), capture_sizes=None)`:
   each device opens at `capture_sizes.get(name, capture_size)`.
@@ -64,21 +71,31 @@ tests, used as the default for cameras missing from the map:
   (picklable); the child passes each camera's own depth size to
   `_open_child_pipeline`. The existing `depth_size` field is kept as the
   fallback for cameras absent from `depth_sizes`.
-- Intrinsics scaling in `_RealsenseCameraReader.extra` (and the process
-  reader's equivalent) divides by the camera's own capture size, not the
-  rig-wide one.
+- Intrinsics scaling in `_RealsenseCameraReader.extra` (`embodiment.py:728`)
+  and the process reader's `extra` (`:1026`) divides by the colour frame
+  actually captured (`colour.shape`), not by config, so it stays correct for
+  whatever size was negotiated.
 - `_opencv_camera_reader(cfg)` and the RealSense construction in
   `YamEmbodiment` build the maps with `cfg.capture_size_for(name)` and
   `cfg.depth_capture_size_for(name)` for each configured camera.
 
 ### V4L2 delivered-size check
 
-In `_OpenCVCameraReader`, after opening and setting the size, read back
-`CAP_PROP_FRAME_WIDTH` / `CAP_PROP_FRAME_HEIGHT`. If they differ from the
-requested size, release the capture and raise `RuntimeError` naming the camera,
-device, requested and delivered sizes, with a fix hint (`v4l2-ctl
---list-formats-ext -d <device>` to list supported sizes; set
-`{slot}_capture_width/height` to one of them). Failing loudly matches the
+In `_OpenCVCameraReader._open_one`, after both size `set` calls
+(`embodiment.py:571-572`) and around the warm-up read, before `_open_all`
+starts the drain thread (`:642-651`). It must stay there: `VideoCapture` has
+no locking, so no property read may race the drain thread (`:604-606`).
+
+- Read back `CAP_PROP_FRAME_WIDTH` / `CAP_PROP_FRAME_HEIGHT` and compare
+  `int(round(value))`. A readback <= 0 means "unknown" (some drivers or
+  builds) and is not treated as a mismatch.
+- Also compare the warm-up frame's `shape[:2]` when a frame arrived; it is the
+  ground truth.
+- On a mismatch from either check, `release()` the capture (it is not yet in
+  `_open_all`'s `caps`, so its cleanup cannot release it) and raise
+  `RuntimeError` naming the camera, device, requested and delivered sizes, with
+  a fix hint (`v4l2-ctl --list-formats-ext -d <device>` to list supported
+  sizes; set `{slot}_capture_width/height` to one of them). Failing loudly matches the
 RealSense path, which already fails at pipeline start on an unsupported
 profile. The default 640 x 480 is universally supported, so existing rigs are
 unaffected.
@@ -92,9 +109,13 @@ the same factory, so it follows.
 
 ## Docs
 
-- README capture-resolution section: per-camera overrides with the mixed-rig
-  example (`top_capture_width = 1920`, `top_capture_height = 1080`, wrists at
-  the default or up to 1280 x 720); note the V4L2 delivered-size check.
+- README capture-resolution section: per-camera overrides with a working
+  mixed-rig example: `top_capture_width/height = 1920/1080`, and if the top
+  camera is a RealSense slot, `top_depth_capture_width/height = 1280/720` (D435
+  depth tops out there); wrists at 1280 x 720 so all cameras share 16:9.
+  State that `cam_width/cam_height` stays rig-wide: every camera is resized to
+  it, so mismatched aspect ratios stretch, and per-camera output size is out of
+  scope. Note the V4L2 delivered-size check.
 - CHANGELOG entry under Unreleased (this repo still uses `CHANGELOG.md`).
 - Module docstrings / `src/inspect_robots_yam/CLAUDE.md` if they describe
   capture size.
@@ -105,12 +126,22 @@ the same factory, so it follows.
   `capture_size_for` / `depth_capture_size_for` fall back correctly (slot over
   rig-wide over default; depth falls back to the slot's colour size when
   nothing is set); unknown camera name raises.
-- OpenCV reader: per-camera sizes passed to `cap.set`; delivered-size mismatch
-  raises and releases the capture; matching size passes.
+- `tests/conftest.py` `FakeCapture` gains `get()` returning the last
+  width/height it was `set` to (negotiation succeeded), with a
+  `delivered=(w, h)` override for mismatch tests; existing V4L2 tests keep
+  passing unchanged.
+- OpenCV reader: per-camera sizes passed to `cap.set`; readback mismatch
+  raises and releases; frame-shape mismatch raises; readback <= 0 falls back
+  to the frame-shape check; matching size passes.
+- Watch: a delivered-size mismatch surfaces in `last_error()` and the periodic
+  rebuild keeps failing without crashing (`watch.py:66-79`).
 - RealSense inline reader: `_open_one` enables each camera's own colour and
   depth size; intrinsics scale by the camera's own capture size.
 - Capture process: slots created at per-camera sizes; spec carries per-camera
-  depth sizes; child opens each pipeline with its own depth size.
+  depth sizes; child opens each pipeline with its own depth size. Update the
+  existing assertion at `tests/test_capture_proc.py:643`, and put the
+  embodiment wiring test (mixed config) there or in `test_depth_reader.py`.
+- Config: a slot depth override without `{slot}_depth_serial` is rejected.
 - Embodiment wiring: a mixed config (top override, wrists default) builds
   readers with the right maps.
 - Health: each probe uses its camera's own size.
@@ -126,6 +157,8 @@ src/inspect_robots_yam/_capture_proc.py
 src/inspect_robots_yam/health.py
 README.md
 CHANGELOG.md
+tests/conftest.py
+tests/test_watch.py
 tests/test_config.py
 tests/test_camera_reader.py
 tests/test_capture_proc.py
