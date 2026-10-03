@@ -372,6 +372,36 @@ its own size with `depth_capture_width = 1280`, `depth_capture_height = 720`
 frame, so the published depth array is always colour-sized. An unsupported
 combination fails at pipeline start with the librealsense error.
 
+Each pair can also be set per camera, overriding the rig-wide value for that
+slot: `top_capture_width/top_capture_height` (and `left_`/`right_`), plus
+`top_depth_capture_width/top_depth_capture_height` for a RealSense slot (one
+with `{slot}_depth_serial`; a depth override on a V4L2 slot is rejected). A rig
+that mixes a D435 top camera with D405 wrists (which top out at 1280 × 720) can
+run the top camera at full size:
+
+```ini
+top_capture_width = 1920
+top_capture_height = 1080
+# only if the top camera is a RealSense slot: D435 depth tops out at 1280 x 720
+top_depth_capture_width = 1280
+top_depth_capture_height = 720
+left_capture_width = 1280
+left_capture_height = 720
+right_capture_width = 1280
+right_capture_height = 720
+```
+
+`cam_width × cam_height` stays rig-wide: every camera is resized to it, so
+keep the capture aspect ratios the same (16:9 above) to avoid stretching.
+Per-camera output sizes are out of scope. Intrinsics are scaled from each
+camera's actual capture size.
+
+The V4L2 path checks the size the camera actually delivered, by reading the
+size back and comparing the first frame. A camera that does not support the
+requested size fails with the camera name, both sizes, and a hint to list its
+modes with `v4l2-ctl --list-formats-ext -d <device>`, instead of silently
+falling back to another mode.
+
 Cameras open lazily, so the first `reset()` has a one-time warm-up cost while
 the pipelines start and deliver their first frames. A RealSense opened through
 librealsense cannot also be opened through V4L2—there can be only one streamer

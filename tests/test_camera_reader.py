@@ -451,7 +451,8 @@ def test_a_thread_close_left_running_cannot_fault_a_healthy_camera() -> None:
 
 
 def test_capture_size_is_negotiated_with_v4l2() -> None:
-    cv2 = FakeCv2({device: FakeCapture() for device in DEVICES.values()})
+    hd = np.full((720, 1280, 3), 7, dtype=np.uint8)
+    cv2 = FakeCv2({device: FakeCapture([(True, hd)]) for device in DEVICES.values()})
     reader = _OpenCVCameraReader(
         DEVICES, capture_size=(1280, 720), cv2_module=cv2, sleep_fn=lambda s: None, clock=Clock()
     )
@@ -462,3 +463,91 @@ def test_capture_size_is_negotiated_with_v4l2() -> None:
     sets = [call for call in cap.calls if call[0] == "set"]
     assert ("set", FakeCv2.CAP_PROP_FRAME_WIDTH, 1280) in sets
     assert ("set", FakeCv2.CAP_PROP_FRAME_HEIGHT, 720) in sets
+
+
+def test_each_camera_opens_at_its_own_capture_size() -> None:
+    hd = np.full((1080, 1920, 3), 7, dtype=np.uint8)
+    caps = {
+        "/dev/cam0": FakeCapture([(True, hd)]),
+        "/dev/cam1": FakeCapture(),
+        "/dev/cam2": FakeCapture(),
+    }
+    cv2 = FakeCv2(caps)
+    reader = _OpenCVCameraReader(
+        DEVICES,
+        cv2_module=cv2,
+        sleep_fn=lambda s: None,
+        clock=Clock(),
+        capture_sizes={"top_cam": (1920, 1080)},
+    )
+    _OPENED.append(reader)
+    reader(YamConfig())
+    assert ("set", FakeCv2.CAP_PROP_FRAME_WIDTH, 1920) in caps["/dev/cam0"].calls
+    assert ("set", FakeCv2.CAP_PROP_FRAME_WIDTH, 640) in caps["/dev/cam1"].calls
+
+
+def test_a_size_the_driver_does_not_deliver_fails_loudly_and_releases() -> None:
+    """V4L2 falls back silently; the readback catches it before any frame is used."""
+    cap = FakeCapture(delivered=(640.0, 480.0))
+    cv2 = FakeCv2({"/dev/cam0": cap})
+    reader = _OpenCVCameraReader(
+        {"top_cam": "/dev/cam0"},
+        capture_size=(1920, 1080),
+        cv2_module=cv2,
+        sleep_fn=lambda s: None,
+        clock=Clock(),
+    )
+    _OPENED.append(reader)
+    with pytest.raises(
+        RuntimeError,
+        match=r"top_cam \(/dev/cam0\) delivered 640x480 instead of the requested 1920x1080",
+    ) as info:
+        reader(YamConfig(capture_width=1920, capture_height=1080))
+    assert "v4l2-ctl --list-formats-ext -d /dev/cam0" in str(info.value)
+    assert "top_capture_width" in str(info.value)
+    assert cap.released
+    assert not any(call == ("read",) for call in cap.calls)
+
+
+def test_unreported_size_falls_back_to_checking_the_first_frame() -> None:
+    """A driver that reports 0x0 is checked against the delivered frame instead."""
+    cap = FakeCapture(delivered=(0.0, 0.0))  # default frames are 640x480
+    cv2 = FakeCv2({"/dev/cam0": cap})
+    reader = _OpenCVCameraReader(
+        {"top_cam": "/dev/cam0"},
+        capture_size=(1280, 720),
+        cv2_module=cv2,
+        sleep_fn=lambda s: None,
+        clock=Clock(),
+    )
+    _OPENED.append(reader)
+    with pytest.raises(RuntimeError, match="delivered 640x480 instead of the requested 1280x720"):
+        reader(YamConfig(capture_width=1280, capture_height=720))
+    assert cap.released
+
+    ok_cap = FakeCapture(delivered=(0.0, 0.0))
+    ok_reader = _OpenCVCameraReader(
+        {"top_cam": "/dev/cam1"},
+        cv2_module=FakeCv2({"/dev/cam1": ok_cap}),
+        sleep_fn=lambda s: None,
+        clock=Clock(),
+    )
+    _OPENED.append(ok_reader)
+    assert "top_cam" in ok_reader(YamConfig())  # a matching first frame passes
+
+
+def test_a_later_camera_failing_the_size_check_releases_the_earlier_ones() -> None:
+    caps = {
+        "/dev/cam0": FakeCapture(),
+        "/dev/cam1": FakeCapture(delivered=(320.0, 240.0)),
+        "/dev/cam2": FakeCapture(),
+    }
+    reader = _OpenCVCameraReader(
+        DEVICES, cv2_module=FakeCv2(caps), sleep_fn=lambda s: None, clock=Clock()
+    )
+    _OPENED.append(reader)
+    with pytest.raises(RuntimeError, match=r"left_cam \(/dev/cam1\) delivered 320x240"):
+        reader(YamConfig())
+    assert caps["/dev/cam0"].released
+    assert caps["/dev/cam1"].released
+    assert reader._caps == {}

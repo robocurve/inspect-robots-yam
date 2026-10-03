@@ -640,7 +640,15 @@ def test_process_mode_embodiment_uses_fake_spawn_child(
             right_depth_serial="ready-right",
         )
     )
-    assert forwarded == [{"capture_size": (640, 480), "depth_capture_size": None}]
+    sizes = dict.fromkeys(("top_cam", "left_cam", "right_cam"), (640, 480))
+    assert forwarded == [
+        {
+            "capture_size": (640, 480),
+            "depth_capture_size": None,
+            "capture_sizes": sizes,
+            "depth_capture_sizes": sizes,
+        }
+    ]
     reader = emb._builtin_realsense_reader
 
     assert isinstance(reader, _ProcessRealsenseCameraReader)

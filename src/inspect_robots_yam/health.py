@@ -62,6 +62,24 @@ _DEPTH_SERIAL_KEYS = frozenset({"top_depth_serial", "left_depth_serial", "right_
 _RAW_STRING_KEYS = _CAMERA_FLAG_KEYS | _DEPTH_SERIAL_KEYS
 #: Every camera-slot key: the skip-conflict and slot-supersession domain.
 _CAMERA_SLOT_KEYS = _RAW_STRING_KEYS
+# Capture sizes the health probes must honour from config.ini (plans 0032,
+# 0033); without them a configured 1920 x 1080 camera is probed at 640 x 480.
+_SLOT_DEPTH_CAPTURE_KEYS = frozenset(
+    f"{slot}_depth_capture_{dim}"
+    for slot in ("top", "left", "right")
+    for dim in ("width", "height")
+)
+_CAPTURE_SIZE_KEYS = (
+    frozenset(
+        {"capture_width", "capture_height", "depth_capture_width", "depth_capture_height"}
+        | {
+            f"{slot}_capture_{dim}"
+            for slot in ("top", "left", "right")
+            for dim in ("width", "height")
+        }
+    )
+    | _SLOT_DEPTH_CAPTURE_KEYS
+)
 _CHANNEL_KEYS = frozenset({"left_channel", "right_channel"})
 _CAMERA_SLOTS = ("top", "left", "right")
 _DEPTH_UNCHECKED_REASON = "depth-configured; not checked by this tool"
@@ -131,10 +149,11 @@ def _reader_factory_for(cfg: YamConfig, reader_factory: ReaderFactory) -> Reader
     """Bind the default factory to the rig's configured capture size; keep injected ones."""
     if reader_factory is not _default_reader_factory:
         return reader_factory
-    size = (cfg.capture_width, cfg.capture_height)
 
     def factory(name: str, device: str) -> HealthCameraReader:
-        return _default_reader_factory(name, device, capture_size=size)
+        # Each camera at its own size (plan 0033), so the delivered-size check
+        # reports per camera.
+        return _default_reader_factory(name, device, capture_size=cfg.capture_size_for(name))
 
     return factory
 
@@ -453,11 +472,22 @@ def main(
     yam_defaults = (
         YamDefaults(args={}, source=None, owner=None)
         if args.no_config
-        else load_yam_defaults(os.environ if env is None else env)
+        else load_yam_defaults(os.environ if env is None else env, extra_keys=_CAPTURE_SIZE_KEYS)
     )
-    config_args = dict(yam_defaults.args)
+    config_args: dict[str, Any] = dict(yam_defaults.args)
     if args.skip_cameras:
-        for key in _CAMERA_SLOT_KEYS:
+        # No camera runs, so a bad configured size must not block a motors check.
+        for key in _CAPTURE_SIZE_KEYS:
+            config_args.pop(key, None)
+    # load_yam_defaults returns strings (built for device names); sizes are ints.
+    for key in _CAPTURE_SIZE_KEYS & config_args.keys():
+        try:
+            config_args[key] = int(config_args[key])
+        except ValueError:
+            parser.error(f"{key} in {yam_defaults.source} must be an integer")
+    if args.skip_cameras:
+        # Depth overrides need their slot's depth serial, so they go with it.
+        for key in _CAMERA_SLOT_KEYS | _SLOT_DEPTH_CAPTURE_KEYS:
             config_args.pop(key, None)
     if args.skip_motors:
         for key in _CHANNEL_KEYS:
@@ -468,10 +498,13 @@ def main(
     for slot in _CAMERA_SLOTS:
         slot_keys = {f"{slot}_cam_device", f"{slot}_depth_serial"}
         if slot_keys & explicit_camera_keys:
-            for key in slot_keys:
+            for key in slot_keys | {
+                f"{slot}_depth_capture_width",
+                f"{slot}_depth_capture_height",
+            }:
                 config_args.pop(key, None)
 
-    contributed_keys = config_args.keys() - explicit_keys
+    contributed_keys = config_args.keys() - explicit_keys - _CAPTURE_SIZE_KEYS
     config_values = {**config_args, **extras, **flag_values}
     if contributed_keys:
         print(

@@ -1379,12 +1379,114 @@ def test_default_reader_factory_binds_the_configured_capture_size(
             seen.append(capture_size)
 
     monkeypatch.setattr(health_module.embodiment, "_OpenCVCameraReader", Recorder)
-    cfg = YamConfig(capture_width=1280, capture_height=720)
+    cfg = YamConfig(
+        capture_width=1280, capture_height=720, top_capture_width=1920, top_capture_height=1080
+    )
     bound = health_module._reader_factory_for(cfg, health_module._default_reader_factory)
     bound("top_cam", "/dev/video0")
-    assert seen == [(1280, 720)]
+    bound("left_cam", "/dev/video2")
+    # Each camera is probed at its own size (plan 0033).
+    assert seen == [(1920, 1080), (1280, 720)]
 
     def injected(name: str, device: str) -> Any:
         return object()
 
     assert health_module._reader_factory_for(cfg, injected) is injected
+
+
+def test_watch_honours_capture_sizes_from_config_ini(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Health and watch probe each camera at the size configured in config.ini."""
+    env, _ = write_config(
+        tmp_path,
+        {
+            "top_cam_device": "/dev/top",
+            "left_cam_device": "/dev/left",
+            "right_cam_device": "/dev/right",
+            "capture_width": "1280",
+            "capture_height": "720",
+            "top_capture_width": "1920",
+            "top_capture_height": "1080",
+        },
+    )
+    seen: list[YamConfig] = []
+
+    def fake_serve(cfg: YamConfig, **_kwargs: object) -> int:
+        seen.append(cfg)
+        return 0
+
+    monkeypatch.setattr("inspect_robots_yam.watch.serve", fake_serve)
+
+    assert main(["--watch"], env=env) == 0
+    assert seen[0].capture_size_for("top_cam") == (1920, 1080)
+    assert seen[0].capture_size_for("left_cam") == (1280, 720)
+
+
+def test_slot_override_drops_that_slots_depth_capture_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--top-cam replaces the RealSense top slot, so its depth size goes too."""
+    env, _ = write_config(
+        tmp_path,
+        {
+            "top_depth_serial": "top-depth",
+            "left_cam_device": "/dev/left",
+            "right_cam_device": "/dev/right",
+            "top_depth_capture_width": "1280",
+            "top_depth_capture_height": "720",
+        },
+    )
+    seen: list[YamConfig] = []
+
+    def fake_serve(cfg: YamConfig, **_kwargs: object) -> int:
+        seen.append(cfg)
+        return 0
+
+    monkeypatch.setattr("inspect_robots_yam.watch.serve", fake_serve)
+
+    assert main(["--watch", "--top-cam", "/dev/top"], env=env) == 0
+    assert seen[0].top_depth_serial is None
+    assert seen[0].top_depth_capture_width is None
+
+
+def test_a_non_integer_capture_size_in_config_ini_is_a_usage_error(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    env, _ = write_config(
+        tmp_path,
+        {
+            "top_cam_device": "/dev/top",
+            "left_cam_device": "/dev/left",
+            "right_cam_device": "/dev/right",
+            "capture_width": "wide",
+        },
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--watch"], env=env)
+    assert exc_info.value.code == 2
+    assert "capture_width in" in capsys.readouterr().err
+
+
+def test_skip_cameras_ignores_configured_capture_sizes(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A motors-only check is not blocked by a camera size it never uses."""
+    env, _ = write_config(tmp_path, {"capture_width": "8", "capture_height": "480"})
+
+    report = HealthReport((), True, (), False, None)
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return report
+
+    assert main(["--skip-cameras"], env=env, run=capture) == 0
+    assert seen[0].capture_width == 640  # the bad configured size never applied
+    err = capsys.readouterr().err
+    assert "capture_width" not in err
+    assert "devices: from" not in err  # sizes alone are not device attribution

@@ -458,9 +458,13 @@ class _OpenCVCameraReader:
         cv2_module: Any | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        *,
+        capture_sizes: Mapping[str, tuple[int, int]] | None = None,
     ) -> None:
         self._devices = dict(devices)
         self._capture_size = capture_size
+        # Per-camera sizes (plan 0033); cameras absent here use capture_size.
+        self._capture_sizes = dict(capture_sizes or {})
         self._cv2 = cv2_module
         self._sleep = sleep_fn
         self._clock = clock
@@ -568,19 +572,62 @@ class _OpenCVCameraReader:
             raise RuntimeError(f"cannot open {name} at {device}")
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"YUYV"))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._capture_size[0])
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._capture_size[1])
+        width, height = self._capture_sizes.get(name, self._capture_size)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)
         cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000)
+        # V4L2 silently falls back to another mode when a size is unsupported.
+        # Verify here, before _open_all starts the drain thread: VideoCapture
+        # has no locking, so no property read may race that thread. Known gap:
+        # if the driver does not report a size (0) and warm-up yields no frame,
+        # frames later published by the drain thread are not size-checked.
+        delivered = (
+            round(float(cap.get(cv2.CAP_PROP_FRAME_WIDTH))),
+            round(float(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))),
+        )
+        if delivered[0] > 0 and delivered[1] > 0:  # <= 0: driver does not report
+            self._check_delivered(cap, name, device, (width, height), delivered)
         for _ in range(10):  # warm up: first frames can be empty
             ok, frame = cap.read()
             # `ok` matters as much here as in the drain loop: this read seeds the
             # slot that serves reset()'s first observation.
             if ok and frame is not None:
+                # The frame is the ground truth; check it before it is published.
+                frame_h, frame_w = frame.shape[:2]
+                self._check_delivered(
+                    cap, name, device, (width, height), (int(frame_w), int(frame_h))
+                )
                 self._publish(name, frame, generation)
                 break
             self._sleep(0.1)
         return cap
+
+    @staticmethod
+    def _check_delivered(
+        cap: Any,
+        name: str,
+        device: str,
+        requested: tuple[int, int],
+        delivered: tuple[int, int],
+    ) -> None:
+        """Release and raise when the camera delivers a size other than requested.
+
+        The capture is not yet in ``_open_all``'s ``caps``, so its cleanup
+        cannot release it; release here before raising.
+        """
+        if delivered == requested:
+            return
+        cap.release()
+        slot = name[: -len("_cam")] if name.endswith("_cam") else name
+        raise RuntimeError(
+            f"{name} ({device}) delivered {delivered[0]}x{delivered[1]} instead of the "
+            f"requested {requested[0]}x{requested[1]}; the camera does not support that "
+            f"size in YUYV, the format this reader uses. fix: list supported sizes "
+            f"with `v4l2-ctl --list-formats-ext -d {device}` and pick a YUYV size "
+            f"(sizes listed only under MJPG are not usable) for "
+            f"{slot}_capture_width/{slot}_capture_height (or capture_width/capture_height)"
+        )
 
     def _drain(self, name: str, cap: Any, stop: threading.Event, generation: int) -> None:
         """Publish frames until stopped, latching whatever ends the loop.
@@ -658,7 +705,11 @@ def _opencv_camera_reader(cfg: YamConfig) -> CameraReader:
         )
         if device is not None
     }
-    return _OpenCVCameraReader(devices, capture_size=(cfg.capture_width, cfg.capture_height))
+    return _OpenCVCameraReader(
+        devices,
+        capture_size=(cfg.capture_width, cfg.capture_height),
+        capture_sizes={name: cfg.capture_size_for(name) for name in devices},
+    )
 
 
 def _default_camera_reader(cfg: YamConfig) -> ImageMap:
@@ -689,11 +740,17 @@ class _RealsenseCameraReader:
         cv2_module: Any | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        *,
+        capture_sizes: Mapping[str, tuple[int, int]] | None = None,
+        depth_capture_sizes: Mapping[str, tuple[int, int]] | None = None,
     ) -> None:
         self._serials = dict(serials)
         self._depth_fps = depth_fps
         self._capture_size = capture_size
         self._depth_capture_size = depth_capture_size
+        # Per-camera sizes (plan 0033); cameras absent here use the pair above.
+        self._capture_sizes = dict(capture_sizes or {})
+        self._depth_capture_sizes = dict(depth_capture_sizes or {})
         self._rs = rs_module
         self._cv2 = cv2_module
         self._sleep = sleep_fn
@@ -725,8 +782,11 @@ class _RealsenseCameraReader:
         for name in self._serials:
             pair, generation = self._latest(name)
             intrinsics = pair.intrinsics.copy()
-            sx = cfg.cam_width / cfg.capture_width
-            sy = cfg.cam_height / cfg.capture_height
+            # Scale from the frame actually captured: each camera may have its
+            # own capture size (plan 0033), and K belongs to that frame.
+            captured_h, captured_w = pair.colour.shape[:2]
+            sx = cfg.cam_width / captured_w
+            sy = cfg.cam_height / captured_h
             intrinsics[0, 0] = float(pair.intrinsics[0, 0]) * sx
             intrinsics[0, 2] = float(pair.intrinsics[0, 2]) * sx
             intrinsics[1, 1] = float(pair.intrinsics[1, 1]) * sy
@@ -863,8 +923,10 @@ class _RealsenseCameraReader:
         """
         rs_cfg = rs.config()
         rs_cfg.enable_device(serial)
-        width, height = self._capture_size
-        depth_w, depth_h = self._depth_capture_size or self._capture_size
+        width, height = self._capture_sizes.get(name, self._capture_size)
+        depth_w, depth_h = self._depth_capture_sizes.get(
+            name, self._depth_capture_size or (width, height)
+        )
         rs_cfg.enable_stream(rs.stream.color, width, height, rs.format.rgb8, self._depth_fps)
         rs_cfg.enable_stream(rs.stream.depth, depth_w, depth_h, rs.format.z16, self._depth_fps)
         pipeline = rs.pipeline()
@@ -980,6 +1042,8 @@ class _ProcessRealsenseCameraReader:
         capture_size: tuple[int, int] = (REALSENSE_CAPTURE_WIDTH, REALSENSE_CAPTURE_HEIGHT),
         depth_capture_size: tuple[int, int] | None = None,
         *,
+        capture_sizes: Mapping[str, tuple[int, int]] | None = None,
+        depth_capture_sizes: Mapping[str, tuple[int, int]] | None = None,
         child_entry: Any = None,
         transport: _CaptureTransport | None = None,
         cv2_module: Any | None = None,
@@ -995,6 +1059,8 @@ class _ProcessRealsenseCameraReader:
                 depth_fps,
                 capture_size=capture_size,
                 depth_capture_size=depth_capture_size,
+                capture_sizes=capture_sizes,
+                depth_capture_sizes=depth_capture_sizes,
                 child_entry=child_entry,
             )
         )
@@ -1023,8 +1089,9 @@ class _ProcessRealsenseCameraReader:
         for name in self._serials:
             snapshot = self._latest(name)
             intrinsics = snapshot.intrinsics.copy()
-            sx = cfg.cam_width / cfg.capture_width
-            sy = cfg.cam_height / cfg.capture_height
+            captured_h, captured_w = snapshot.colour.shape[:2]
+            sx = cfg.cam_width / captured_w
+            sy = cfg.cam_height / captured_h
             intrinsics[0, 0] = float(snapshot.intrinsics[0, 0]) * sx
             intrinsics[0, 2] = float(snapshot.intrinsics[0, 2]) * sx
             intrinsics[1, 1] = float(snapshot.intrinsics[1, 1]) * sy
@@ -1261,12 +1328,18 @@ class YAMEmbodiment:
             ):
                 builtin_readers.append(_opencv_camera_reader(self._cfg))
             if depth_serials:
+                capture_sizes = {name: self._cfg.capture_size_for(name) for name in depth_serials}
+                depth_capture_sizes = {
+                    name: self._cfg.depth_capture_size_for(name) for name in depth_serials
+                }
                 if self._cfg.realsense_capture == "inline":
                     self._builtin_realsense_reader = _RealsenseCameraReader(
                         depth_serials,
                         self._cfg.depth_fps,
                         capture_size=(self._cfg.capture_width, self._cfg.capture_height),
                         depth_capture_size=self._cfg.depth_capture_size,
+                        capture_sizes=capture_sizes,
+                        depth_capture_sizes=depth_capture_sizes,
                     )
                 else:
                     self._builtin_realsense_reader = _ProcessRealsenseCameraReader(
@@ -1274,6 +1347,8 @@ class YAMEmbodiment:
                         self._cfg.depth_fps,
                         capture_size=(self._cfg.capture_width, self._cfg.capture_height),
                         depth_capture_size=self._cfg.depth_capture_size,
+                        capture_sizes=capture_sizes,
+                        depth_capture_sizes=depth_capture_sizes,
                     )
                 builtin_readers.append(self._builtin_realsense_reader)
             if len(builtin_readers) == 1:

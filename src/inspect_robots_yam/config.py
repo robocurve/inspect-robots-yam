@@ -159,6 +159,22 @@ class YamConfig(_FromKwargs):
     # can run colour at 1920 x 1080 with depth at its 1280 x 720 maximum.
     depth_capture_width: int | None = None
     depth_capture_height: int | None = None
+    # Per-camera overrides of the two pairs above (plan 0033). None means "use
+    # the rig-wide value". A mixed rig can then run its D435 top camera at
+    # 1920 x 1080 while D405 wrists stay within their 1280 x 720 maximum.
+    # Depth overrides apply only to a slot with `{slot}_depth_serial`.
+    top_capture_width: int | None = None
+    top_capture_height: int | None = None
+    left_capture_width: int | None = None
+    left_capture_height: int | None = None
+    right_capture_width: int | None = None
+    right_capture_height: int | None = None
+    top_depth_capture_width: int | None = None
+    top_depth_capture_height: int | None = None
+    left_depth_capture_width: int | None = None
+    left_depth_capture_height: int | None = None
+    right_depth_capture_width: int | None = None
+    right_depth_capture_height: int | None = None
     joint_low: tuple[float, ...] = _DEFAULT_LOW
     joint_high: tuple[float, ...] = _DEFAULT_HIGH
     control_interface: str = "joints"
@@ -335,10 +351,40 @@ class YamConfig(_FromKwargs):
 
     @property
     def depth_capture_size(self) -> tuple[int, int] | None:
-        """The RealSense depth stream size, or None to match the colour capture."""
+        """The rig-wide RealSense depth stream size, or None to match colour capture."""
         if self.depth_capture_width is None or self.depth_capture_height is None:
             return None
         return (self.depth_capture_width, self.depth_capture_height)
+
+    @staticmethod
+    def _camera_slot(camera: str) -> str:
+        """Map a reader camera name (``top_cam``) or slot (``top``) to its slot."""
+        slot = camera[: -len("_cam")] if camera.endswith("_cam") else camera
+        if slot not in ("top", "left", "right"):
+            raise ValueError(f"unknown camera {camera!r}; expected top_cam, left_cam or right_cam")
+        return slot
+
+    def capture_size_for(self, camera: str) -> tuple[int, int]:
+        """Native colour capture size for one camera: its override, else rig-wide."""
+        slot = self._camera_slot(camera)
+        width = getattr(self, f"{slot}_capture_width")
+        height = getattr(self, f"{slot}_capture_height")
+        if width is not None and height is not None:
+            return (width, height)
+        return (self.capture_width, self.capture_height)
+
+    def depth_capture_size_for(self, camera: str) -> tuple[int, int]:
+        """Depth stream size for one camera, always resolved.
+
+        Order: the slot's depth override, the rig-wide depth size, then the
+        camera's own colour capture size.
+        """
+        slot = self._camera_slot(camera)
+        width = getattr(self, f"{slot}_depth_capture_width")
+        height = getattr(self, f"{slot}_depth_capture_height")
+        if width is not None and height is not None:
+            return (width, height)
+        return self.depth_capture_size or self.capture_size_for(camera)
 
     def __post_init__(self) -> None:
         """Reject values that violate the 14-D packing and hardware invariants.
@@ -485,6 +531,25 @@ class YamConfig(_FromKwargs):
                 not isinstance(value, int) or isinstance(value, bool) or value < 16
             ):
                 raise ValueError(f"{key} must be an integer of at least 16 or unset")
+        for slot in ("top", "left", "right"):
+            for kind in ("capture", "depth_capture"):
+                w_key, h_key = f"{slot}_{kind}_width", f"{slot}_{kind}_height"
+                pair = (getattr(self, w_key), getattr(self, h_key))
+                if (pair[0] is None) != (pair[1] is None):
+                    raise ValueError(f"{w_key} and {h_key} must be set together")
+                for key, value in ((w_key, pair[0]), (h_key, pair[1])):
+                    if value is not None and (
+                        not isinstance(value, int) or isinstance(value, bool) or value < 16
+                    ):
+                        raise ValueError(f"{key} must be an integer of at least 16 or unset")
+            if (
+                getattr(self, f"{slot}_depth_capture_width") is not None
+                and getattr(self, f"{slot}_depth_serial") is None
+            ):
+                raise ValueError(
+                    f"{slot}_depth_capture_width/height only apply to a RealSense slot; "
+                    f"set {slot}_depth_serial or remove the depth override"
+                )
         valid_realsense_capture = {"inline", "process"}
         if self.realsense_capture not in valid_realsense_capture:
             raise ValueError(

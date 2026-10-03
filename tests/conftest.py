@@ -303,8 +303,13 @@ class FakeCapture:
         raise_at: int | None = None,
         block: threading.Event | None = None,
         idle_from: int | None = 2,
+        delivered: tuple[float, float] | None = None,
     ) -> None:
         self.calls: list[Any] = []
+        # What get(FRAME_WIDTH/HEIGHT) reports: None echoes the last set() value
+        # (negotiation succeeded); a pair simulates a driver fallback or 0/0.
+        self._delivered = delivered
+        self._props: dict[int, float] = {}
         self.reads = list(reads if reads is not None else [(True, frame())])
         self.count = 0
         self.released = False
@@ -329,7 +334,17 @@ class FakeCapture:
     def set(self, prop: int, value: float) -> bool:
         """Record a property write in call order."""
         self.calls.append(("set", prop, value))
+        self._props[prop] = value
         return True
+
+    def get(self, prop: int) -> float:
+        """Report a property; frame size echoes set() unless ``delivered`` overrides."""
+        if self._delivered is not None and prop in (
+            FakeCv2.CAP_PROP_FRAME_WIDTH,
+            FakeCv2.CAP_PROP_FRAME_HEIGHT,
+        ):
+            return self._delivered[0 if prop == FakeCv2.CAP_PROP_FRAME_WIDTH else 1]
+        return float(self._props.get(prop, 0.0))
 
     def read(self) -> tuple[bool, Any]:
         """Return the next scripted result, repeating the last one forever."""

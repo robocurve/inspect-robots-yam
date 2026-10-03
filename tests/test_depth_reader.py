@@ -81,6 +81,10 @@ class FakeCapture:
         """Accept every capture setting."""
         return True
 
+    def get(self, _prop: int) -> float:
+        """Report an unknown frame size, as some V4L2 drivers do (frame shape is checked)."""
+        return 0.0
+
     def read(self) -> tuple[bool, npt.NDArray[np.uint8]]:
         """Return a stable BGR frame without spinning a drain thread."""
         self.calls += 1
@@ -195,6 +199,8 @@ def build(
     depth_fps: int = 30,
     capture_size: tuple[int, int] = (640, 480),
     depth_capture_size: tuple[int, int] | None = None,
+    capture_sizes: dict[str, tuple[int, int]] | None = None,
+    depth_capture_sizes: dict[str, tuple[int, int]] | None = None,
 ) -> tuple[_RealsenseCameraReader, FakeRs, FakeCv2, Clock, list[float]]:
     """Build a reader and all of its injected recording fakes."""
     rs = rs if rs is not None else FakeRs(pipelines, devices)
@@ -206,6 +212,8 @@ def build(
         depth_fps,
         capture_size=capture_size,
         depth_capture_size=depth_capture_size,
+        capture_sizes=capture_sizes,
+        depth_capture_sizes=depth_capture_sizes,
         rs_module=rs,
         cv2_module=cv2,
         sleep_fn=sleeps.append,
@@ -1207,18 +1215,28 @@ def test_close_depth_reader_release_error_is_swallowed() -> None:
     embodiment(depth_reader=FailingDepthReader()).close()
 
 
-def test_intrinsics_scale_from_the_configured_capture_size() -> None:
-    reader, _, _, _, _ = build()
-
-    intrinsics = reader.extra(
-        YamConfig(cam_height=4, cam_width=4, capture_width=320, capture_height=240)
-    )["top_cam_intrinsics"]
-
-    expected = np.array(
-        [[600 * 4 / 320, 0, 320 * 4 / 320], [0, 600 * 4 / 240, 240 * 4 / 240], [0, 0, 1]],
-        dtype=np.float32,
+def test_intrinsics_scale_from_each_cameras_captured_frame() -> None:
+    """K is scaled from the frame each camera actually captured (plan 0033)."""
+    small = np.full((240, 320, 3), 7, dtype=np.uint8)
+    reader, _, _, _, _ = build(
+        serials={"top_cam": "S1", "left_cam": "S2"},
+        pipelines=[FakePipeline([(True, frameset(colour=small))]), FakePipeline()],
+        capture_sizes={"top_cam": (320, 240)},
     )
-    assert np.array_equal(intrinsics, expected)
+
+    extra = reader.extra(YamConfig(cam_height=4, cam_width=4))
+
+    k = np.array([[600, 0, 320], [0, 600, 240], [0, 0, 1]], dtype=np.float32)
+    top = k.copy()
+    top[0] *= 4 / 320
+    top[1, :2] *= 4 / 240
+    top[1, 2] *= 4 / 240
+    left = k.copy()
+    left[0] *= 4 / 640
+    left[1, :2] *= 4 / 480
+    left[1, 2] *= 4 / 480
+    assert np.allclose(extra["top_cam_intrinsics"], top)
+    assert np.allclose(extra["left_cam_intrinsics"], left)
 
 
 def test_inline_reader_requests_the_configured_capture_size() -> None:
