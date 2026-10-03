@@ -17,6 +17,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `yam-health` / `--watch` probes follow the configured size
   ([plan 0032](plans/0032-configurable-capture-resolution.md)).
 
+- Per-camera capture sizes: `top_`/`left_`/`right_capture_width` and
+  `_capture_height`, plus `_depth_capture_width` / `_depth_capture_height` for
+  RealSense slots, override the rig-wide sizes. A rig mixing a D435 top camera
+  with D405 wrists (at most 1280 × 720) can now run only the top camera at
+  1920 × 1080. Intrinsics scale from each camera's actual capture size. The
+  V4L2 path now verifies the size the camera delivered and fails with a guided
+  error instead of silently using another mode
+  ([#165](https://github.com/robocurve/inspect-robots-yam/issues/165),
+  [plan 0033](plans/0033-per-camera-capture-size.md)).
+
 - An opt-in motor thermal guardrail checks every arm and gripper before reset
   motion and before each step, warns as the configured limit approaches, and
   ends a hot trial on the grading screen while torque remains. This avoids the

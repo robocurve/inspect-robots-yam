@@ -810,3 +810,67 @@ def test_depth_capture_size_defaults_to_none_and_pairs() -> None:
         YamConfig(depth_capture_width=1280)
     with pytest.raises(ValueError, match="depth_capture_height must be an integer of at least 16"):
         YamConfig(depth_capture_width=1280, depth_capture_height=8)
+
+
+def test_capture_size_for_prefers_the_camera_override() -> None:
+    cfg = YamConfig(top_capture_width=1920, top_capture_height=1080)
+    assert cfg.capture_size_for("top_cam") == (1920, 1080)
+    assert cfg.capture_size_for("top") == (1920, 1080)
+    assert cfg.capture_size_for("left_cam") == (640, 480)
+    wide = YamConfig(
+        capture_width=1280, capture_height=720, right_capture_width=848, right_capture_height=480
+    )
+    assert wide.capture_size_for("left_cam") == (1280, 720)
+    assert wide.capture_size_for("right_cam") == (848, 480)
+
+
+def test_depth_capture_size_for_resolution_order() -> None:
+    sources = {
+        "top_depth_serial": "S-top",
+        "left_depth_serial": "S-left",
+        "right_depth_serial": "S-right",
+    }
+    colour = {"top_capture_width": 1920, "top_capture_height": 1080}
+    # Nothing set for depth: the camera's own colour size.
+    plain = YamConfig(**sources, **colour)  # type: ignore[arg-type]
+    assert plain.depth_capture_size_for("top_cam") == (1920, 1080)
+    # Rig-wide depth beats the colour size.
+    rig = YamConfig(
+        **sources,  # type: ignore[arg-type]
+        **colour,
+        depth_capture_width=848,
+        depth_capture_height=480,
+    )
+    assert rig.depth_capture_size_for("top_cam") == (848, 480)
+    # The slot override beats both.
+    slot = YamConfig(
+        **sources,  # type: ignore[arg-type]
+        **colour,
+        depth_capture_width=848,
+        depth_capture_height=480,
+        top_depth_capture_width=1280,
+        top_depth_capture_height=720,
+    )
+    assert slot.depth_capture_size_for("top_cam") == (1280, 720)
+    assert slot.depth_capture_size_for("left_cam") == (848, 480)
+
+
+def test_unknown_camera_name_is_rejected() -> None:
+    with pytest.raises(ValueError, match="unknown camera 'wrist_cam'"):
+        YamConfig().capture_size_for("wrist_cam")
+
+
+@pytest.mark.parametrize("kind", ["capture", "depth_capture"])
+def test_per_camera_sizes_pair_and_validate(kind: str) -> None:
+    serial = {"left_depth_serial": "S-left"}
+    with pytest.raises(ValueError, match=f"left_{kind}_width and left_{kind}_height"):
+        YamConfig(**{f"left_{kind}_width": 1280}, **serial)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=f"left_{kind}_width must be an integer"):
+        YamConfig(**{f"left_{kind}_width": 8, f"left_{kind}_height": 720}, **serial)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=f"left_{kind}_height must be an integer"):
+        YamConfig(**{f"left_{kind}_width": 1280, f"left_{kind}_height": True}, **serial)  # type: ignore[arg-type]
+
+
+def test_depth_override_requires_a_realsense_slot() -> None:
+    with pytest.raises(ValueError, match="top_depth_capture_width/height only apply"):
+        YamConfig(top_depth_capture_width=1280, top_depth_capture_height=720)

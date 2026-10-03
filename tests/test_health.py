@@ -1379,10 +1379,14 @@ def test_default_reader_factory_binds_the_configured_capture_size(
             seen.append(capture_size)
 
     monkeypatch.setattr(health_module.embodiment, "_OpenCVCameraReader", Recorder)
-    cfg = YamConfig(capture_width=1280, capture_height=720)
+    cfg = YamConfig(
+        capture_width=1280, capture_height=720, top_capture_width=1920, top_capture_height=1080
+    )
     bound = health_module._reader_factory_for(cfg, health_module._default_reader_factory)
     bound("top_cam", "/dev/video0")
-    assert seen == [(1280, 720)]
+    bound("left_cam", "/dev/video2")
+    # Each camera is probed at its own size (plan 0033).
+    assert seen == [(1920, 1080), (1280, 720)]
 
     def injected(name: str, device: str) -> Any:
         return object()

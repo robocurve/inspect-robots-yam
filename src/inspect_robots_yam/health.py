@@ -131,10 +131,11 @@ def _reader_factory_for(cfg: YamConfig, reader_factory: ReaderFactory) -> Reader
     """Bind the default factory to the rig's configured capture size; keep injected ones."""
     if reader_factory is not _default_reader_factory:
         return reader_factory
-    size = (cfg.capture_width, cfg.capture_height)
 
     def factory(name: str, device: str) -> HealthCameraReader:
-        return _default_reader_factory(name, device, capture_size=size)
+        # Each camera at its own size (plan 0033), so the delivered-size check
+        # reports per camera.
+        return _default_reader_factory(name, device, capture_size=cfg.capture_size_for(name))
 
     return factory
 

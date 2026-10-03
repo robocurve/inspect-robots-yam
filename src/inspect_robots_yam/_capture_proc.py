@@ -105,6 +105,8 @@ class _CaptureSpec:
     #: Depth stream size; None means the slot (colour) size. Depth is aligned to
     #: colour in the child, so the slot's depth buffer is always colour-sized.
     depth_size: tuple[int, int] | None = None
+    # Per-camera depth sizes (plan 0033), picklable; absent names use depth_size.
+    depth_sizes: tuple[tuple[str, tuple[int, int]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -126,6 +128,8 @@ class _CaptureProcess:
         *,
         capture_size: tuple[int, int] = (REALSENSE_CAPTURE_WIDTH, REALSENSE_CAPTURE_HEIGHT),
         depth_capture_size: tuple[int, int] | None = None,
+        capture_sizes: Mapping[str, tuple[int, int]] | None = None,
+        depth_capture_sizes: Mapping[str, tuple[int, int]] | None = None,
         child_entry: Any = None,
         context: Any = None,
         open_timeout_s: float = OPEN_TIMEOUT_S,
@@ -134,6 +138,8 @@ class _CaptureProcess:
         self._depth_fps = depth_fps
         self._capture_size = capture_size
         self._depth_capture_size = depth_capture_size
+        self._capture_sizes = dict(capture_sizes or {})
+        self._depth_capture_sizes = dict(depth_capture_sizes or {})
         self._child_entry = _child_main if child_entry is None else child_entry
         self._context = context
         self._open_timeout_s = open_timeout_s
@@ -170,7 +176,7 @@ class _CaptureProcess:
         slots: dict[str, tuple[shared_memory.SharedMemory, _FrameSlotSpec]] = {}
         try:
             for name, _ in self._serials:
-                slots[name] = _create_frame_slot(*self._capture_size)
+                slots[name] = _create_frame_slot(*self._capture_sizes.get(name, self._capture_size))
         except BaseException:
             _unlink_slots(slots)
             _close_slots(slots)
@@ -190,6 +196,7 @@ class _CaptureProcess:
             generation=generation,
             stop_event=stop_event,
             depth_size=self._depth_capture_size,
+            depth_sizes=tuple(self._depth_capture_sizes.items()),
         )
         try:
             process = context.Process(
@@ -357,7 +364,7 @@ def _open_child_pipelines(
                 slots[name],
                 shms[name],
                 spec.generation,
-                depth_size=spec.depth_size,
+                depth_size=dict(spec.depth_sizes).get(name, spec.depth_size),
             )
     except BaseException:
         for bundle in bundles.values():
