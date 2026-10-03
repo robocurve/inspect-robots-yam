@@ -232,6 +232,30 @@ class CollisionChecker:
                 )
         return CollisionReport(collided=False)
 
+    def check_motion(self, measured: npt.ArrayLike, target: npt.ArrayLike) -> None:
+        """Abort an unsafe measured-to-command sweep, including its start.
+
+        Used after EEF inverse kinematics and joint clamping, before sending
+        anything to the driver. Sampling uses the configured joint resolution
+        without the action approver's 64-sample cap. This remains a sampled
+        geometric check, not a guarantee about the physical trajectory.
+        """
+        start = validate_dim(measured, TOTAL_DIM)
+        end = validate_dim(target, TOTAL_DIM)
+        if not np.all(np.isfinite(start)) or not np.all(np.isfinite(end)):
+            raise SafetyAbort("EEF collision guardrail: non-finite measured or target joints")
+        delta = float(
+            np.max(np.abs(end[list(_ARM_ACTION_INDICES)] - start[list(_ARM_ACTION_INDICES)]))
+        )
+        steps = max(1, math.ceil(delta / self.config.sweep_resolution))
+        for index in range(steps + 1):
+            report = self.check(start + (end - start) * (index / steps))
+            if report.collided:
+                raise SafetyAbort(
+                    "EEF collision guardrail blocked measured-to-command motion: "
+                    f"{report.geom1}:{report.geom2}@{index}/{steps}"
+                )
+
     def _geom_name(self, geom_id: int) -> str:
         name = self._mujoco.mj_id2name(
             self._model,
