@@ -59,8 +59,9 @@ because absolute joint conformance permits only one 14-D state field.
 
 ## Safety invariants (do not weaken)
 
-- `YAMEmbodiment.step()` **always clamps** to `YamConfig.joint_low/high` before
-  commanding, independent of any `Approver`. This is the last line of defense.
+- `YAMEmbodiment.step()` **always clamps** to `YamConfig.joint_low/high` and
+  per-step `YamConfig.step_limits` before commanding, independent of any `Approver`.
+  This is the last line of defense.
 - Thermal trips end trials with the non-definitive `"overheat"` reason so the
   park-for-grading ramp and operator verdict remain reachable. The trip parks
   to rest from inside `step()` before terminating, in every mode. Never make
