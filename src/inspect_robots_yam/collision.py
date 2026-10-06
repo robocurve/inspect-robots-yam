@@ -27,6 +27,7 @@ from inspect_robots.errors import SafetyAbort
 from inspect_robots.spaces import Box
 from inspect_robots.types import Action
 
+from inspect_robots_yam import poses
 from inspect_robots_yam.config import DEFAULT_JOINT_HOME_POSE, YamConfig
 from inspect_robots_yam.packing import ARM_DOF, DIM_LABELS, TOTAL_DIM, validate_dim
 
@@ -342,9 +343,14 @@ def _collision_approver(
     collision_config: CollisionConfig | None = None,
     on_violation: ViolationMode = "hold",
 ) -> CollisionApprover:
-    configured_home = (
-        DEFAULT_JOINT_HOME_POSE if yam_config.home_pose is None else yam_config.home_pose
-    )
+    # The sweep of each trial's first action starts here, so it must be the
+    # pose reset() homes to: a named start pose when one is configured.
+    if yam_config.start_pose is not None:
+        configured_home = poses.load_pose(yam_config.pose_dir, yam_config.start_pose).joints
+    elif yam_config.home_pose is not None:
+        configured_home = yam_config.home_pose
+    else:
+        configured_home = DEFAULT_JOINT_HOME_POSE
     start_pose = np.clip(
         np.asarray(configured_home, dtype=np.float64),
         yam_config.low,
