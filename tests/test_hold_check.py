@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -276,6 +278,57 @@ def test_main_closes_the_robot_even_on_failure() -> None:
     )
     assert rc == 1
     assert _ClosableArm.closed == 1  # released regardless of the verdict
+
+
+class _ChainedArm(_FakeArm):
+    """An i2rt-shaped arm: a motor chain whose control thread outlives close()."""
+
+    class _Chain:
+        def __init__(self, events: list[str]) -> None:
+            self.running = True
+            self.events = events
+            chain = self
+
+            class _Interface:
+                closed = False
+
+                def close(self) -> None:
+                    chain.events.append("iface_close")
+                    self.closed = True
+
+            self.motor_interface = _Interface()
+            self.thread = threading.Thread(target=self._control_loop, daemon=True)
+            self.thread.start()
+
+        def _control_loop(self) -> None:
+            while self.running:
+                time.sleep(0.01)
+            self.events.append("loop_exit")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[str] = []
+        self.motor_chain = self._Chain(self.events)
+
+    def close(self) -> None:
+        # i2rt's own close(): stop the loop flag, then close the socket at once.
+        self.motor_chain.running = False
+        self.motor_chain.motor_interface.close()
+
+
+def test_main_joins_the_control_thread_before_closing_the_can_socket() -> None:
+    arm = _ChainedArm()
+    try:
+        main(
+            ["can0", "--zero-gravity", "true"],
+            robot_factory=lambda channel, zero_gravity_mode: arm,
+            sleep_fn=lambda _s: None,
+            emit=lambda _l: None,
+        )
+        assert arm.events == ["loop_exit", "iface_close"]
+    finally:
+        arm.motor_chain.running = False
+        arm.motor_chain.thread.join(timeout=1.0)
 
 
 def test_default_emit_flushes(capsys: pytest.CaptureFixture[str]) -> None:
