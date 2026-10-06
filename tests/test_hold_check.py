@@ -150,7 +150,7 @@ def test_main_resolves_wizard_side_and_prints_resolved_channel(
 
     assert (
         main(
-            [side, "--zero-gravity", "false", "--duration-s", "0"],
+            [side, "--zero-gravity", "false", "--duration-s", "1", "--interval-s", "1"],
             env=env,
             robot_factory=factory,
             sleep_fn=lambda _seconds: None,
@@ -159,7 +159,7 @@ def test_main_resolves_wizard_side_and_prints_resolved_channel(
         == 0
     )
     assert calls == [(resolved, False)]
-    assert lines[0] == f"{resolved} ({side}) zero_gravity=false: watching for 0s"
+    assert lines[0] == f"{resolved} ({side}) zero_gravity=false: watching for 1s"
 
 
 def test_main_loads_cwd_dotenv_config_pin_for_wizard_side(
@@ -185,7 +185,7 @@ def test_main_loads_cwd_dotenv_config_pin_for_wizard_side(
 
     assert (
         main(
-            ["left", "--zero-gravity", "false", "--duration-s", "0"],
+            ["left", "--zero-gravity", "false", "--duration-s", "1", "--interval-s", "1"],
             robot_factory=factory,
             sleep_fn=lambda _seconds: None,
             emit=lambda _line: None,
@@ -203,7 +203,7 @@ def test_raw_channel_never_loads_a_malformed_config(tmp_path: Path) -> None:
 
     assert (
         main(
-            ["can0", "--zero-gravity", "true", "--duration-s", "0"],
+            ["can0", "--zero-gravity", "true", "--duration-s", "1", "--interval-s", "1"],
             env={"XDG_CONFIG_HOME": str(tmp_path)},
             robot_factory=lambda channel, _mode: channels.append(channel) or _FakeArm(),
             sleep_fn=lambda _seconds: None,
@@ -283,3 +283,56 @@ def test_default_emit_flushes(capsys: pytest.CaptureFixture[str]) -> None:
 
     _print_flushed("hello")
     assert capsys.readouterr().out == "hello\n"
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected_err"),
+    [
+        (["--duration-s", "0"], "--duration-s must be finite and > 0"),
+        (["--duration-s", "-5"], "--duration-s must be finite and > 0"),
+        (["--duration-s", "nan"], "--duration-s must be finite and > 0"),
+        (["--duration-s", "inf"], "--duration-s must be finite and > 0"),
+        (["--interval-s", "0"], "--interval-s must be finite and > 0"),
+        (["--interval-s", "-1"], "--interval-s must be finite and > 0"),
+        (["--interval-s", "nan"], "--interval-s must be finite and > 0"),
+        (["--interval-s", "10", "--duration-s", "5"], "--interval-s cannot exceed --duration-s"),
+        (["--settle-rad", "-0.01"], "--settle-rad must be finite and >= 0"),
+        (["--settle-rad", "nan"], "--settle-rad must be finite and >= 0"),
+        (["--trend-rad", "-0.01"], "--trend-rad must be finite and >= 0"),
+        (["--trend-rad", "nan"], "--trend-rad must be finite and >= 0"),
+    ],
+)
+def test_main_rejects_invalid_numeric_parameters(
+    flags: list[str],
+    expected_err: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main(["can0", "--zero-gravity", "true", *flags])
+    assert exc_info.value.code == 2
+    assert expected_err in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"duration_s": 0.0}, "duration_s must be finite and > 0"),
+        ({"duration_s": -1.0}, "duration_s must be finite and > 0"),
+        ({"duration_s": float("nan")}, "duration_s must be finite and > 0"),
+        ({"interval_s": 0.0}, "interval_s must be finite and > 0"),
+        ({"interval_s": -2.0}, "interval_s must be finite and > 0"),
+        ({"interval_s": float("nan")}, "interval_s must be finite and > 0"),
+        ({"interval_s": 10.0, "duration_s": 5.0}, "interval_s cannot exceed duration_s"),
+        ({"settle_rad": -0.1}, "settle_rad must be finite and >= 0"),
+        ({"settle_rad": float("nan")}, "settle_rad must be finite and >= 0"),
+        ({"trend_rad": -0.1}, "trend_rad must be finite and >= 0"),
+        ({"trend_rad": float("nan")}, "trend_rad must be finite and >= 0"),
+    ],
+)
+def test_run_hold_check_validates_numeric_parameters(
+    kwargs: dict[str, float],
+    match: str,
+) -> None:
+    arm = _FakeArm()
+    with pytest.raises(ValueError, match=match):
+        run_hold_check(arm, **kwargs)  # type: ignore[arg-type]
