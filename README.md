@@ -338,6 +338,58 @@ Any other `--epochs` value is rejected on purpose: within one process the arms
 stay connected and torque-held at the home pose between epochs while you reach
 into the scene.
 
+### Packing stored frames
+
+`scripts/pack_frames` stages each camera's H.264 CRF 16 evidence MP4 and a
+bit-exact FFV1 Matroska raw archive in `/tmp` at the run's `control_hz`, then
+backs both up with rclone to
+`gdrive-sravanthi:rig-video/<host>/<rig>/<stamp>/` on the `pi05_kaedim_tasks` shared
+drive. After the upload is verified and a 600-second grace period has elapsed,
+it deletes the much larger `.npy` inputs and only then moves the MP4s and final
+manifest into the frames directory. The FFV1 files remain in backup and leave
+with scratch unless `--keep-raw-local` is passed. Use `--raw none` to disable
+the lossless archive. Upload/verification failures leave `.npy` untouched;
+post-deletion handoff failures preserve scratch for recovery. The default
+`--min-height 360` keeps 224x224 runs as `.npy`; pass `--min-height 0` to
+include them. Use `--since <ISO8601>` to restrict work to runs starting at or
+after an instant, and repeat `--policy <name>` to allow only selected policies;
+the same filters apply to `--run`, `--all`, and `--status`.
+
+`run_batch.sh` starts this packer in the background after each trial; use
+`--no-pack` to disable that hook. Runs made directly with `./run` must be packed
+manually, and status can be inspected from the rig directory:
+
+```bash
+./pack-frames --run logs/<run-name>.json
+./pack-frames --status
+./pack-frames --status --verify
+```
+
+To restore one stream after downloading its FFV1 archive, decode it and split
+the RGB frames using `height`, `width`, and `first_step` from
+`pack_manifest.json`:
+
+```bash
+ffmpeg -i scene-0-e0_top_cam.ffv1.mkv -f rawvideo -pix_fmt rgb24 top.raw
+```
+
+```python
+import json, numpy as np
+m = json.load(open("pack_manifest.json"))
+H, W = m["raw"]["top"]["height"], m["raw"]["top"]["width"]
+first_step = m["streams"]["top"]["first_step"]
+arr = np.fromfile("top.raw", np.uint8).reshape(-1, H, W, 3)
+for i, frame in enumerate(arr): np.save(f"scene-0-e0_top_cam_{first_step + i:06d}.npy", frame)
+```
+
+`--status`, `--all`, and repeat `--run` checks normally trust matching MP4 size
+and modification time from the manifest, avoiding multi-gigabyte hashes;
+`--verify` forces SHA-256 checks. The per-run lock and log live beside the
+selected JSON under `<log-dir>/pack/`.
+
+Exit status 0 means packed/status/dry-run success, 1 means a failure, 2 means
+invalid usage, and 3 means the selected run was skipped or not eligible.
+
 ### RealSense depth
 
 Install the optional librealsense dependency on the robot machine:
