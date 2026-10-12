@@ -1159,6 +1159,8 @@ def test_usage_and_config_errors_exit_two(argv: list[str]) -> None:
         ("17", 17),
         ("-2.5", -2.5),
         ("camera", "camera"),
+        ("none", None),
+        ("NONE", None),
     ],
 )
 def test_parse_scalar(text: str, expected: object) -> None:
@@ -1247,6 +1249,32 @@ def test_cli_accepts_camera_devices_from_extras(capsys: pytest.CaptureFixture[st
 
     assert main(argv, run=lambda _cfg, **_kwargs: report) == 0
     assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def test_cli_accepts_none_in_extras() -> None:
+    seen: list[YamConfig] = []
+
+    def capture(cfg: YamConfig, **_kwargs: object) -> HealthReport:
+        seen.append(cfg)
+        return HealthReport((), True, (), True, None)
+
+    code = main(
+        [
+            "--skip-cameras",
+            "-E",
+            "motor_temp_limit=none",
+            "-E",
+            "settle_tolerance=none",
+            "-E",
+            "start_pose=none",
+        ],
+        run=capture,
+    )
+
+    assert code == 0
+    assert seen[0].motor_temp_limit is None
+    assert seen[0].settle_tolerance is None
+    assert seen[0].start_pose is None
 
 
 def test_watch_dispatch_forwards_explicit_network_options_before_warnings(
