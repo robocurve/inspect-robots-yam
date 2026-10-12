@@ -732,6 +732,21 @@ def test_park_before_grade_rejects_non_bool_values(value: object) -> None:
         YamConfig.from_kwargs(park_before_grade=value)
 
 
+@pytest.mark.parametrize("value", [None, "yes", 1])
+def test_zero_gravity_mode_rejects_non_bool_values(value: object) -> None:
+    # `-E zero_gravity_mode=none` parsed to None, which is falsy, so it turned
+    # the mode off rather than meaning "library default". It is the one boolean
+    # here that defaults to True, so None was the difference between arms coming
+    # up gravity-compensated and coming up on a stiff servo.
+    with pytest.raises(ValueError, match="zero_gravity_mode must be true or false"):
+        YamConfig.from_kwargs(zero_gravity_mode=value)
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_zero_gravity_mode_accepts_explicit_bool(value: bool) -> None:
+    assert YamConfig.from_kwargs(zero_gravity_mode=value).zero_gravity_mode is value
+
+
 def test_collision_guardrail_defaults_on_and_binds_via_kwargs() -> None:
     assert YamConfig().collision_guardrail is True
     assert YamConfig.from_kwargs(collision_guardrail=False).collision_guardrail is False
