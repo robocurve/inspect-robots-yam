@@ -83,7 +83,16 @@ Observations carry `top_cam`, `left_cam` and `right_cam`, 224 × 224 px.
   the right.
 - The table is z = 0; the box floor of −0.02 lets a descent press firmly.
 - Reach: x ≈ 0.59 at z = 0.15 with the tool pitched forward; table
-  contact is possible out to x ≈ 0.49.
+  contact is possible out to x ≈ 0.49. Those are the limits with the
+  orientation free. Beyond x ≈ 0.39 some end-effector states (a position
+  together with the commanded yaw, pitch and roll) have no joint
+  configuration at all, and increasingly many beyond x ≈ 0.45, above all
+  low over the table with the tool vertical. The IK then gets as close as
+  it can and stops short. This, not contact and not a joint limit, is the
+  usual reason a far reach ends 2 to 5 cm shy of its target. Tipping the
+  tool forward (pitch ≥ 0.2) or bringing the target up or in recovers
+  most of it; re-sending the same target recovers only about half as
+  much and usually still falls short.
 
 ## Controller
 

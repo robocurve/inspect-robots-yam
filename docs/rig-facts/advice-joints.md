@@ -20,7 +20,11 @@ base axis and height z above the table:
   A = atan2(P_z, P_r) + acos((d² + L1² − L2²) / (2·L1·d)),
   B = atan2(P_z − L1·sin A, P_r − L1·cos A), and j1 = π − A,
   j2 = B + j1, j3 = C − B. This is the elbow-up branch the arms use.
-  Reachable when d ≤ L1 + L2 = 0.509.
+  Reachable when d ≤ L1 + L2 = 0.509, but that bound ignores the joint
+  limits: beyond r ≈ 0.39, and increasingly beyond 0.45, a gripper-down
+  pose (C = −π/2) low over the table may have no admissible solution,
+  and the clamped joints land the fingertips short. Tip the gripper
+  forward (C above −π/2) rather than pushing r.
 - Bias: in the gripper-down working envelope (r ≈ 0.3–0.5 m) the
   approximation reads about 3 cm short in r and 9 cm high in z, on both
   arms. The bias is nearly constant for a given arm, so relative moves
