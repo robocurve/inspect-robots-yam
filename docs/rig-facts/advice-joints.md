@@ -63,12 +63,17 @@ base axis and height z above the table:
 4. Descend in 2–3 cm steps until effort confirms contact (or until the
    FK, corrected by the z bias, says the fingertips are at the object's
    mid-height), then close fully.
-5. Settled gripper reading below 0.04 is empty. Lift 5 cm and confirm in
-   the overhead frame that the object moved before transporting.
-6. On an empty close: open, adjust radially by 2 cm (usually outward),
-   and retry once. A second miss means re-measure from the overhead
-   frame rather than repeating. Failed closes shove the object several
-   centimetres, so re-find it before the next attempt.
+5. Read the settled gripper value. Above 0.05 something is between the
+   jaws. Below that tells you nothing: an empty close and a held thin
+   object (a pen lid, a bowl wall) both land in 0.03–0.05. Do not open
+   and re-grip on the reading alone.
+6. Lift 5 cm and confirm in the overhead frame that the object moved
+   with the jaws. That is the grasp test. Only then transport.
+7. If the lift left the object behind: open, adjust radially by 2 cm
+   (usually outward), and retry once. A second miss means re-measure
+   from the overhead frame rather than repeating. Failed closes shove
+   the object several centimetres, so re-find it before the next
+   attempt.
 
 ## Grasp geometry
 

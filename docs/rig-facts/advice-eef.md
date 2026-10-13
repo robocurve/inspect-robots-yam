@@ -31,12 +31,16 @@ targets. Read alongside the rig facts and the workspace box.
    out than the image suggests.
 3. Descend straight down to z ≈ half the object's height. For table-level
    objects go to z = 0 to −0.01; the box allows a small press.
-4. Close fully. Read the settled gripper value: below 0.04 is empty.
+4. Close fully. Read the settled gripper value. Above 0.05 something is
+   between the jaws. Below that tells you nothing: an empty close and a
+   held thin object (a pen lid, a bowl wall) both land in 0.03–0.05. Do
+   not open and re-grip on the reading alone.
 5. Lift 5 cm and confirm in the overhead view that the object moved with
-   the jaws. Only then transport.
-6. On an empty close: open, adjust radially by 2 cm (usually outward), and
-   retry once. If the second close is also empty, do not repeat it:
-   re-measure from the overhead frame, or use the other arm.
+   the jaws. That is the grasp test. Only then transport.
+6. If the lift left the object behind: open, adjust radially by 2 cm
+   (usually outward), and retry once. If the second attempt also fails,
+   do not repeat it: re-measure from the overhead frame, or use the
+   other arm.
 
 ## Placing
 

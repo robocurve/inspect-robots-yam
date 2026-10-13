@@ -19,13 +19,15 @@ depends on it disagrees with what you see.
 - Gripper stroke is 9.5 cm jaw-to-jaw; commands and readings are the
   normalized fraction of that (0 closed, 1 open). After a full close the
   settled reading × 9.5 cm ≈ the grasped thickness. A closed empty gripper
-  reads ≈ 0.01 and creeps to ≈ 0.04 over a few seconds, so any settled
-  reading below 0.04 is empty. Nothing wider than ~9 cm can be grasped
-  across.
+  reads ≈ 0.01 and creeps to ≈ 0.04 over a few seconds, and a held thin
+  object (a pen lid, a bowl wall) reads 0.03–0.05, so a reading below
+  0.05 cannot tell a thin grasp from an empty close. Nothing wider than
+  ~9 cm can be grasped across.
 - Gripper effort spikes to ≈ 0.7–1.2 on every full close, empty or not,
   and stays there for many seconds. Effort cannot tell an empty close
-  from a grasp. Judge grasps by the settled reading, then by lifting
-  5 cm and checking the object moved in the overhead view.
+  from a grasp either. The grasp test is the lift: raise 5 cm and check
+  in the overhead view that the object moved with the jaws. Never open
+  and re-grip on a low reading alone.
 - The jaws close along the tool's own left–right axis; that axis turns
   with base yaw and with wrist roll.
 
