@@ -1152,7 +1152,8 @@ def test_observe_no_depth_reader() -> None:
     result = emb.step(Action())
     emb.close()
     observation = result.observation
-    assert not hasattr(observation, "extra") or observation.extra is None or observation.extra == {}
+    # Stepped observations always carry the motion report; nothing else.
+    assert set(observation.extra) == {"motion_report"}
 
 
 def test_observe_with_injected_depth_reader() -> None:

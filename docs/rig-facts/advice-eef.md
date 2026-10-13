@@ -14,9 +14,10 @@ targets. Read alongside the rig facts and the workspace box.
   contact, or the target has no joint solution at that orientation. The
   last is the common one on far reaches: beyond x ≈ 0.39, and usually
   beyond 0.45, a low target with the tool vertical may be unreachable as
-  posed even though it sits inside the box. Do not re-send the same
-  target hoping it converges; change it: tip the tool forward, raise the
-  target, or come at it from nearer.
+  posed even though it sits inside the box. The motion report in the
+  same observation says which of the four it was; believe it over your
+  own guess. Do not re-send the same target hoping it converges; change
+  it: tip the tool forward, raise the target, or come at it from nearer.
 - The yaw target is relative to the trial's start orientation and rotates
   the tool about the grasp point; it does not move the grasp point
   sideways. Pitch and roll are pinned unless the bounds say otherwise.

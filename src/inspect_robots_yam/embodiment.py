@@ -28,7 +28,7 @@ import math
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
@@ -66,7 +66,7 @@ from inspect_robots_yam.config import (
     action_box,
     observation_space,
 )
-from inspect_robots_yam.kinematics import RawKinematics, _ArmKinematics
+from inspect_robots_yam.kinematics import RawKinematics, SolveReport, _ArmKinematics
 from inspect_robots_yam.operator import (
     OperatorIO,
     _drain_stdin,
@@ -106,7 +106,11 @@ forward. While the arm is folded, a single joint's effect on the gripper
 position can be counterintuitive; move deliberately and re-check the
 observation after each motion. The joint values above are positions as shown
 in the observation; when actions are per-step changes (delta mode), the same
-sign conventions apply to each change."""
+sign conventions apply to each change.
+After each motion the observation carries a motion report per arm naming any
+joint that sits more than 0.1 rad behind its command (gravity sag, contact,
+or the per-step rate limit); trust it over guesses about why a move fell
+short."""
 
 _DOCS_EEF_POS = """Two identical 6-DoF arms, prefixed left_ and right_, each with a parallel-jaw
 gripper, controlled by Cartesian end-effector targets. Each arm's targets are
@@ -129,7 +133,13 @@ Proportions: upper arm 0.26 m, forearm 0.25 m, wrist to grasp point 0.25 m
 when straight; reach from the shoulder about 0.76 m.
 An inverse-kinematics layer converts targets into joint motion; unreachable
 or awkward targets may be tracked slowly or held, so prefer modest steps and
-re-check the observation after each motion."""
+re-check the observation after each motion.
+After each motion the observation carries a motion report per arm: whether
+the controller could pose the gripper at the target (and which joints sit on
+a limit), whether the move was still catching up when it ended, whether the
+controller froze the arm after an oscillating solve, and how far the arm sits
+behind its command. Trust it over guesses about why a move fell short; a
+target the controller cannot pose must be changed, not re-sent."""
 
 
 @runtime_checkable
@@ -1128,6 +1138,147 @@ class _CompositeCameraReader:
                     stack.callback(release)
 
 
+#: Solution error beyond which a target counts as unreachable as posed.
+_REPORT_UNREACHABLE_POS_M = 0.01
+_REPORT_UNREACHABLE_ROT_RAD = 0.1
+#: Measured-versus-command gap beyond which the arm counts as held off its setpoint.
+_REPORT_BEHIND_POS_M = 0.02
+_REPORT_BEHIND_JOINT_RAD = 0.1
+
+
+@dataclass
+class _MotionWindow:
+    """Per-arm counters over the steps since the last complete motion report."""
+
+    steps: int = 0
+    hold_steps: int = 0
+    resync_steps: int = 0
+    nonfinite_steps: int = 0
+    nonconverged_steps: int = 0
+    last: SolveReport | None = None
+
+    def add(self, report: SolveReport) -> None:
+        self.steps += 1
+        self.hold_steps += int(report.held)
+        self.resync_steps += int(report.resynced)
+        self.nonfinite_steps += int(report.nonfinite)
+        self.nonconverged_steps += int(report.converged is False)
+        self.last = report
+
+
+def _eef_arm_record(side: str, window: _MotionWindow) -> dict[str, Any]:
+    """Structured per-arm motion record plus its ``cause`` label for one EEF window."""
+    last = window.last
+    assert last is not None  # callers only build records for arms that stepped
+    joint_labels = tuple(f"{side}_j{index}" for index in last.limited_joints)
+    solution_pos = last.solution_position_error
+    solution_rot = last.solution_orientation_error
+    if last.nonfinite:
+        cause = "ik_failed"
+    elif last.held:
+        cause = "oscillation_hold"
+    elif (
+        solution_pos is not None
+        and solution_rot is not None
+        and (solution_pos > _REPORT_UNREACHABLE_POS_M or solution_rot > _REPORT_UNREACHABLE_ROT_RAD)
+    ):
+        cause = "unreachable"
+    elif last.rate_limited:
+        cause = "unfinished"
+    elif last.tracking_position_error > _REPORT_BEHIND_POS_M:
+        cause = "behind"
+    else:
+        cause = "on_target"
+    return {
+        "cause": cause,
+        "steps": window.steps,
+        "hold_steps": window.hold_steps,
+        "hold_remaining": last.hold_remaining,
+        "resync_steps": window.resync_steps,
+        "nonfinite_steps": window.nonfinite_steps,
+        "nonconverged_steps": window.nonconverged_steps,
+        "limited_joints": list(joint_labels),
+        "rate_limited": last.rate_limited,
+        "solution_position_error_m": solution_pos,
+        "solution_orientation_error_rad": solution_rot,
+        "command_position_error_m": last.command_position_error,
+        "command_orientation_error_rad": last.command_orientation_error,
+        "tracking_position_error_m": last.tracking_position_error,
+        "tracking_orientation_error_rad": last.tracking_orientation_error,
+    }
+
+
+def _eef_arm_line(side: str, record: Mapping[str, Any]) -> str:
+    """One plain-language line per arm, written for the policy that reads it."""
+    cause = record["cause"]
+    limited = ", ".join(record["limited_joints"])
+    bits: list[str] = []
+    if cause == "ik_failed":
+        bits.append(
+            "the IK solver found no finite joint solution for the target; change the target"
+        )
+    elif cause == "oscillation_hold":
+        bits.append(
+            f"the controller froze the arm for {record['hold_steps']} of {record['steps']} steps "
+            "after the IK solution oscillated; pose the target differently rather than "
+            "re-sending it"
+        )
+    elif cause == "unreachable":
+        bits.append(
+            "the controller cannot pose the gripper closer than "
+            f"{record['solution_position_error_m'] * 100:.1f} cm / "
+            f"{record['solution_orientation_error_rad']:.2f} rad to the target"
+            + (f" ({limited} on a joint limit)" if limited else "")
+            + "; change the target rather than re-sending it"
+        )
+    elif cause == "unfinished":
+        bits.append(
+            "the command was still catching up when the move ended, "
+            f"{record['command_position_error_m'] * 100:.1f} cm / "
+            f"{record['command_orientation_error_rad']:.2f} rad short of the target; "
+            "re-issue the target to continue"
+        )
+    elif cause == "behind":
+        bits.append(
+            f"the arm sits {record['tracking_position_error_m'] * 100:.1f} cm behind its "
+            "command: contact, load, or sag"
+        )
+    else:
+        bits.append("on target")
+        if limited:
+            bits.append(f"{limited} on a joint limit")
+    if record["resync_steps"]:
+        bits.append("the command reference was re-synced to the measured pose")
+    return f"motion report ({side} arm): " + "; ".join(bits) + "."
+
+
+def _joint_arm_record(side: str, command: Vec, measured: Vec) -> dict[str, Any]:
+    """Per-arm joint-space tracking record: joints more than a threshold behind the command."""
+    errors = np.abs(measured - command)
+    behind = {
+        f"{side}_j{index}": float(errors[index])
+        for index in range(packing.ARM_DOF)
+        if errors[index] > _REPORT_BEHIND_JOINT_RAD
+    }
+    return {
+        "cause": "behind" if behind else "on_target",
+        "behind_joints": behind,
+        "max_error_rad": float(np.max(errors)),
+    }
+
+
+def _joint_arm_line(side: str, record: Mapping[str, Any]) -> str:
+    """One plain-language joint-space line per arm."""
+    behind: Mapping[str, float] = record["behind_joints"]
+    if not behind:
+        return f"motion report ({side} arm): on target."
+    worst = ", ".join(f"{label} {gap:.2f} rad" for label, gap in behind.items())
+    return (
+        f"motion report ({side} arm): behind its command by {worst} "
+        "(gravity sag, contact, or the rate limit); re-issue or correct."
+    )
+
+
 class YAMEmbodiment:
     """Inspect Robots embodiment for bimanual YAM joint or Cartesian control."""
 
@@ -1261,6 +1412,7 @@ class YAMEmbodiment:
         self._depth_reader: DepthReader | None = depth_reader
 
         self._driver: BimanualDriver | None = None
+        self._motion_windows: dict[str, _MotionWindow] = {}
         self._left_kinematics: _ArmKinematics | None = None
         self._right_kinematics: _ArmKinematics | None = None
         self._eef_home_validated = False
@@ -1570,6 +1722,7 @@ class YAMEmbodiment:
             right_kinematics.capture_yaw_reference(
                 measured[packing.ARM_WIDTH : packing.ARM_WIDTH + packing.ARM_DOF]
             )
+        self._motion_windows = {"left": _MotionWindow(), "right": _MotionWindow()}
         if not self._cfg.unattended:
             if self._cfg.auto_start:
                 # wait_ready() owns the stdin drain; skipping the gate must not
@@ -1632,6 +1785,12 @@ class YAMEmbodiment:
         self._emit_status()
 
         obs = self._observe(self._instruction)
+        # Duck-typed: the core Action always carries meta, but step() must not
+        # fail on a stub without it.
+        meta = getattr(action, "meta", None)
+        final = isinstance(meta, Mapping) and bool(meta.get("chunk_final"))
+        report = self._motion_report(target, obs, final=final)
+        obs = replace(obs, extra={**obs.extra, "motion_report": report})
         # Unattended runs have no operator: skip the end poll entirely; the
         # episode runs to the framework's max_steps.
         if not self._cfg.unattended and not self._deferred_operator_end and self._poll_end():
@@ -2055,6 +2214,44 @@ class YAMEmbodiment:
                 residual,
             )
         return False, residual
+
+    def _motion_report(self, sent: Vec, obs: Observation, *, final: bool) -> dict[str, Any]:
+        """Diagnose the step just played, per arm, for the policy that reads the observation.
+
+        Under ``eef_pos`` the report rolls the kinematics wrapper's per-step
+        ``SolveReport`` up over a window that closes on an action carrying
+        ``meta["chunk_final"]`` (the agent policy marks its last waypoint so),
+        so the observation that ends a move summarizes that whole move; under
+        joint control it names joints behind their command on this step.
+        ``lines`` is the plain-language rendering; ``arms`` the structured one.
+        """
+        measured = np.asarray(obs.state[packing.STATE_KEY], dtype=np.float64)
+        arms: dict[str, dict[str, Any]] = {}
+        lines: list[str] = []
+        slices = {
+            "left": slice(0, packing.ARM_DOF),
+            "right": slice(packing.ARM_WIDTH, packing.ARM_WIDTH + packing.ARM_DOF),
+        }
+        if self._cfg.control_interface == "eef_pos":
+            left_kinematics, right_kinematics = self._require_kinematics()
+            wrappers = {"left": left_kinematics, "right": right_kinematics}
+            for side, arm in slices.items():
+                window = self._motion_windows.setdefault(side, _MotionWindow())
+                window.add(wrappers[side].report(sent[arm], measured[arm]))
+                arms[side] = _eef_arm_record(side, window)
+                lines.append(_eef_arm_line(side, arms[side]))
+            if final:
+                self._motion_windows = {"left": _MotionWindow(), "right": _MotionWindow()}
+        else:
+            for side, arm in slices.items():
+                arms[side] = _joint_arm_record(side, sent[arm], measured[arm])
+                lines.append(_joint_arm_line(side, arms[side]))
+        return {
+            "interface": self._cfg.control_interface,
+            "complete": final,
+            "arms": arms,
+            "lines": lines,
+        }
 
     def _settle_info(self, settled: tuple[bool, float] | None) -> dict[str, Any]:
         """Per-step settle reporting, empty when no tolerance is configured.

@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Added
+
+- **Motion report:** every stepped observation carries `extra["motion_report"]`,
+  a per-arm diagnosis of the step just played. Under `eef_pos` the IK wrapper
+  now exposes a `SolveReport` per solve (solution, command, and tracking pose
+  errors, joints on a limit, rate limiting, oscillation hold, resync, and
+  non-finite flags), rolled up over a window that closes on an action carrying
+  `meta["chunk_final"]` so the observation ending an agent move summarizes the
+  whole move, with a `cause` label (`ik_failed`, `oscillation_hold`,
+  `unreachable`, `unfinished`, `behind`, `on_target`) and plain-language
+  `lines` for the policy. Under joint control it names joints more than
+  0.1 rad behind their command. The built-in agent docs describe the report.
+
 ### Changed
 
 - **Breaking (EEF layout):** the Cartesian interface grows from 5 to 7 slots

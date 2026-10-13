@@ -498,6 +498,28 @@ exact reachable set. `eef_low` and `eef_high` override all fourteen bounds.
 The observation keeps the 14-D `joint_pos` field for logging and adds the
 command-aligned 14-D `eef_state` field.
 
+#### Motion report
+
+Every stepped observation also carries `extra["motion_report"]`, a diagnosis
+of the step just played that an agent policy renders back to the model
+(`inspect-robots-agent` 0.30.0 or newer prints its `lines`). Under
+`eef_pos` the report rolls the IK wrapper's per-step diagnostics up over a
+window that closes on an action carrying `meta["chunk_final"]`, which the
+agent policy sets on the last waypoint of every move, so the observation that
+ends a move summarizes that whole move. Per arm it records the error between
+the target and the best joint solution the IK found (`solution_*`, large when
+the target cannot be posed as requested), between the target and the command
+actually sent (`command_*`, the motion still in flight), and between the
+command and the measured pose (`tracking_*`, the arm held off its setpoint),
+plus which joints sit on a limit, whether the step was rate-limited, and the
+window's oscillation-hold, resync, non-finite, and non-converged step counts.
+A `cause` label summarizes them in priority order: `ik_failed`,
+`oscillation_hold`, `unreachable` (solution error over 1 cm or 0.1 rad),
+`unfinished` (still rate-limited), `behind` (measured pose over 2 cm from the
+command), else `on_target`. Under joint control the report names joints more
+than 0.1 rad behind their command. The built-in agent docs tell the model to
+trust the report over its own guesses about why a move fell short.
+
 > [!WARNING]
 > The z floor (`z >= 0.03`) protects *fingertips* assuming a gripper-down
 > tool. A pitched or rolled gripper can reach the table with its knuckles or

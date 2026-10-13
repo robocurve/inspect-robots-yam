@@ -520,3 +520,174 @@ def test_default_factory_binds_grasp_site_and_translates_real_infeasibility(
     created[1].raise_infeasible = True
     with pytest.raises(EmbodimentFault, match="infeasible"):
         right.ik(np.eye(4), np.zeros(8), 17)
+
+
+# --- motion report -------------------------------------------------------------
+
+
+_ON_TARGET = np.asarray((0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0) * 2)
+
+
+def _zero_home_config() -> YamConfig:
+    # The fake IK always answers all-zero joints, so a zero joint home keeps
+    # the command reference on the solution and the rate clamp quiet.
+    return YamConfig(
+        control_interface="eef_pos",
+        home_pose=(0.0,) * 14,
+        cam_height=4,
+        cam_width=4,
+        rest_secs=0.5,
+        unattended=True,
+    )
+
+
+def _solve_report(**overrides: Any) -> Any:
+    from inspect_robots_yam.kinematics import SolveReport
+
+    values: dict[str, Any] = {
+        "held": False,
+        "hold_remaining": 0,
+        "resynced": False,
+        "nonfinite": False,
+        "converged": True,
+        "limited_joints": (),
+        "rate_limited": False,
+        "solution_position_error": 0.0,
+        "solution_orientation_error": 0.0,
+        "command_position_error": 0.0,
+        "command_orientation_error": 0.0,
+        "tracking_position_error": 0.0,
+        "tracking_orientation_error": 0.0,
+    }
+    values.update(overrides)
+    return SolveReport(**values)
+
+
+def test_step_attaches_a_motion_report_whose_window_closes_on_chunk_final() -> None:
+    emb, _, _, _ = _build(_zero_home_config())
+    emb.reset(Scene(id="s", instruction="go"))
+
+    partial = emb.step(Action(data=_ON_TARGET)).observation.extra["motion_report"]
+    final = emb.step(Action(data=_ON_TARGET, meta={"chunk_final": True})).observation.extra[
+        "motion_report"
+    ]
+    fresh = emb.step(Action(data=_ON_TARGET)).observation.extra["motion_report"]
+
+    assert partial["interface"] == "eef_pos" and partial["complete"] is False
+    assert final["complete"] is True
+    assert [partial["arms"]["left"]["steps"], final["arms"]["left"]["steps"]] == [1, 2]
+    assert fresh["arms"]["right"]["steps"] == 1
+    assert final["arms"]["left"]["cause"] == "on_target"
+    assert final["lines"] == [
+        "motion report (left arm): on target.",
+        "motion report (right arm): on target.",
+    ]
+
+
+def test_unreachable_target_is_named_with_its_limited_joint() -> None:
+    far_left = FakeRawKinematics(solutions=[np.array([3.0, 0, 0, 0, 0, 0, 0, 0])])
+    emb, _, _, _ = _build(_zero_home_config(), left=far_left)
+    emb.reset(Scene(id="s", instruction="go"))
+    target = _ON_TARGET.copy()
+    target[0] = 0.35
+
+    report = emb.step(Action(data=target, meta={"chunk_final": True})).observation.extra[
+        "motion_report"
+    ]
+
+    left = report["arms"]["left"]
+    assert left["cause"] == "unreachable"
+    assert left["limited_joints"] == ["left_j0"]
+    assert left["solution_position_error_m"] == pytest.approx(0.05)
+    assert report["lines"][0] == (
+        "motion report (left arm): the controller cannot pose the gripper closer than "
+        "5.0 cm / 0.00 rad to the target (left_j0 on a joint limit); change the target "
+        "rather than re-sending it."
+    )
+    assert report["lines"][1] == "motion report (right arm): on target."
+
+
+def test_motion_report_is_reset_between_trials() -> None:
+    emb, _, _, _ = _build(_zero_home_config())
+    emb.reset(Scene(id="s0", instruction="go"))
+    emb.step(Action(data=_ON_TARGET))
+    emb.step(Action(data=_ON_TARGET))
+    emb.reset(Scene(id="s1", instruction="again"))
+
+    report = emb.step(Action(data=_ON_TARGET)).observation.extra["motion_report"]
+
+    assert report["arms"]["left"]["steps"] == 1
+
+
+@pytest.mark.parametrize(
+    ("report", "cause", "fragment"),
+    [
+        (_solve_report(nonfinite=True, converged=None), "ik_failed", "no finite joint solution"),
+        (
+            _solve_report(held=True, hold_remaining=9),
+            "oscillation_hold",
+            "froze the arm for 1 of 1 steps",
+        ),
+        (
+            _solve_report(solution_orientation_error=0.3),
+            "unreachable",
+            "closer than 0.0 cm / 0.30 rad to the target;",
+        ),
+        (
+            _solve_report(rate_limited=True, command_position_error=0.021),
+            "unfinished",
+            "2.1 cm / 0.00 rad short of the target; re-issue",
+        ),
+        (_solve_report(tracking_position_error=0.03), "behind", "sits 3.0 cm behind its command"),
+        (
+            _solve_report(limited_joints=(2, 5)),
+            "on_target",
+            "on target; left_j2, left_j5 on a joint limit",
+        ),
+    ],
+)
+def test_eef_cause_rules_and_lines(report: Any, cause: str, fragment: str) -> None:
+    window = embodiment_module._MotionWindow()
+    window.add(report)
+
+    record = embodiment_module._eef_arm_record("left", window)
+    line = embodiment_module._eef_arm_line("left", record)
+
+    assert record["cause"] == cause
+    assert fragment in line
+    assert line.startswith("motion report (left arm): ") and line.endswith(".")
+
+
+def test_eef_window_counts_and_resync_note() -> None:
+    window = embodiment_module._MotionWindow()
+    window.add(_solve_report(converged=False))
+    window.add(_solve_report(resynced=True, held=True, hold_remaining=3))
+
+    record = embodiment_module._eef_arm_record("right", window)
+    line = embodiment_module._eef_arm_line("right", record)
+
+    assert record["steps"] == 2 and record["hold_steps"] == 1 and record["resync_steps"] == 1
+    assert record["nonconverged_steps"] == 1 and record["hold_remaining"] == 3
+    assert line.endswith("; the command reference was re-synced to the measured pose.")
+
+
+def test_joint_mode_record_names_joints_behind_their_command() -> None:
+    command = np.array([0.0, 0.5, 0.0, 0.0, 0.0, 0.0])
+    measured = np.array([0.0, 0.2, 0.0, 0.0, 0.0, -0.05])
+
+    behind = embodiment_module._joint_arm_record("left", command, measured)
+    fine = embodiment_module._joint_arm_record("right", command, command)
+
+    assert behind == {
+        "cause": "behind",
+        "behind_joints": {"left_j1": pytest.approx(0.3)},
+        "max_error_rad": pytest.approx(0.3),
+    }
+    assert embodiment_module._joint_arm_line("left", behind) == (
+        "motion report (left arm): behind its command by left_j1 0.30 rad "
+        "(gravity sag, contact, or the rate limit); re-issue or correct."
+    )
+    assert fine["cause"] == "on_target"
+    assert (
+        embodiment_module._joint_arm_line("right", fine) == "motion report (right arm): on target."
+    )
