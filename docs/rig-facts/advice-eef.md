@@ -7,6 +7,16 @@ targets. Read alongside the rig facts and the workspace box.
 
 - `eef_state` is the arm's forward kinematics at the grasp point. Trust it
   over any estimate from an image. There is no height bias to correct.
+- Each observation also shows the setpoint (the target every dimension is
+  holding from your commands) and the dimensions where the readback differs
+  from it. Plan in setpoint space: unnamed dimensions keep their setpoint,
+  so a carry move that names only x keeps the gripper squeezed and the
+  height commanded. Sag shows as a steady negative z or pitch offset under
+  load, drift as an offset that grows on an idle arm, scatter as offsets
+  that flicker by a few millimetres, and a squeezed gripper reads wider
+  than its setpoint. None of these need chasing: do not re-command the
+  readback as a new target, and correct an offset only when it matters for
+  the task (aim higher, not by re-sending).
 - After every move compare the readback with the target. A shortfall of
   more than ~1.5 cm means one of four things: the target was clipped to
   the workspace box (the tool description lists the bounds), the arm is

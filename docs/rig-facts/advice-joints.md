@@ -41,7 +41,10 @@ base axis and height z above the table:
   single joints converges in far more calls.
 - Moves undershoot: a command tracks only partway and stalls near
   contact (gravity-loaded j1 and j3 sag 0.05–0.1 rad, more with a load).
-  Re-issue the same target, or command 0.1–0.2 rad beyond it.
+  Re-issue the same target, or command 0.1–0.2 rad beyond it. Each
+  observation shows the setpoint next to the readback and lists the joints
+  where they differ, so read the sag off that line instead of estimating
+  it, and plan in setpoint space: unnamed joints keep their setpoint.
 - Large commands are rate-limited per step and each call plays only a
   few steps; a separate `approver: N step(s) modified (delta_clamped)`
   line reports it. Nothing is broken: re-issue.
