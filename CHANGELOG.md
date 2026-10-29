@@ -71,6 +71,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `uv.lock` now pins certifi 2026.10.23, which drops the emSign root CAs with
+  compromised intermediate keys (GHSA-6q48-6c7w-9gw2). The same refresh moves
+  anyio, urllib3, and virtualenv past their open advisories and replaces the
+  yanked charset-normalizer 3.4.8. Lockfile only; pyproject ranges are unchanged.
+
 - A mid-run thermal trip now ramps the arms to their rest pose from inside
   `step()` before terminating, including ungraded and unattended runs and when
   `park_before_grade=false`. The returned observation still captures the trip
