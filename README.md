@@ -40,7 +40,9 @@ inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2 --embodimen
 ```
 
 > **Note:** cameras are configured with one plain source per slot
-> (`*_cam_device` or `*_depth_serial`), so the whole rig is drivable from
+> (`*_cam_device`, a V4L2 node or a camera-hub stream URL such as a go2rtc
+> MJPEG stream `http://<hub>/api/stream.mjpeg?src=<name>`, or `*_depth_serial`),
+> so the whole rig is drivable from
 > config.ini or `-E key=value` flags with no custom code. A Python
 > `camera_reader` remains available for exotic camera stacks. With no sources
 > configured, `yam_arms` fails fast with a `ConfigError` at `reset()`, before
@@ -184,12 +186,12 @@ config one camera slot at a time. For health, the `--no-config` bypass also
 applies when the wizard file is malformed and restores flag-only behavior.
 
 > [!NOTE]
-> The health tool can check and watch only V4L2 `*_cam_device` sources. It
-> reports configured `*_depth_serial` slots as unchecked; they do not pass or
-> fail camera health. On an all-depth rig, camera checks are skipped while
-> motors are still checked, and `--watch` errors because there are no streams
-> this tool can serve. On a mixed rig, the montage and watch page contain only
-> the V4L2 slots.
+> The health tool can check and watch only `*_cam_device` sources (V4L2
+> nodes or hub stream URLs). It reports configured `*_depth_serial` slots as
+> unchecked; they do not pass or fail camera health. On an all-depth rig,
+> camera checks are skipped while motors are still checked, and `--watch`
+> errors because there are no streams this tool can serve. On a mixed rig, the
+> montage and watch page contain only the `*_cam_device` slots.
 
 > [!WARNING]
 > Run the health check only while the rig is idle, with both arms at rest or

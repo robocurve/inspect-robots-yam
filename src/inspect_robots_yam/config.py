@@ -256,7 +256,9 @@ class YamConfig(_FromKwargs):
     # release.
     max_steps_hint: int | None = None
     # Builtin OpenCV camera sources: set a slot to its V4L2 color node (stable
-    # udev paths recommended; /dev/videoN reshuffles on replug).
+    # udev paths recommended; /dev/videoN reshuffles on replug) or to a stream
+    # URL (http://, https://, rtsp://, rtsps://) served by a camera hub that owns
+    # the device; URLs are read through OpenCV's FFmpeg backend.
     # Plain strings, so `-E top_cam_device=...` and config.ini can carry them.
     # Uses the base opencv-python-headless dependency.
     top_cam_device: str | None = None

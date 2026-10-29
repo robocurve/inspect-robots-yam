@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `*_cam_device` accepts a stream URL (`http://`, `https://`, `rtsp://`,
+  `rtsps://`) and reads it through OpenCV's FFmpeg backend, so a camera hub
+  such as go2rtc can own the device and serve the eval, a live view, and the
+  judge's stills from one capture. The hub fixes the format and size, so only
+  the open and read timeouts are negotiated; the delivered size is still
+  checked against the configured capture size, with hub-specific guidance on
+  a mismatch. The health montage and `--watch` take the same URLs.
+
+- **Motion report:** every stepped observation carries `extra["motion_report"]`,
+  a per-arm diagnosis of the step just played. Under `eef_pos` the IK wrapper
+  now exposes a `SolveReport` per solve (solution, command, and tracking pose
+  errors, joints on a limit, rate limiting, oscillation hold, resync, and
+  non-finite flags), rolled up over a window that closes on an action carrying
+  `meta["chunk_final"]` so the observation ending an agent move summarizes the
+  whole move, with a `cause` label (`ik_failed`, `oscillation_hold`,
+  `unreachable`, `unfinished`, `behind`, `on_target`) and plain-language
+  `lines` for the policy. Under joint control it names joints more than
+  0.1 rad behind their command. The built-in agent docs describe the report.
 - `capture_width` / `capture_height` (default 640 × 480, unchanged behaviour)
   set the native size requested from the cameras on both the RealSense and the
   V4L2 paths, with intrinsics scaled from that size. Rigs that need every pixel
@@ -52,6 +70,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   within-process epochs hold torque at home between trials.
 
 ### Fixed
+
+- The real-hardware driver raises `EmbodimentFault` as soon as a motor
+  control loop has stopped or joint feedback turns non-finite, and surfaces a
+  teardown error instead of swallowing it, so the framework halts the trial
+  rather than stepping a dead arm.
 
 - The operator status line now compares motion-budget seconds with the
   estimated motion horizon and shows elapsed wall time as a separate labeled

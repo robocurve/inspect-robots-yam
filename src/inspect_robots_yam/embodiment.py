@@ -304,17 +304,43 @@ def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cov
     )
 
     class _Real:
+        # A motor control loop that has stopped (CAN fault, driver thread death)
+        # leaves the last readings in place, so a step would keep commanding a
+        # dead arm. Latch the first fault and raise it from every call so the
+        # framework halts the run instead of stepping through it; recovery is
+        # the operator's, never automatic.
+        _fault: str | None = None
+
+        def _check_running(self) -> None:
+            if self._fault is None:
+                for arm, channel in ((left, cfg.left_channel), (right, cfg.right_channel)):
+                    if not arm.motor_chain.running:
+                        self._fault = f"motor control loop stopped on {channel}"
+                        break
+            if self._fault is not None:
+                raise EmbodimentFault(self._fault)
+
         def get_joint_pos(self) -> npt.NDArray[np.floating[Any]]:
-            return packing.pack(left.get_joint_pos(), right.get_joint_pos())
+            self._check_running()
+            positions = packing.pack(left.get_joint_pos(), right.get_joint_pos())
+            self._check_running()
+            if not np.all(np.isfinite(positions)):
+                self._fault = "motor feedback contains non-finite joint positions"
+                raise EmbodimentFault(self._fault)
+            return positions
 
         def get_joint_eff(self) -> npt.NDArray[np.floating[Any]]:
+            self._check_running()
             left_obs = left.get_observations()
             right_obs = right.get_observations()
+            self._check_running()
             left_eff = np.append(left_obs["joint_eff"], left_obs["gripper_eff"])
             right_eff = np.append(right_obs["joint_eff"], right_obs["gripper_eff"])
             return packing.pack(left_eff, right_eff)
 
         def get_motor_temps(self) -> npt.NDArray[np.floating[Any]]:
+            self._check_running()
+
             def _arm_temps(arm: Any) -> npt.NDArray[np.float64]:
                 states = arm.motor_chain.read_states()
                 return np.asarray(
@@ -322,18 +348,31 @@ def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cov
                     dtype=np.float64,
                 )
 
-            return packing.pack(_arm_temps(left), _arm_temps(right))
+            temps = packing.pack(_arm_temps(left), _arm_temps(right))
+            self._check_running()
+            return temps
 
         def command_joint_pos(self, target: npt.NDArray[np.floating[Any]]) -> None:
+            self._check_running()
             lo, ro = packing.split(target)
             left.command_joint_pos(lo)
+            self._check_running()
             right.command_joint_pos(ro)
+            self._check_running()
 
         def close(self) -> None:
+            errors: list[Exception] = []
             for arm in (left, right):
                 closer = getattr(arm, "close", None)
                 if callable(closer):
-                    close_robot_safely(arm)
+                    try:
+                        close_robot_safely(arm)
+                    except Exception as exc:
+                        errors.append(exc)
+            if errors:
+                raise EmbodimentFault(
+                    "motor teardown failed; automatic recovery refused"
+                ) from errors[0]
 
     return _Real()
 
@@ -433,8 +472,23 @@ class _PublishedPair:
     published_s: float
 
 
+#: URL schemes a ``*_cam_device`` may carry instead of a V4L2 node. They are
+#: read through OpenCV's FFmpeg backend, so a camera hub (go2rtc's
+#: ``/api/stream.mjpeg``, an RTSP relay) can own the device and serve the eval,
+#: a live view, and a judge's stills from one capture.
+STREAM_SCHEMES: tuple[str, ...] = ("http://", "https://", "rtsp://", "rtsps://")
+
+
+def _is_stream_source(device: str) -> bool:
+    """Whether ``device`` names a network stream (see ``STREAM_SCHEMES``) or a V4L2 node."""
+    return device.startswith(STREAM_SCHEMES)
+
+
 class _OpenCVCameraReader:
-    """Builtin V4L2 reader for rigs configured via ``*_cam_device`` (YamConfig).
+    """Builtin reader for rigs configured via ``*_cam_device`` (YamConfig).
+
+    A device is a V4L2 node or, when it carries one of ``STREAM_SCHEMES``, a
+    stream URL read through FFmpeg (``_open_one``).
 
     One daemon thread per camera reads continuously and publishes the newest
     frame; ``__call__`` converts whatever is in the slot. Without that thread a
@@ -576,17 +630,37 @@ class _OpenCVCameraReader:
 
         A warm-up that never yields a frame is not fatal here, as before #63:
         the drain thread gets its own chance and ``_latest`` waits for it.
+
+        A stream URL opens on the FFmpeg backend instead: V4L2 cannot capture by
+        name, and the hub has already fixed the pixel format and size, so no
+        format is negotiated. FFmpeg honours the open and read timeouts only as
+        open-time parameters, hence the ``params`` list. The delivered size is
+        still verified against the configured one.
         """
-        cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
-        if not cap.isOpened():
-            raise RuntimeError(f"cannot open {name} at {device}")
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"YUYV"))
         width, height = self._capture_sizes.get(name, self._capture_size)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)
-        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000)
+        if _is_stream_source(device):
+            cap = cv2.VideoCapture(
+                device,
+                cv2.CAP_FFMPEG,
+                [
+                    cv2.CAP_PROP_OPEN_TIMEOUT_MSEC,
+                    3000,
+                    cv2.CAP_PROP_READ_TIMEOUT_MSEC,
+                    1000,
+                ],
+            )
+            if not cap.isOpened():
+                raise RuntimeError(f"cannot open {name} at {device}")
+        else:
+            cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+            if not cap.isOpened():
+                raise RuntimeError(f"cannot open {name} at {device}")
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"YUYV"))
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)
+            cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000)
         # V4L2 silently falls back to another mode when a size is unsupported.
         # Verify here, before _open_all starts the drain thread: VideoCapture
         # has no locking, so no property read may race that thread. Known gap:
@@ -630,6 +704,13 @@ class _OpenCVCameraReader:
             return
         cap.release()
         slot = name[: -len("_cam")] if name.endswith("_cam") else name
+        if _is_stream_source(device):
+            raise RuntimeError(
+                f"{name} ({device}) delivered {delivered[0]}x{delivered[1]} instead of "
+                f"the requested {requested[0]}x{requested[1]}. fix: serve the stream at "
+                f"that size, or set {slot}_capture_width/{slot}_capture_height (or "
+                f"capture_width/capture_height) to the size the hub serves"
+            )
         raise RuntimeError(
             f"{name} ({device}) delivered {delivered[0]}x{delivered[1]} instead of the "
             f"requested {requested[0]}x{requested[1]}; the camera does not support that "
