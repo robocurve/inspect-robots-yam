@@ -1621,6 +1621,8 @@ class YAMEmbodiment:
         self.settle_timeouts = 0
         self._motor_temp_warned = False
         self._motor_temp_no_data_warned = False
+        #: The guardrail's latest packed reading, served in the observation.
+        self._last_motor_temps: Vec | None = None
         # Set when the per-trial timeout budget is exhausted; suppresses further
         # settling for the rest of the trial. Cleared at reset() entry.
         self._settle_disabled = False
@@ -1640,6 +1642,18 @@ class YAMEmbodiment:
                 "effort with position error indicates controller sag. ``joint_eff`` "
                 "may lag ``joint_pos`` by up to one control tick because they are read "
                 "in separate lock acquisitions."
+            )
+        if self._cfg.motor_temp_limit is not None:
+            docs += (
+                "\n\nMotor temperatures: each observation reports the hottest motor on "
+                f"each arm; the trial ends the moment any motor reaches "
+                f"{self._cfg.motor_temp_limit:g} C. Motors heat fastest while an arm "
+                "holds an extended or loaded pose or presses against something, and cool "
+                "within a minute or two when the arm rests near its start pose with no "
+                "load. A line saying a motor is within the margin of the limit is urgent: "
+                "finish or abandon the current motion, move that arm back to the start "
+                "pose it had at the first observation, and sleep there (the sleep tool, "
+                "when offered) until the reading has dropped, before continuing."
             )
         if self._builtin_realsense_reader is not None:
             depth_cameras = ", ".join(sorted(depth_serials))
@@ -1831,6 +1845,7 @@ class YAMEmbodiment:
         self._settle_disabled = False
         self._motor_temp_warned = False
         self._motor_temp_no_data_warned = False
+        self._last_motor_temps = None
         # Ahead of the homing settle below, which names the scene if it has to
         # report a budget exhaustion; set later it would report the previous
         # trial's instruction, or None on the first.
@@ -2445,6 +2460,7 @@ class YAMEmbodiment:
                 "motor_temp_limit is set but the injected driver lacks get_motor_temps()"
             )
         temps = packing.validate_dim(get_motor_temps())
+        self._last_motor_temps = temps
         if not self._motor_temp_no_data_warned and not np.any(temps > 0):
             logger.warning(
                 "thermal guardrail got no valid temperature data; all motor readings are <= 0"
@@ -2491,6 +2507,47 @@ class YAMEmbodiment:
             return None
         slot = int(slots[int(np.argmax(second[slots]))])
         return slot, float(second[slot])
+
+    def _thermal_report(self, temps: Vec) -> dict[str, Any]:
+        """Per-arm hottest motor against the guardrail limit, with lines written for the policy.
+
+        Same shape convention as the motion report (plan 0034): ``lines`` is
+        plain language the agent renders verbatim, ``arms`` the structured
+        data. Readings at or below 0 C are the driver's no-data sentinel, as
+        in the guardrail, and are skipped; an arm with no valid reading says
+        so. The warning line fires inside ``motor_temp_warn_margin`` of the
+        limit, the band in which the policy can still act (plan 0035).
+        """
+        limit = float(self._cfg.motor_temp_limit)  # type: ignore[arg-type]
+        margin = float(self._cfg.motor_temp_warn_margin)
+        arms: dict[str, dict[str, Any]] = {}
+        parts: list[str] = []
+        warned: list[str] = []
+        for side, offset in (("left", 0), ("right", packing.ARM_WIDTH)):
+            block = np.asarray(temps[offset : offset + packing.ARM_WIDTH], dtype=np.float64)
+            valid = np.flatnonzero(block > 0)
+            readings = [float(t) for t in block]
+            if not valid.size:
+                arms[side] = {"hottest": None, "celsius": None, "temps": readings}
+                parts.append(f"{side} arm no reading")
+                continue
+            index = int(valid[int(np.argmax(block[valid]))])
+            label = packing.DIM_LABELS[offset + index]
+            celsius = float(block[index])
+            arms[side] = {"hottest": label, "celsius": celsius, "temps": readings}
+            parts.append(f"{side} arm hottest {label} {celsius:.0f} C")
+            if celsius >= limit - margin:
+                warned.append(label)
+        lines = [
+            f"motor temperatures: {', '.join(parts)}; the trial ends when any motor "
+            f"reaches {limit:g} C."
+        ]
+        if warned:
+            lines.append(
+                f"{' and '.join(warned)} within {margin:g} C of the limit: move that arm "
+                "back to its start pose and sleep there before the guardrail ends the trial."
+            )
+        return {"limit": limit, "warn_margin": margin, "arms": arms, "lines": lines}
 
     def _motor_identity(self, slot: int) -> tuple[str, int, str]:
         """Map one packed slot to its label, CAN motor id, and arm channel."""
@@ -2678,13 +2735,15 @@ class YAMEmbodiment:
             values["eef_state"] = np.concatenate((left, right))
         if joint_eff is not None:
             values["joint_eff"] = joint_eff
-        if self._builtin_realsense_reader is None and self._depth_reader is None:
-            return Observation(images=images, state=values, instruction=instruction)
         extra: dict[str, Any] = {}
         if self._builtin_realsense_reader is not None:
             extra.update(self._builtin_realsense_reader.extra(self._cfg))
         if self._depth_reader is not None:
             extra.update(self._depth_reader(self._cfg))
+        if self._cfg.motor_temp_limit is not None and self._last_motor_temps is not None:
+            extra["motor_temps"] = self._thermal_report(self._last_motor_temps)
+        if not extra:
+            return Observation(images=images, state=values, instruction=instruction)
         return Observation(
             images=images,
             state=values,

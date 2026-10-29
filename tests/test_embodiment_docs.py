@@ -73,3 +73,18 @@ def test_whitespace_only_docs_extra_is_empty(control_interface: str) -> None:
     cfg = YamConfig(control_interface=control_interface, docs_extra="  \n ")
     built_in = _DOCS_EEF_POS if control_interface == "eef_pos" else _DOCS_JOINTS
     assert YAMEmbodiment(cfg).info.docs == built_in
+
+
+@pytest.mark.parametrize("control_interface", ["joints", "eef_pos"])
+def test_motor_temperature_docs_paragraph_is_opt_in_with_the_guardrail(
+    control_interface: str,
+) -> None:
+    off = YAMEmbodiment(YamConfig(control_interface=control_interface)).info.docs
+    on = YAMEmbodiment(
+        YamConfig(control_interface=control_interface, motor_temp_limit=60)
+    ).info.docs
+
+    assert "Motor temperatures:" not in off
+    assert "Motor temperatures:" in on
+    assert "reaches 60 C" in on
+    assert "sleep" in on

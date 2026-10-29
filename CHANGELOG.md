@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- With `motor_temp_limit` set, every observation carries
+  `extra["motor_temps"]`: per arm the hottest motor and its temperature
+  against the limit, plus `lines` written for the policy (a warning line
+  inside `motor_temp_warn_margin` telling it to move the arm to its start
+  pose and sleep), the same convention as the motion report.
+  The built-in agent docs gain a matching paragraph. No extra CAN traffic:
+  it is the reading the guardrail already takes each step
+  ([plan 0035](plans/0035-motor-temps-observation.md)).
+
 - `*_cam_device` accepts a stream URL (`http://`, `https://`, `rtsp://`,
   `rtsps://`) and reads it through OpenCV's FFmpeg backend, so a camera hub
   such as go2rtc can own the device and serve the eval, a live view, and the

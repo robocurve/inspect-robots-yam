@@ -2253,3 +2253,67 @@ def test_observe_names_the_camera_that_dropped_a_frame() -> None:
     emb._camera_reader = _dropped_frame
     with pytest.raises(ValueError, match="camera 'left_cam' returned no frame"):
         emb.reset(Scene(id="s", instruction="x"))
+
+
+def test_motor_temps_ride_on_every_observation_when_the_guardrail_is_on() -> None:
+    temps = np.full(14, 30.0)
+    temps[1] = 41.0  # left_j1
+    temps[9] = 44.0  # right_j2
+    emb, _, _ = _build(YamConfig(motor_temp_limit=60.0), driver=FakeDriver(temps=temps))
+
+    first = emb.reset(Scene(id="s", instruction="inspect"))
+    report = first.extra["motor_temps"]
+    assert report["limit"] == 60.0 and report["warn_margin"] == 10.0
+    assert report["arms"]["left"]["hottest"] == "left_j1"
+    assert report["arms"]["left"]["celsius"] == 41.0
+    assert report["arms"]["right"]["hottest"] == "right_j2"
+    assert report["arms"]["right"]["temps"] == [30.0, 30.0, 44.0] + [30.0] * 4
+    assert report["lines"] == [
+        "motor temperatures: left arm hottest left_j1 41 C, right arm hottest right_j2 44 C; "
+        "the trial ends when any motor reaches 60 C."
+    ]
+    import json
+
+    json.dumps(report)  # EvalLog-safe: plain floats, strings, lists
+
+    stepped = emb.step(Action(data=np.zeros(14))).observation
+    assert stepped.extra["motor_temps"]["lines"] == report["lines"]
+    assert "motion_report" in stepped.extra  # the two extras coexist
+
+
+def test_motor_temps_warning_line_names_every_motor_inside_the_margin() -> None:
+    temps = np.full(14, 30.0)
+    temps[1] = 52.0  # left_j1: inside the 10 C margin of 60
+    temps[8] = 50.0  # right_j1: exactly on the margin boundary counts
+    emb, _, _ = _build(YamConfig(motor_temp_limit=60.0), driver=FakeDriver(temps=temps))
+
+    lines = emb.reset(Scene(id="s", instruction="inspect")).extra["motor_temps"]["lines"]
+
+    assert lines[1] == (
+        "left_j1 and right_j1 within 10 C of the limit: move that arm back to its start pose "
+        "and sleep there before the guardrail ends the trial."
+    )
+
+
+def test_motor_temps_skip_no_data_sentinels_and_report_an_unread_arm() -> None:
+    temps = np.zeros(14)
+    temps[3] = 33.0  # left_j3 is the only valid left reading; right arm all sentinels
+    emb, _, _ = _build(YamConfig(motor_temp_limit=60.0), driver=FakeDriver(temps=temps))
+
+    report = emb.reset(Scene(id="s", instruction="inspect")).extra["motor_temps"]
+
+    assert report["arms"]["left"]["hottest"] == "left_j3"
+    assert report["arms"]["right"] == {"hottest": None, "celsius": None, "temps": [0.0] * 7}
+    assert report["lines"][0].startswith(
+        "motor temperatures: left arm hottest left_j3 33 C, right arm no reading;"
+    )
+
+
+def test_motor_temps_absent_without_a_limit() -> None:
+    emb, _, _ = _build()
+
+    first = emb.reset(Scene(id="s", instruction="inspect"))
+    stepped = emb.step(Action(data=np.zeros(14))).observation
+
+    assert "motor_temps" not in first.extra
+    assert "motor_temps" not in stepped.extra
