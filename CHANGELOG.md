@@ -77,8 +77,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   yanked charset-normalizer 3.4.8. Lockfile only; pyproject ranges are unchanged.
 
 - `uv.lock` moves filelock (dev-only, via pre-commit's virtualenv) from 3.29.6
-  to 4.2.4 on Python 3.11+, clearing nine filelock advisories. Python 3.10 gets
-  4.1.0, the newest release that supports it, so those advisories stay open there.
+  to 4.2.4, clearing the open filelock advisories. Every patched filelock needs
+  Python 3.11, so the `dev` extra now installs pre-commit only on 3.11+.
 
 - A mid-run thermal trip now ramps the arms to their rest pose from inside
   `step()` before terminating, including ungraded and unattended runs and when
