@@ -42,7 +42,7 @@ import numpy.typing as npt
 # Mirror core CLI dotenv parsing through its helper so a duplicated parser cannot drift.
 from inspect_robots._dotenv import init_dotenv
 
-from inspect_robots_yam._i2rt import _load_i2rt
+from inspect_robots_yam._i2rt import _load_i2rt, close_robot_safely
 from inspect_robots_yam._user_config import load_yam_defaults
 
 DEFAULT_SETTLE_RAD = 0.05
@@ -251,10 +251,10 @@ def main(
         # Release the motor chain: i2rt's receive thread is non-daemon, so a
         # never-closed handle keeps the process alive after the verdict AND
         # holds the CAN channel, wedging the next connection until a power
-        # cycle. Verified the hard way on a real rig.
-        closer = getattr(robot, "close", None)
-        if callable(closer):
-            closer()
+        # cycle. Verified the hard way on a real rig. close_robot_safely joins
+        # the chain's control thread before the socket closes (#28).
+        if callable(getattr(robot, "close", None)):
+            close_robot_safely(robot)
     verdict = "PASS" if result.passed else "FAIL"
     emit(
         f"{verdict}: settle {result.settle:.4f} rad (limit {result.settle_rad}), "
