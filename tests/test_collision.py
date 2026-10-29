@@ -6,6 +6,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 from importlib import resources
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -15,7 +16,7 @@ from inspect_robots.errors import SafetyAbort
 from inspect_robots.spaces import ActionSemantics, Box
 from inspect_robots.types import Action
 
-from inspect_robots_yam import collision
+from inspect_robots_yam import collision, poses
 from inspect_robots_yam import embodiment as embodiment_module
 from inspect_robots_yam.collision import (
     CollisionApprover,
@@ -552,6 +553,33 @@ def test_build_guardrails_uses_custom_home_and_integrates_chain(joint_space: Box
     assert collision_approver._checker.config is collision_config
     action = Action(_pose(left_j0=0.02))
     assert chain.review(action, {}) is action
+
+
+def test_contributed_guardrail_sweeps_from_the_named_start_pose(tmp_path: Path) -> None:
+    # Clear on its own, but the straight line from the default home to it
+    # passes through the table, so only a sweep that starts at the pose the
+    # arms were actually homed to lets the policy hold it.
+    start = _pose(left_j1=1.6, left_j2=0.8, left_j3=-1.5)
+    checker = CollisionChecker()
+    assert not checker.check(start).collided
+    assert any(checker.check(HOME + (start - HOME) * step).collided for step in (0.5, 0.525))
+    poses.save_pose(
+        tmp_path,
+        poses.StartPose(
+            name="raised",
+            joints=tuple(float(value) for value in start),
+            created_at="2026-09-25T12:00:00+00:00",
+        ),
+    )
+    embodiment = YAMEmbodiment(YamConfig(start_pose="raised", pose_dir=str(tmp_path)))
+
+    _, approver = embodiment.contribute_guardrails(embodiment.info.action_space).approvers[0]
+
+    action = Action(start.copy())
+    reviewed = approver.review(action, {})
+    assert "collision_blocked" not in reviewed.meta
+    assert reviewed is action
+    assert approver._start_pose == pytest.approx(start)
 
 
 def test_contribution_ladder_off_warns_to_measure_geometry(joint_space: Box) -> None:
