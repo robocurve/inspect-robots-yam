@@ -8,6 +8,7 @@ binds its concrete FK, IK, and model-range APIs.
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import numpy as np
@@ -17,6 +18,56 @@ from inspect_robots_yam.packing import ARM_DOF
 
 Vec = npt.NDArray[np.float64]
 Pose = npt.NDArray[np.float64]
+
+#: A joint this close to an effective range bound counts as sitting on it.
+_LIMIT_EPS_RAD = 1e-3
+
+
+@dataclass(frozen=True)
+class SolveReport:
+    """Diagnostics for one arm's most recent command step.
+
+    ``solution_*`` errors measure the joint-range-clipped IK solution against
+    the target pose: a large value means the target cannot be posed as
+    requested, whatever the controller does next. ``command_*`` errors
+    measure the command actually sent (after the per-step rate clamp and the
+    absolute clamp) against the target; the gap between the two is motion
+    still in flight. ``tracking_*`` errors measure the measured pose against
+    the command: the arm being held off its setpoint by contact, load, or
+    sag. Positions are meters, orientations are geodesic angles in radians.
+    Solution errors and ``converged`` are ``None`` on steps without a solve
+    (a hold in progress, or a non-finite solve); the step that triggers a
+    hold did solve, and reports that solution.
+    """
+
+    held: bool
+    hold_remaining: int
+    resynced: bool
+    nonfinite: bool
+    converged: bool | None
+    limited_joints: tuple[int, ...]
+    rate_limited: bool
+    solution_position_error: float | None
+    solution_orientation_error: float | None
+    command_position_error: float
+    command_orientation_error: float
+    tracking_position_error: float
+    tracking_orientation_error: float
+
+
+@dataclass
+class _SolveTrace:
+    """What one ``solve()`` call did, kept until ``report()`` reads it."""
+
+    target: Vec
+    held: bool = False
+    hold_remaining: int = 0
+    resynced: bool = False
+    nonfinite: bool = False
+    converged: bool | None = None
+    limited_joints: tuple[int, ...] = ()
+    rate_limited: bool = False
+    solution: Vec | None = field(default=None)
 
 
 class RawKinematics(Protocol):
@@ -104,6 +155,7 @@ class _ArmKinematics:
         self._last_delta: Vec | None = None
         self._resynced = False
         self._yaw_reference: npt.NDArray[np.float64] | None = None
+        self._trace: _SolveTrace | None = None
 
     @property
     def effective_ranges(self) -> npt.NDArray[np.float64]:
@@ -134,6 +186,7 @@ class _ArmKinematics:
         self._hold_counter = 0
         self._clear_reversals()
         self._resynced = False
+        self._trace = None
 
     def clear(self) -> None:
         """Clear all command, guard, resync, and yaw-reference trial state."""
@@ -142,6 +195,7 @@ class _ArmKinematics:
         self._clear_reversals()
         self._resynced = False
         self._yaw_reference = None
+        self._trace = None
 
     def capture_yaw_reference(self, q_measured: npt.ArrayLike) -> None:
         """Pin the trial's reference orientation: zero for yaw, pitch, and roll.
@@ -174,11 +228,16 @@ class _ArmKinematics:
         """Run the normative hold, resync, IK, rate-clamp, and reversal pipeline."""
         previous = self._require_command_reference()
         self._resynced = False
+        target_values = np.asarray(target, dtype=np.float64)
+        trace = _SolveTrace(target=target_values.copy())
+        self._trace = trace
 
         if self._hold_counter > 0:
             self._hold_counter -= 1
             if self._hold_counter == 0:
                 self._clear_reversals()
+            trace.held = True
+            trace.hold_remaining = self._hold_counter
             return previous.copy()
 
         measured = np.asarray(q_measured, dtype=np.float64)
@@ -186,31 +245,32 @@ class _ArmKinematics:
             previous = self._clip_effective(measured)
             self._q_cmd_prev = previous.copy()
             self._resynced = True
+            trace.resynced = True
 
-        target_values = np.asarray(target, dtype=np.float64)
-        target_pose = np.eye(4, dtype=np.float64)
-        target_pose[:3, :3] = (
-            self._rotation_z(float(target_values[3]))
-            @ self._rotation_y_forward(float(target_values[4]))
-            @ self._rotation_x(float(target_values[5]))
-            @ self._require_yaw_reference()
-        )
-        target_pose[:3, 3] = target_values[:3]
+        target_pose = self._target_pose(target_values)
         warm_start = self._clip_effective(previous)
-        _, q_ik_full = self._raw.ik(
+        converged, q_ik_full = self._raw.ik(
             target_pose,
             self._full_q(warm_start),
             self._ik_max_iters,
         )
         q_ik = np.asarray(q_ik_full, dtype=np.float64)
         if not np.all(np.isfinite(q_ik)):
+            trace.nonfinite = True
             return previous.copy()
         q_ik_arm = self._clip_effective(q_ik[:ARM_DOF])
+        trace.converged = bool(converged)
+        trace.solution = q_ik_arm.copy()
+        low = self._effective_ranges[:, 0]
+        high = self._effective_ranges[:, 1]
+        on_bound = (q_ik_arm <= low + _LIMIT_EPS_RAD) | (q_ik_arm >= high - _LIMIT_EPS_RAD)
+        trace.limited_joints = tuple(int(index) for index in np.flatnonzero(on_bound))
         delta = np.clip(
             q_ik_arm - previous,
             -self._ik_step_joint_limit,
             self._ik_step_joint_limit,
         )
+        trace.rate_limited = bool(np.any(np.abs(q_ik_arm - previous) > self._ik_step_joint_limit))
         q_command = previous + delta
 
         reversal = np.zeros(ARM_DOF, dtype=np.bool_)
@@ -227,8 +287,64 @@ class _ArmKinematics:
         if np.any(counts > self._osc_reversals):
             self._hold_counter = self._osc_hold_steps
             self._clear_reversals()
+            trace.held = True
+            trace.hold_remaining = self._hold_counter
             return previous.copy()
         return q_command
+
+    def report(self, q_sent: npt.ArrayLike, q_measured: npt.ArrayLike) -> SolveReport:
+        """Diagnose the most recent solve against the command sent and the joints measured.
+
+        ``q_sent`` is the six-joint command that reached the driver for that
+        solve and ``q_measured`` the joints read afterwards. Raises when no
+        solve has run since the last ``seed()`` or ``clear()``.
+        """
+        trace = self._trace
+        if trace is None:
+            raise RuntimeError("no solve to report on")
+        target_pose = self._target_pose(trace.target)
+        command_pose = self.fk(q_sent)
+        measured_pose = self.fk(q_measured)
+        command_errors = self._pose_errors(target_pose, command_pose)
+        tracking_errors = self._pose_errors(command_pose, measured_pose)
+        solution_errors: tuple[float | None, float | None] = (None, None)
+        if trace.solution is not None:
+            solution_errors = self._pose_errors(target_pose, self.fk(trace.solution))
+        return SolveReport(
+            held=trace.held,
+            hold_remaining=trace.hold_remaining,
+            resynced=trace.resynced,
+            nonfinite=trace.nonfinite,
+            converged=trace.converged,
+            limited_joints=trace.limited_joints,
+            rate_limited=trace.rate_limited,
+            solution_position_error=solution_errors[0],
+            solution_orientation_error=solution_errors[1],
+            command_position_error=command_errors[0],
+            command_orientation_error=command_errors[1],
+            tracking_position_error=tracking_errors[0],
+            tracking_orientation_error=tracking_errors[1],
+        )
+
+    def _target_pose(self, target_values: Vec) -> Pose:
+        """Build the world transform a 7-D ``x, y, z, yaw, pitch, roll, gripper`` target names."""
+        target_pose = np.eye(4, dtype=np.float64)
+        target_pose[:3, :3] = (
+            self._rotation_z(float(target_values[3]))
+            @ self._rotation_y_forward(float(target_values[4]))
+            @ self._rotation_x(float(target_values[5]))
+            @ self._require_yaw_reference()
+        )
+        target_pose[:3, 3] = target_values[:3]
+        return target_pose
+
+    @staticmethod
+    def _pose_errors(reference: Pose, actual: Pose) -> tuple[float, float]:
+        """Position distance in meters and geodesic rotation angle in radians."""
+        position = float(np.linalg.norm(reference[:3, 3] - actual[:3, 3]))
+        relative = reference[:3, :3].T @ actual[:3, :3]
+        cosine = float(np.clip((np.trace(relative) - 1.0) / 2.0, -1.0, 1.0))
+        return position, float(np.arccos(cosine))
 
     def update_sent(self, q_sent: npt.ArrayLike) -> None:
         """Track the six-joint value actually sent after the absolute clamp."""
