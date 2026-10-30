@@ -156,6 +156,12 @@ same way. See *Safety* below.
 
 ## Health check: verify the idle rig
 
+During a run, `eval()` checks the rig before every trial without moving it:
+the cameras deliver a fresh frame, and once connected, the motor control loops
+are running and no motor is over `motor_temp_limit`. A failed check stops the
+run before the arms move, with the failing check as the run's error. The
+standalone tool below checks an idle rig in more depth.
+
 Check that all three cameras deliver fresh, non-uniform frames and that both
 arms report finite joint positions within the configured limits:
 
@@ -792,6 +798,11 @@ motions, or replace the operator and physical e-stop.
   motion and there is no stand-clear gate. Tasks whose success state is the
   gripper holding an object must set `park_before_grade=false` so the grader
   uses the last step's frames instead.
+  Under `inspect-robots run` and `eval()`, the arms also park after every
+  trial, once it is scored, and hold the rest pose with torque on while the
+  scene is reset; the next trial homes from there. This park is skipped when
+  the arms are already at rest (for example after the grading park), and it
+  also has no stand-clear gate.
   Override both `home_pose` and `rest_pose` on rigs whose joint limits exclude
   zero, since both targets are clamped through the same per-joint box as every
   command.

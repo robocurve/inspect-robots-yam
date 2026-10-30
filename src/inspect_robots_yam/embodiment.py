@@ -34,7 +34,7 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 import numpy as np
 import numpy.typing as npt
 from inspect_robots.conformance import DeviceSlot, NumberSlot, OptionSlot
-from inspect_robots.embodiment import SELF_PACED, EmbodimentInfo
+from inspect_robots.embodiment import SELF_PACED, EmbodimentInfo, HealthCheck, HealthReport
 from inspect_robots.errors import ConfigError, EmbodimentFault
 from inspect_robots.guard import GuardContribution
 from inspect_robots.scene import Scene
@@ -1434,6 +1434,10 @@ def _joint_arm_line(side: str, record: Mapping[str, Any]) -> str:
 class YAMEmbodiment:
     """Inspect Robots embodiment for bimanual YAM joint or Cartesian control."""
 
+    #: Per-joint distance (radians; grippers normalized 0 to 1) within which
+    #: :meth:`park` counts the arms as already at rest and skips the ramp.
+    PARK_TOLERANCE: ClassVar[float] = 0.02
+
     # cv2 is a base dependency, so its absence indicates a broken package install.
     RUNTIME_REQUIREMENTS: ClassVar[Mapping[str, str]] = {
         "i2rt": I2RT_INSTALL_COMMAND,
@@ -1697,6 +1701,7 @@ class YAMEmbodiment:
             is_simulated=False,
             capabilities=frozenset({SELF_PACED}),
             docs=docs,
+            morphology="yam-bimanual",
         )
 
     def contribute_guards(self, action_space: Box) -> GuardContribution:
@@ -2041,20 +2046,9 @@ class YAMEmbodiment:
                     # thing known for certain here is that a motor is over its
                     # limit, and a failed camera read must not leave the arm
                     # hot-holding at the trip pose.
-                    target = (
-                        np.asarray(self._cfg.rest_pose, dtype=np.float64)
-                        if self._cfg.rest_pose is not None
-                        else self._init_pose
-                    )
+                    target = self._park_target()
                     if target is not None:
-                        if not self._cfg.unattended:
-                            self._status("thermal guardrail: parking to rest to cool")
-                        try:
-                            sent = self._ramp_to(target)
-                            self._settle(sent)
-                        finally:
-                            if not self._cfg.unattended:
-                                self._status(None)
+                        self._ramp_and_settle(target, "thermal guardrail: parking to rest to cool")
                 # The framework records the policy action even though this hot-path
                 # return deliberately does not execute it on the arm. The park
                 # settle is deliberately not reported: the trial is already over.
@@ -2115,6 +2109,96 @@ class YAMEmbodiment:
             )
         return StepResult(observation=obs, terminated=False, info=settle_info)
 
+    def health(self) -> HealthReport:
+        """Check the rig before a trial without moving it: motors, temperatures, cameras.
+
+        The framework calls this before every trial. Motors and temperatures
+        are checked only once connected (the first ``reset()`` connects): the
+        motor check reads joint positions, which raises the driver's latched
+        fault if a motor control loop has stopped, and the temperature check
+        applies ``motor_temp_limit`` the way ``reset()`` does. Cameras are read
+        once when configured, so a stalled stream is caught before the arms
+        move. An unconfigured rig reports no camera check and is left to
+        ``reset()``'s configuration error.
+        """
+        checks: list[HealthCheck] = []
+        if self._driver is not None:
+            try:
+                self._driver.get_joint_pos()
+            except Exception as exc:
+                checks.append(HealthCheck("motors", ok=False, detail=str(exc)))
+            else:
+                checks.append(HealthCheck("motors", ok=True))
+                limit = self._cfg.motor_temp_limit
+                if limit is not None:
+                    checks.append(self._thermal_check(limit))
+        if self._camera_reader is not _default_camera_reader and callable(self._camera_reader):
+            try:
+                self._camera_reader(self._cfg)
+            except Exception as exc:
+                checks.append(HealthCheck("cameras", ok=False, detail=str(exc)))
+            else:
+                checks.append(HealthCheck("cameras", ok=True))
+        return HealthReport(checks=tuple(checks))
+
+    def _thermal_check(self, limit: float) -> HealthCheck:
+        """The motor temperature check of :meth:`health`, against ``limit``."""
+        try:
+            overheat = self._confirmed_overheat(limit)
+        except Exception as exc:
+            return HealthCheck("motor temperatures", ok=False, detail=str(exc))
+        if overheat is None:
+            return HealthCheck("motor temperatures", ok=True)
+        slot, temp = overheat
+        label, motor_id, channel = self._motor_identity(slot)
+        return HealthCheck(
+            "motor temperatures",
+            ok=False,
+            detail=(
+                f"{label} (motor id {motor_id}, {channel}) at {temp:g} C >= limit "
+                f"{limit:g} C; let the rig cool or raise motor_temp_limit"
+            ),
+        )
+
+    def park(self) -> None:
+        """Move to the rest pose and hold it, so the scene can be reset by hand.
+
+        The framework calls this after every trial. The target is the
+        configured ``rest_pose``, or the pose captured by :meth:`reset` when
+        that is ``None``. Declines without moving when not connected or
+        before a pose is captured, and skips the ramp when every joint is
+        already within :attr:`PARK_TOLERANCE` of the target (for example after
+        :meth:`observe_parked`). Torque stays on; :meth:`close` releases it.
+        A latched motor fault raises ``EmbodimentFault`` before any command.
+        """
+        target = self._park_target()
+        if target is None:
+            return
+        driver = self._require_driver()
+        current = self._norm_grippers(packing.validate_dim(driver.get_joint_pos()))
+        if bool(np.all(np.abs(current - target) <= self.PARK_TOLERANCE)):
+            return
+        self._ramp_and_settle(target, "parking: ramping arms to rest")
+
+    def _park_target(self) -> Vec | None:
+        """The rest target, or ``None`` when there is no connection or captured pose."""
+        if self._driver is None or self._init_pose is None:
+            return None
+        if self._cfg.rest_pose is not None:
+            return np.asarray(self._cfg.rest_pose, dtype=np.float64)
+        return self._init_pose
+
+    def _ramp_and_settle(self, target: Vec, status: str) -> None:
+        """Ramp to ``target`` and settle, holding ``status`` open until done when attended."""
+        if not self._cfg.unattended:
+            self._status(status)
+        try:
+            sent = self._ramp_to(target)
+            self._settle(sent)
+        finally:
+            if not self._cfg.unattended:
+                self._status(None)
+
     def observe_parked(self) -> Observation | None:
         """Park and capture the final grader view for a scored trial.
 
@@ -2125,25 +2209,16 @@ class YAMEmbodiment:
         driver is not connected (never connected, or already closed), leaving
         no park target.
         """
-        if not self._cfg.park_before_grade or self._driver is None or self._init_pose is None:
+        if not self._cfg.park_before_grade:
             return None
-        target = (
-            np.asarray(self._cfg.rest_pose, dtype=np.float64)
-            if self._cfg.rest_pose is not None
-            else self._init_pose
-        )
+        target = self._park_target()
+        if target is None:
+            return None
         # close() keeps its own ramp: a later close parks from wherever the arms
         # are, and ramping twice to the same target is a no-op ramp. The status
         # line stays open through the settle, like reset()'s ramp, so an
         # attended operator is not left staring at silence for the settle wait.
-        if not self._cfg.unattended:
-            self._status("parking for grading: ramping arms clear")
-        try:
-            sent = self._ramp_to(target)
-            self._settle(sent)
-        finally:
-            if not self._cfg.unattended:
-                self._status(None)
+        self._ramp_and_settle(target, "parking for grading: ramping arms clear")
         observation = self._observe(None)
         # image_times/state_time are deliberately left at their defaults: the
         # source observation never sets them today, and a future _observe that

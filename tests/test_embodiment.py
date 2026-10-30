@@ -6,10 +6,11 @@ import itertools
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import Any, NoReturn, cast
 
 import numpy as np
 import pytest
+from inspect_robots.conformance import check_evaluation_interface, check_policy_interfaces
 from inspect_robots.embodiment import SELF_PACED
 from inspect_robots.errors import ConfigError, EmbodimentFault
 from inspect_robots.scene import Scene
@@ -2317,3 +2318,180 @@ def test_motor_temps_absent_without_a_limit() -> None:
 
     assert "motor_temps" not in first.extra
     assert "motor_temps" not in stepped.extra
+
+
+# -- the core evaluation interface: health() and park() ------------------------
+
+
+def _lifecycle_embodiment(
+    driver: FakeDriver | None = None,
+    *,
+    camera_reader: Any = _cameras,
+    status: list[str | None] | None = None,
+    **config: Any,
+) -> tuple[YAMEmbodiment, FakeDriver]:
+    driver = driver if driver is not None else EchoDriver()
+    fields: dict[str, Any] = {"cam_height": 4, "cam_width": 4, "rest_secs": 0.1}
+    fields.update(config)
+    embodiment = YAMEmbodiment(
+        YamConfig(**fields),
+        driver_factory=lambda _cfg: driver,
+        camera_reader=camera_reader,
+        operator=OperatorIO(input_fn=lambda _prompt: "", output_fn=lambda _message: None),
+        poll_end=lambda: False,
+        sleep_fn=lambda _seconds: None,
+        clock=lambda: 0.0,
+        status_fn=(status.append if status is not None else lambda _line: None),
+    )
+    return embodiment, driver
+
+
+# -- health ------------------------------------------------------------------
+
+
+def test_health_before_connecting_checks_only_the_cameras() -> None:
+    embodiment, driver = _lifecycle_embodiment()
+    report = embodiment.health()
+    assert report.ok
+    assert [check.name for check in report.checks] == ["cameras"]
+    assert driver.commands == []
+
+
+def test_health_after_connecting_checks_motors_temperatures_and_cameras() -> None:
+    embodiment, driver = _lifecycle_embodiment(motor_temp_limit=60.0)
+    embodiment.reset(Scene(id="s", instruction="x"))
+    driver.commands.clear()
+    report = embodiment.health()
+    assert report.ok
+    assert [check.name for check in report.checks] == ["motors", "motor temperatures", "cameras"]
+    assert driver.commands == []
+
+
+def test_health_without_a_temperature_limit_skips_the_thermal_check() -> None:
+    embodiment, _driver = _lifecycle_embodiment(motor_temp_limit=None)
+    embodiment.reset(Scene(id="s", instruction="x"))
+    assert [check.name for check in embodiment.health().checks] == ["motors", "cameras"]
+
+
+def test_health_reports_a_latched_motor_fault() -> None:
+    class _Latched(EchoDriver):
+        faulted = False
+
+        def get_joint_pos(self) -> np.ndarray:
+            if self.faulted:
+                raise EmbodimentFault("motor control loop stopped on can_left")
+            return super().get_joint_pos()
+
+    embodiment, driver = _lifecycle_embodiment(_Latched(), motor_temp_limit=60.0)
+    embodiment.reset(Scene(id="s", instruction="x"))
+    driver.faulted = True  # type: ignore[attr-defined]
+    report = embodiment.health()
+    assert report.summary() == "motors: motor control loop stopped on can_left"
+    assert [check.name for check in report.checks] == ["motors", "cameras"]
+
+
+def test_health_reports_a_confirmed_overheat() -> None:
+    embodiment, driver = _lifecycle_embodiment(motor_temp_limit=60.0)
+    embodiment.reset(Scene(id="s", instruction="x"))
+    driver.temps = np.full(14, 30.0)
+    driver.temps[3] = 72.0
+    report = embodiment.health()
+    assert not report.ok
+    (failure,) = report.failures
+    assert failure.name == "motor temperatures"
+    assert "at 72 C >= limit 60 C; let the rig cool" in failure.detail
+
+
+def test_health_reports_a_temperature_read_failure() -> None:
+    class _NoTemps(EchoDriver):
+        broken = False
+
+        def get_motor_temps(self) -> np.ndarray:
+            if self.broken:
+                raise RuntimeError("thermal read timed out")
+            return super().get_motor_temps()
+
+    embodiment, driver = _lifecycle_embodiment(_NoTemps(), motor_temp_limit=60.0)
+    embodiment.reset(Scene(id="s", instruction="x"))
+    driver.broken = True  # type: ignore[attr-defined]
+    assert embodiment.health().summary() == "motor temperatures: thermal read timed out"
+
+
+def test_health_reports_a_stalled_camera() -> None:
+    def _stalled(_cfg: YamConfig) -> Any:
+        raise RuntimeError("frame read failed for right_cam (http://hub/right)")
+
+    embodiment, _driver = _lifecycle_embodiment(camera_reader=_stalled)
+    report = embodiment.health()
+    assert report.summary() == "cameras: frame read failed for right_cam (http://hub/right)"
+
+
+def test_health_leaves_an_unconfigured_rig_to_reset() -> None:
+    embodiment = YAMEmbodiment(YamConfig(cam_height=4, cam_width=4))
+    assert embodiment.health().checks == ()
+
+
+# -- park --------------------------------------------------------------------
+
+
+def test_park_declines_before_connecting() -> None:
+    embodiment, driver = _lifecycle_embodiment()
+    embodiment.park()
+    assert driver.commands == []
+
+
+def test_park_ramps_to_the_rest_pose_and_holds_it() -> None:
+    status: list[str | None] = []
+    embodiment, driver = _lifecycle_embodiment(rest_pose=(0.5,) * 14, status=status)
+    embodiment.reset(Scene(id="s", instruction="x"))
+    embodiment.step(Action(data=np.full(14, 0.1)))
+    driver.commands.clear()
+    status.clear()
+
+    embodiment.park()
+
+    assert driver.commands[-1] == pytest.approx(np.full(14, 0.5))
+    assert not driver.closed
+    assert status == ["parking: ramping arms to rest", None]
+
+
+def test_park_skips_the_ramp_when_already_at_rest() -> None:
+    embodiment, driver = _lifecycle_embodiment(rest_pose=(0.5,) * 14)
+    embodiment.reset(Scene(id="s", instruction="x"))
+    embodiment.park()
+    driver.commands.clear()
+    driver.state = driver.state + 0.01  # within PARK_TOLERANCE
+
+    embodiment.park()
+
+    assert driver.commands == []
+
+
+def test_park_uses_the_captured_pose_and_is_silent_unattended() -> None:
+    status: list[str | None] = []
+    start = np.full(14, 0.2)
+    embodiment, driver = _lifecycle_embodiment(
+        EchoDriver(state=start.copy()), rest_pose=None, unattended=True, status=status
+    )
+    embodiment.reset(Scene(id="s", instruction="x"))
+    embodiment.step(Action(data=np.full(14, 0.8)))
+
+    embodiment.park()
+
+    assert driver.commands[-1] == pytest.approx(start)
+    assert status == []
+
+
+# -- conformance -------------------------------------------------------------
+
+
+def test_yam_offers_a_conformant_evaluation_interface() -> None:
+    embodiment, _driver = _lifecycle_embodiment()
+    assert check_evaluation_interface(embodiment).issues == ()
+    assert embodiment.info.morphology == "yam-bimanual"
+
+
+def test_joint_and_eef_control_are_distinct_policy_interfaces() -> None:
+    joint, _ = _lifecycle_embodiment(control_interface="joints")
+    eef, _ = _lifecycle_embodiment(control_interface="eef_pos")
+    assert check_policy_interfaces([joint.info, eef.info]).ok
