@@ -528,7 +528,7 @@ def test_build_guardrails_order_and_clamped_default_home(joint_space: Box) -> No
     high[DIM_LABELS.index("right_gripper")] = 0.5
     config = YamConfig(joint_high=tuple(high), home_pose=None)
     chain = build_yam_guardrails(joint_space, config)
-    clamp, delta, collision_approver = chain._approvers
+    clamp, delta, collision_approver = chain.guards
     assert isinstance(chain, GuardChain)
     assert isinstance(clamp, ClampGuard)
     assert isinstance(delta, DeltaLimitGuard)
@@ -547,7 +547,7 @@ def test_build_guardrails_uses_custom_home_and_integrates_chain(joint_space: Box
         collision_config,
         on_violation="hold",
     )
-    collision_approver = chain._approvers[-1]
+    collision_approver = chain.guards[-1]
     assert collision_approver._start_pose == pytest.approx(home)
     assert collision_approver._checker.config is collision_config
     action = Action(_pose(left_j0=0.02))
@@ -879,7 +879,7 @@ def test_build_and_contribution_collision_guards_are_equivalent(joint_space: Box
         collision_table=False,
     )
 
-    built = build_yam_guardrails(joint_space, config)._approvers[-1]
+    built = build_yam_guardrails(joint_space, config).guards[-1]
     _, contributed = YAMEmbodiment(config).contribute_guards(joint_space).guards[0]
 
     assert isinstance(built, CollisionGuard)
