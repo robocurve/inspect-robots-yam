@@ -414,13 +414,13 @@ def test_eef_action_requires_exactly_fourteen_dimensions() -> None:
 def test_pinned_pitch_and_roll_are_clamped_to_zero_by_the_declared_box() -> None:
     # Behavior-identity guard for the default bounds: a policy commanding the
     # new orientation slots is clamped back to the historical yaw-only family
-    # by the framework's clamp approver working off the declared box.
-    from inspect_robots.approver import ClampApprover
+    # by the framework's clamp guard working off the declared box.
+    from inspect_robots.guard import ClampGuard
 
     emb, _, _, _ = _build()
-    approver = ClampApprover(emb.info.action_space)
+    guard = ClampGuard(emb.info.action_space)
     raw = Action(data=np.asarray((0.3, 0.0, 0.2, 0.1, 0.5, -0.4, 1.0) * 2))
-    approved = approver.review(raw, {})
+    approved = guard.review(raw, {})
     for index in (4, 5, 11, 12):
         assert approved.data[index] == pytest.approx(0.0)
     assert approved.data[3] == pytest.approx(0.1)  # yaw stays commandable

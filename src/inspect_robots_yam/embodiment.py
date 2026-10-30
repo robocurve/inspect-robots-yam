@@ -3,7 +3,7 @@
 Wraps the i2rt joint-position driver. Designed for real-robot reality:
 
 * **Safety backstop** — every command is clamped to the configured joint limits
-  inside :meth:`step`, *independently* of any Inspect Robots ``Approver`` (so unclamped
+  inside :meth:`step`, *independently* of any Inspect Robots ``Guard`` (so unclamped
   model outputs can never reach the motors).
 * **Operator-in-the-loop success** — there is no privileged success oracle; the
   operator's end-of-episode keypress returns
@@ -33,10 +33,10 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
-from inspect_robots.approver import GuardrailContribution
 from inspect_robots.conformance import DeviceSlot, NumberSlot, OptionSlot
 from inspect_robots.embodiment import SELF_PACED, EmbodimentInfo
 from inspect_robots.errors import ConfigError, EmbodimentFault
+from inspect_robots.guard import GuardContribution
 from inspect_robots.scene import Scene
 from inspect_robots.spaces import Box
 from inspect_robots.types import OPERATOR_END, Action, Observation, StepResult
@@ -1699,7 +1699,7 @@ class YAMEmbodiment:
             docs=docs,
         )
 
-    def contribute_guardrails(self, action_space: Box) -> GuardrailContribution:
+    def contribute_guards(self, action_space: Box) -> GuardContribution:
         """Contribute collision holds when absolute joint checking is available."""
         eef_warnings: tuple[str, ...] = ()
         if self._cfg.control_interface == "eef_pos":
@@ -1733,7 +1733,7 @@ class YAMEmbodiment:
             # Every other skip path warns; the wizard now suggests off for
             # unmeasured rigs (#109), so the opt-out must be visible in run
             # logs rather than indistinguishable from a missing guardrail.
-            return GuardrailContribution(
+            return GuardContribution(
                 warnings=(
                     "collision guardrail disabled by config; set collision_guardrail=true "
                     "after measuring collision_*_base_pos",
@@ -1741,24 +1741,24 @@ class YAMEmbodiment:
                 )
             )
         if self._cfg.control_interface != "joints" or self._cfg.joints_are_delta:
-            return GuardrailContribution(
+            return GuardContribution(
                 warnings=(
                     "collision guardrail skipped: absolute joints mode only (plan 0011 v1)",
                     *eef_warnings,
                 )
             )
 
-        from inspect_robots_yam.collision import _INSTALL_COMMAND, _collision_approver
+        from inspect_robots_yam.collision import _INSTALL_COMMAND, _collision_guard
 
         if importlib.util.find_spec("mujoco") is None:
-            return GuardrailContribution(
+            return GuardContribution(
                 warnings=(
                     "collision guardrail skipped: MuJoCo is unavailable; "
                     f"install it with: {_INSTALL_COMMAND}",
                 )
             )
 
-        approver = _collision_approver(self._cfg, action_space)
+        guard = _collision_guard(self._cfg, action_space)
         warnings: tuple[str, ...] = ()
         if self._cfg.collision_left_base_pos is None or self._cfg.collision_right_base_pos is None:
             defaulted = (
@@ -1779,8 +1779,8 @@ class YAMEmbodiment:
                 "collision guardrail uses library-default geometry fields: "
                 + ", ".join(name for name, is_default in defaulted if is_default),
             )
-        return GuardrailContribution(
-            approvers=(("yam-collision", approver),),
+        return GuardContribution(
+            guards=(("yam-collision", guard),),
             warnings=warnings,
         )
 

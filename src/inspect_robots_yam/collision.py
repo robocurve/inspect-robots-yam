@@ -22,8 +22,8 @@ from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
-from inspect_robots.approver import ChainApprover, ClampApprover, DeltaLimitApprover
 from inspect_robots.errors import SafetyAbort
+from inspect_robots.guard import ClampGuard, DeltaLimitGuard, GuardChain
 from inspect_robots.spaces import Box
 from inspect_robots.types import Action
 
@@ -251,7 +251,7 @@ def _validate_action_space(action_space: Box) -> None:
         )
 
 
-class CollisionApprover:
+class CollisionGuard:
     """Sweep absolute targets and hold the last safe pose or abort on a hit."""
 
     def __init__(
@@ -268,11 +268,11 @@ class CollisionApprover:
         self._checker = checker
         self._start_pose = validate_dim(start_pose, TOTAL_DIM).copy()
         if not bool(np.all(np.isfinite(self._start_pose))):
-            raise ValueError("CollisionApprover start_pose must contain only finite values")
+            raise ValueError("CollisionGuard start_pose must contain only finite values")
         start_report = checker.check(self._start_pose)
         if start_report.collided:
             raise ValueError(
-                "CollisionApprover start_pose is already in collision under the configured "
+                "CollisionGuard start_pose is already in collision under the configured "
                 f"rig model: {self._report_pair(start_report)}. Set collision_guardrail=false "
                 "to opt out, or correct the collision_* geometry fields."
             )
@@ -282,7 +282,7 @@ class CollisionApprover:
         """Approve a safe sweep while preserving identity, or reject it visibly."""
         target = validate_dim(action.data, TOTAL_DIM)
         if not bool(np.all(np.isfinite(target))):
-            raise SafetyAbort("CollisionApprover: action contains a non-finite value")
+            raise SafetyAbort("CollisionGuard: action contains a non-finite value")
         last = np.asarray(store.get(_LAST_SAFE_KEY, self._start_pose), dtype=np.float64)
         substeps = self._substep_count(last, target)
         for step in range(1, substeps + 1):
@@ -291,7 +291,7 @@ class CollisionApprover:
             if report.collided:
                 detail = f"{self._report_pair(report)}@{step}/{substeps}"
                 if self._on_violation == "abort":
-                    raise SafetyAbort(f"CollisionApprover blocked predicted collision: {detail}")
+                    raise SafetyAbort(f"CollisionGuard blocked predicted collision: {detail}")
                 meta = dict(action.meta)
                 meta.pop("clamped", None)
                 meta.pop("delta_clamped", None)
@@ -301,7 +301,7 @@ class CollisionApprover:
                         "collision_detail": detail,
                     }
                 )
-                DeltaLimitApprover.rewind_reference(store, last)
+                DeltaLimitGuard.rewind_reference(store, last)
                 return replace(action, data=last.copy(), meta=meta)
         store[_LAST_SAFE_KEY] = target.copy()
         return action
@@ -335,13 +335,13 @@ def _config_from_yam(yam_config: YamConfig) -> CollisionConfig:
     return replace(_DEFAULT_COLLISION_CONFIG, **set_fields)
 
 
-def _collision_approver(
+def _collision_guard(
     yam_config: YamConfig,
     action_space: Box,
     *,
     collision_config: CollisionConfig | None = None,
     on_violation: ViolationMode = "hold",
-) -> CollisionApprover:
+) -> CollisionGuard:
     configured_home = (
         DEFAULT_JOINT_HOME_POSE if yam_config.home_pose is None else yam_config.home_pose
     )
@@ -353,7 +353,7 @@ def _collision_approver(
     checker = CollisionChecker(
         _config_from_yam(yam_config) if collision_config is None else collision_config
     )
-    return CollisionApprover(
+    return CollisionGuard(
         checker,
         start_pose,
         action_space=action_space,
@@ -367,7 +367,7 @@ def build_yam_guardrails(
     collision_config: CollisionConfig | None = None,
     *,
     on_violation: ViolationMode = "hold",
-) -> ChainApprover:
+) -> GuardChain:
     """Build clamp, delta-limit, and collision gates in execution order."""
     _validate_action_space(action_space)
     if yam_config.control_interface != "joints":
@@ -376,10 +376,10 @@ def build_yam_guardrails(
         raise ValueError(
             "Plan 0011 collision guardrails do not support YamConfig(joints_are_delta=True)"
         )
-    return ChainApprover(
-        ClampApprover(action_space),
-        DeltaLimitApprover(action_space),
-        _collision_approver(
+    return GuardChain(
+        ClampGuard(action_space),
+        DeltaLimitGuard(action_space),
+        _collision_guard(
             yam_config,
             action_space,
             collision_config=collision_config,

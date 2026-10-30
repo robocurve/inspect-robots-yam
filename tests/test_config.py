@@ -401,7 +401,7 @@ def test_eef_pitch_and_roll_default_to_pinned_zero_bounds() -> None:
 
 
 def test_eef_orientation_widened_ranges_match_the_run_warning_text() -> None:
-    # The contribute_guardrails widening notice promises "+/-0.6 / +/-pi/2"
+    # The contribute_guards widening notice promises "+/-0.6 / +/-pi/2"
     # as a frozen string; pin the constants so the text cannot silently
     # desync from the behavior.
     assert _EEF_ORIENTATION_PITCH == (-0.6, 0.6)

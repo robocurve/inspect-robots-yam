@@ -456,7 +456,7 @@ a custom `camera_reader` returning
 
 ```python
 from inspect_robots import eval
-from inspect_robots.approver import ClampApprover
+from inspect_robots.guard import ClampGuard
 from inspect_robots_yam import MolmoAct2Policy, YAMEmbodiment, YamConfig
 
 emb = YAMEmbodiment(YamConfig(left_channel="can0", right_channel="can1"),
@@ -464,7 +464,7 @@ emb = YAMEmbodiment(YamConfig(left_channel="can0", right_channel="can1"),
 pol = MolmoAct2Policy(server_url="http://127.0.0.1:8202")
 
 (log,) = eval("kitchenbench/pour_pasta", pol, emb,
-              approver=ClampApprover(emb.info.action_space))  # defense in depth
+              guard=ClampGuard(emb.info.action_space))  # defense in depth
 print(log.status, log.results.metrics)
 ```
 
@@ -492,7 +492,7 @@ With the [inspect-robots-agent](https://github.com/robocurve/inspect-robots/tree
 plugin installed, a frontier LLM can drive the arms directly: it sees the
 cameras and the labeled 14-D state, and moves joints by name
 (`left_j0`..`left_gripper`, `right_j0`..`right_gripper`) through smooth,
-approver-checked motions.
+guard-checked motions.
 
 Put a `.env` with your API key in the working directory, reusing one you already have or copying the [.env.example](.env.example) template (the CLI loads it automatically; real environment variables take precedence over its values):
 
@@ -733,7 +733,7 @@ under the effective geometry. Correct the `collision_*` geometry fields or set
 `collision_guardrail=false` after verifying that an opt-out is appropriate.
 
 The guardrail supports only 14-D absolute `joint_pos` actions. It refuses EEF
-and `joint_delta` spaces because an approver sees Cartesian targets or deltas
+and `joint_delta` spaces because a guard sees Cartesian targets or deltas
 before the embodiment converts them. Those modes continue with a skip warning.
 
 The checker models commanded poses, not measured arm motion. Physical motion can
@@ -749,12 +749,12 @@ motions, or replace the operator and physical e-stop.
 ## Safety
 
 - **Hard clamp backstop.** Every command is clipped to `YamConfig.joint_low/high`
-  *inside* `step()`, independent of any Inspect Robots `Approver`: unclamped model
+  *inside* `step()`, independent of any Inspect Robots `Guard`: unclamped model
   outputs can never reach the motors. **Set the arm slots to your real YAM joint
   limits** (the defaults are conservative placeholders: joints ±π, gripper 0–1).
   But note the limits are in *policy units* per the table below: gripper slots 6
   and 13 stay normalized 0–1, only slots 0–5 and 7–12 are radians.
-- **Use `ClampApprover`** on hardware for a second layer.
+- **Use `ClampGuard`** on hardware for a second layer.
 - **Zero-gravity handoff jump.** The arms connect in zero-gravity mode by default
   (`YamConfig(zero_gravity_mode=True)`, passed through to the i2rt driver).
   Homing and rest-pose motions ramp at `control_hz`, but the first *policy*
