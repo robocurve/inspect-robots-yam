@@ -17,7 +17,7 @@ import os
 import socket
 import time
 from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 from inspect_robots._dotenv import init_dotenv
@@ -389,7 +389,7 @@ def _store_command(args: argparse.Namespace, cfg: YamConfig, io: OperatorIO) -> 
 
 def _default_now() -> datetime:  # pragma: no cover - real wall clock
     """Return the current UTC timestamp for real CLI capture provenance."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def main(

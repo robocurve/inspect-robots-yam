@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -59,7 +59,7 @@ def _main_args(tmp_path: Path, *command: str) -> list[str]:
 
 
 def _now() -> datetime:
-    return datetime(2026, 8, 19, 12, 30, tzinfo=timezone.utc)
+    return datetime(2026, 8, 19, 12, 30, tzinfo=UTC)
 
 
 def _save(tmp_path: Path, name: str = "ready", joints: tuple[float, ...] | None = None) -> None:

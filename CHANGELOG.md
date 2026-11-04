@@ -118,7 +118,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `CollisionGuard`, the embodiment implements `contribute_guards()` and returns a
   `GuardContribution` (field `guards`), and the README and examples import
   `ClampGuard`, `DeltaLimitGuard` and `GuardChain` from `inspect_robots.guard`.
-  Requires the inspect-robots release that renames them.
+  Requires inspect-robots 0.62, the release that renames them.
+
+- **Breaking:** requires `inspect-robots>=0.62` and Python 3.11 or newer,
+  matching the core release, which drops Python 3.10. Ruff and mypy target
+  3.11.
 
 - `uv.lock` now pins certifi 2026.10.23, which drops the emSign root CAs with
   compromised intermediate keys (GHSA-6q48-6c7w-9gw2). The same refresh moves

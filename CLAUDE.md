@@ -49,7 +49,7 @@ because absolute joint conformance permits only one 14-D state field.
   `mypy` (strict), `pytest --cov` at **100%**.
   Every public module, class, and function needs a docstring, enforced by Ruff
   D1; state the contract instead of restating the symbol name.
-- **mypy + numpy:** numpy 2.5's stubs use 3.12-only syntax that mypy (py3.10
+- **mypy + numpy:** numpy 2.5's stubs use 3.12-only syntax that mypy (py3.11
   target) rejects; the dev extra pins `numpy<2.5` and CI runs mypy on 3.11.
 - **No torch.** Models live in external `/act` servers. The base dependencies
   include `requests`, `json_numpy`, and OpenCV, but those modules remain lazily
