@@ -640,3 +640,27 @@ def test_a_stalled_stream_does_not_print_its_credentials() -> None:
     with pytest.raises(RuntimeError, match="stopped reading") as faulted:
         reader._latest(cv2, "top_cam", YamConfig())
     assert "secret" not in str(faulted.value) and "<redacted>@10.0.0.5" in str(faulted.value)
+
+
+def test_a_leaked_stream_is_logged_without_its_credentials(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    url = "rtsp://user:secret@10.0.0.5:554/cam"
+    devices = {**DEVICES, "top_cam": url}
+    block = threading.Event()
+    caps = {device: FakeCapture() for device in devices.values()}
+    caps[url] = FakeCapture(block=block)
+    reader = _OpenCVCameraReader(
+        devices, cv2_module=FakeCv2(caps), sleep_fn=lambda _s: None, clock=Clock()
+    )
+    _OPENED.append(reader)
+    reader(YamConfig())
+    _OpenCVCameraReader.JOIN_TIMEOUT_S = 0.05
+    try:
+        with caplog.at_level("WARNING"):
+            reader.close()
+    finally:
+        _OpenCVCameraReader.JOIN_TIMEOUT_S = 2.0
+        block.set()
+    assert "is still reading" in caplog.text
+    assert "secret" not in caplog.text and "<redacted>@10.0.0.5" in caplog.text

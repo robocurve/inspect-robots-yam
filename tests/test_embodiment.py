@@ -2397,6 +2397,8 @@ def test_health_raises_a_latched_motor_fault() -> None:
         ("rtsp://user:secret@10.0.0.5:554/cam", "rtsp://<redacted>@10.0.0.5:554/cam"),
         ("rtsp://10.0.0.5:554/cam", "rtsp://10.0.0.5:554/cam"),
         ("/dev/video0", "/dev/video0"),
+        ("rtsp://u:p@[::1", "<unparseable URL>"),
+        ("rtsp://[::1", "rtsp://[::1"),
     ],
 )
 def test_stream_credentials_are_redacted_from_messages(device: str, shown: str) -> None:

@@ -575,7 +575,7 @@ class _OpenCVCameraReader:
                     "camera %s (%s) is still reading; leaving the device open rather "
                     "than releasing it underneath the read",
                     name,
-                    self._devices[name],
+                    _redact_userinfo(self._devices[name]),
                 )
                 continue
             cap.release()

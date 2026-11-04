@@ -893,7 +893,10 @@ def _redact_userinfo(device: str) -> str:
     """``device`` with any ``user:password@`` in a URL replaced, for messages and logs."""
     from urllib.parse import urlsplit, urlunsplit
 
-    parts = urlsplit(device)
+    try:
+        parts = urlsplit(device)
+    except ValueError:  # malformed (e.g. an unclosed IPv6 bracket): hide what may be secret
+        return "<unparseable URL>" if "@" in device else device
     if not parts.scheme or "@" not in parts.netloc:
         return device
     host = parts.netloc.rsplit("@", 1)[1]
