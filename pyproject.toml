@@ -20,9 +20,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # 0.62 is the paper-architecture release: Guard/GuardContribution, the evaluation
+    # 0.61 is the paper-architecture release: Guard/GuardContribution, the evaluation
     # interface (health, park) and log schema 3. It also drops Python 3.10.
-    "inspect-robots>=0.62",
+    "inspect-robots>=0.61",
     "numpy>=1.24",
     "requests>=2.31",
     "json-numpy>=2.1",
