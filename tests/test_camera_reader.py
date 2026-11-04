@@ -601,3 +601,42 @@ def test_a_later_camera_failing_the_size_check_releases_the_earlier_ones() -> No
     assert caps["/dev/cam0"].released
     assert caps["/dev/cam1"].released
     assert reader._caps == {}
+
+
+def test_read_failures_redact_stream_credentials() -> None:
+    from inspect_robots_yam.config import YamConfig
+
+    with pytest.raises(ValueError) as raised:
+        YamConfig(
+            top_cam_device="rtsp://user:secret@10.0.0.5/cam",
+            left_cam_device="rtsp://user:secret@10.0.0.5/cam",
+            right_cam_device="rtsp://user:secret@10.0.0.5/right",
+        )
+    assert "secret" not in str(raised.value)
+    assert "<redacted>@10.0.0.5" in str(raised.value)
+
+
+def test_a_stalled_stream_does_not_print_its_credentials() -> None:
+    url = "rtsp://user:secret@10.0.0.5:554/cam"
+    devices = {**DEVICES, "top_cam": url}
+
+    def reader_for(clock: Clock) -> tuple[_OpenCVCameraReader, FakeCv2]:
+        cv2 = FakeCv2({device: FakeCapture() for device in devices.values()})
+        reader = _OpenCVCameraReader(devices, cv2_module=cv2, sleep_fn=lambda _s: None, clock=clock)
+        _OPENED.append(reader)
+        return reader, cv2
+
+    clock = Clock()
+    reader, cv2 = reader_for(clock)
+    drive(reader, "top_cam", FakeCapture([(True, frame(1))], idle_from=None), iterations=1)
+    clock.advance(_OpenCVCameraReader.MAX_FRAME_AGE_S + 0.01)
+    with pytest.raises(RuntimeError, match="frame read failed") as stalled:
+        reader._latest(cv2, "top_cam", YamConfig())
+    assert "secret" not in str(stalled.value) and "<redacted>@10.0.0.5" in str(stalled.value)
+
+    reader, cv2 = reader_for(Clock())
+    faulting = FakeCapture([(True, frame(1))], raise_at=2, idle_from=None)
+    drive(reader, "top_cam", faulting, iterations=3)
+    with pytest.raises(RuntimeError, match="stopped reading") as faulted:
+        reader._latest(cv2, "top_cam", YamConfig())
+    assert "secret" not in str(faulted.value) and "<redacted>@10.0.0.5" in str(faulted.value)

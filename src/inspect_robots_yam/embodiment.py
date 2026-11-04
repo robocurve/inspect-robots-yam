@@ -64,6 +64,7 @@ from inspect_robots_yam.config import (
     DEFAULT_JOINT_HOME_POSE,
     EEF_DIM_LABELS,
     YamConfig,
+    _redact_userinfo,
     action_box,
     observation_space,
 )
@@ -484,19 +485,6 @@ def _is_stream_source(device: str) -> bool:
     return device.startswith(STREAM_SCHEMES)
 
 
-def _redact_userinfo(device: str) -> str:
-    """``device`` with any ``user:password@`` in a stream URL replaced, for messages."""
-    if not _is_stream_source(device):
-        return device
-    from urllib.parse import urlsplit, urlunsplit
-
-    parts = urlsplit(device)
-    if "@" not in parts.netloc:
-        return device
-    host = parts.netloc.rsplit("@", 1)[1]
-    return urlunsplit(parts._replace(netloc=f"<redacted>@{host}"))
-
-
 class _OpenCVCameraReader:
     """Builtin reader for rigs configured via ``*_cam_device`` (YamConfig).
 
@@ -782,13 +770,15 @@ class _OpenCVCameraReader:
                 fault = self._faults.get(name)
                 published = self._published.get(name)
             if fault is not None:
-                raise RuntimeError(f"camera {name} ({device}) stopped reading") from fault
+                raise RuntimeError(
+                    f"camera {name} ({_redact_userinfo(device)}) stopped reading"
+                ) from fault
             if published is not None and self._clock() - published.published_s <= (
                 self.MAX_FRAME_AGE_S
             ):
                 return self._convert(cv2, published.data, cfg)
             self._sleep(0.05)
-        raise RuntimeError(f"frame read failed for {name} ({device})")
+        raise RuntimeError(f"frame read failed for {name} ({_redact_userinfo(device)})")
 
     def _convert(self, cv2: Any, frame: Any, cfg: YamConfig) -> npt.NDArray[np.uint8]:
         """Turn one captured frame into the RGB uint8 array the contract declares."""

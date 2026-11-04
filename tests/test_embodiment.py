@@ -2400,7 +2400,7 @@ def test_health_raises_a_latched_motor_fault() -> None:
     ],
 )
 def test_stream_credentials_are_redacted_from_messages(device: str, shown: str) -> None:
-    from inspect_robots_yam.embodiment import _redact_userinfo
+    from inspect_robots_yam.config import _redact_userinfo
 
     assert _redact_userinfo(device) == shown
 

@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Evaluation interface:** the embodiment offers core's `health()` and `park()`
+  and names its platform (`morphology="yam-bimanual"`). `health()` checks motors,
+  motor temperatures and cameras before each trial without moving; a latched
+  motor fault is raised as `EmbodimentFault`, so a task set stops. `park()`
+  moves to `rest_pose` (or the pose captured at reset) after each trial and
+  holds it, so the scene can be reset by hand.
+
 - With `motor_temp_limit` set, every observation carries
   `extra["motor_temps"]`: per arm the hottest motor and its temperature
   against the limit, plus `lines` written for the policy (a warning line

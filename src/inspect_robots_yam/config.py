@@ -582,7 +582,8 @@ class YamConfig(_FromKwargs):
             previous = cam_device_fields.get(device)
             if previous is not None:
                 raise ValueError(
-                    f"{previous} and {field} must be different; duplicate camera device {device!r}"
+                    f"{previous} and {field} must be different; duplicate camera device "
+                    f"{_redact_userinfo(device)!r}"
                 )
             cam_device_fields[device] = field
         depth_serial_fields: dict[str, str] = {}
@@ -886,3 +887,14 @@ def observation_space(
         state_keys=state.keys,
         state=state,
     )
+
+
+def _redact_userinfo(device: str) -> str:
+    """``device`` with any ``user:password@`` in a URL replaced, for messages and logs."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(device)
+    if not parts.scheme or "@" not in parts.netloc:
+        return device
+    host = parts.netloc.rsplit("@", 1)[1]
+    return urlunsplit(parts._replace(netloc=f"<redacted>@{host}"))
