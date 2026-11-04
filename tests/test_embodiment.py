@@ -2373,7 +2373,7 @@ def test_health_without_a_temperature_limit_skips_the_thermal_check() -> None:
     assert [check.name for check in embodiment.health().checks] == ["motors", "cameras"]
 
 
-def test_health_reports_a_latched_motor_fault() -> None:
+def test_health_raises_a_latched_motor_fault() -> None:
     class _Latched(EchoDriver):
         faulted = False
 
@@ -2385,9 +2385,24 @@ def test_health_reports_a_latched_motor_fault() -> None:
     embodiment, driver = _lifecycle_embodiment(_Latched(), motor_temp_limit=60.0)
     embodiment.reset(Scene(id="s", instruction="x"))
     driver.faulted = True  # type: ignore[attr-defined]
-    report = embodiment.health()
-    assert report.summary() == "motors: motor control loop stopped on can_left"
-    assert [check.name for check in report.checks] == ["motors", "cameras"]
+    # Raised, not reported: core re-raises it after writing the log, so a
+    # task set stops instead of starting its next task on a faulted rig.
+    with pytest.raises(EmbodimentFault, match="motors: motor control loop stopped on can_left"):
+        embodiment.health()
+
+
+@pytest.mark.parametrize(
+    ("device", "shown"),
+    [
+        ("rtsp://user:secret@10.0.0.5:554/cam", "rtsp://<redacted>@10.0.0.5:554/cam"),
+        ("rtsp://10.0.0.5:554/cam", "rtsp://10.0.0.5:554/cam"),
+        ("/dev/video0", "/dev/video0"),
+    ],
+)
+def test_stream_credentials_are_redacted_from_messages(device: str, shown: str) -> None:
+    from inspect_robots_yam.embodiment import _redact_userinfo
+
+    assert _redact_userinfo(device) == shown
 
 
 def test_health_reports_a_confirmed_overheat() -> None:

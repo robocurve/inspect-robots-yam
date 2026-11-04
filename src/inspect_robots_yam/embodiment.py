@@ -484,6 +484,19 @@ def _is_stream_source(device: str) -> bool:
     return device.startswith(STREAM_SCHEMES)
 
 
+def _redact_userinfo(device: str) -> str:
+    """``device`` with any ``user:password@`` in a stream URL replaced, for messages."""
+    if not _is_stream_source(device):
+        return device
+    from urllib.parse import urlsplit, urlunsplit
+
+    parts = urlsplit(device)
+    if "@" not in parts.netloc:
+        return device
+    host = parts.netloc.rsplit("@", 1)[1]
+    return urlunsplit(parts._replace(netloc=f"<redacted>@{host}"))
+
+
 class _OpenCVCameraReader:
     """Builtin reader for rigs configured via ``*_cam_device`` (YamConfig).
 
@@ -650,7 +663,7 @@ class _OpenCVCameraReader:
                 ],
             )
             if not cap.isOpened():
-                raise RuntimeError(f"cannot open {name} at {device}")
+                raise RuntimeError(f"cannot open {name} at {_redact_userinfo(device)}")
         else:
             cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
             if not cap.isOpened():
@@ -706,8 +719,8 @@ class _OpenCVCameraReader:
         slot = name[: -len("_cam")] if name.endswith("_cam") else name
         if _is_stream_source(device):
             raise RuntimeError(
-                f"{name} ({device}) delivered {delivered[0]}x{delivered[1]} instead of "
-                f"the requested {requested[0]}x{requested[1]}. fix: serve the stream at "
+                f"{name} ({_redact_userinfo(device)}) delivered {delivered[0]}x{delivered[1]} "
+                f"instead of the requested {requested[0]}x{requested[1]}. fix: serve the stream at "
                 f"that size, or set {slot}_capture_width/{slot}_capture_height (or "
                 f"capture_width/capture_height) to the size the hub serves"
             )
@@ -2114,8 +2127,9 @@ class YAMEmbodiment:
 
         The framework calls this before every trial. Motors and temperatures
         are checked only once connected (the first ``reset()`` connects): the
-        motor check reads joint positions, which raises the driver's latched
-        fault if a motor control loop has stopped, and the temperature check
+        motor check reads joint positions; a driver's latched fault (a motor
+        control loop has stopped) is raised as ``EmbodimentFault``, which halts
+        the run rather than failing one check, and the temperature check
         applies ``motor_temp_limit`` the way ``reset()`` does. Cameras are read
         once when configured, so a stalled stream is caught before the arms
         move. An unconfigured rig reports no camera check and is left to
@@ -2126,7 +2140,9 @@ class YAMEmbodiment:
             try:
                 self._driver.get_joint_pos()
             except Exception as exc:
-                checks.append(HealthCheck("motors", ok=False, detail=str(exc)))
+                # A latched motor fault is a hardware fault, not a failed check:
+                # raised, it halts eval_set() instead of moving on to the next task.
+                raise EmbodimentFault(f"motors: {exc}") from exc
             else:
                 checks.append(HealthCheck("motors", ok=True))
                 limit = self._cfg.motor_temp_limit
