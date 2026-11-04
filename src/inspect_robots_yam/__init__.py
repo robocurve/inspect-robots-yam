@@ -6,8 +6,8 @@ Registers three Inspect Robots components via entry points:
 * policy ``molmoact2`` — :class:`~inspect_robots_yam.policy.MolmoAct2Policy`
 * policy ``gr00t`` — :func:`~inspect_robots_yam.policy.gr00t_policy`
 
-so ``inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2
---embodiment yam_arms`` works once both packages are installed. Use
+so ``inspect-robots run --task <task> --policy molmoact2
+--embodiment yam_arms`` works once this package is installed. Use
 :func:`~inspect_robots_yam.preflight.run_preflight` (or the ``inspect-robots-yam-preflight``
 CLI) to verify compatibility before any motion.
 """

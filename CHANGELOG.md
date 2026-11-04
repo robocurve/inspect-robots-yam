@@ -114,6 +114,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- KitchenBench is retired, so it is no longer a dev dependency. The tests that
+  ran its tasks now use an equivalent task defined in the tests, and the README
+  examples use `<your-task>`.
+
 - **Breaking:** follows inspect-robots' paper vocabulary. `CollisionApprover` is
   `CollisionGuard`, the embodiment implements `contribute_guards()` and returns a
   `GuardContribution` (field `guards`), and the README and examples import

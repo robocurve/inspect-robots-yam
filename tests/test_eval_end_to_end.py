@@ -1,22 +1,31 @@
-"""End-to-end: full eval() rollouts of a KitchenBench task on mocked YAM +
+"""End-to-end: full eval() rollouts of a stacking task on mocked YAM +
 MolmoAct2 — proving the judgement-based wiring (before_scoring ->
-operator_judgement -> task_success fallback) and chunk replay compose (the
+operator_judgement -> a judgement-reading scorer) and chunk replay compose (the
 static compat test cannot show this), and that a trial ending at the task
 horizon still parks the arms at the captured init pose on close."""
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import numpy as np
 import pytest
+from inspect_robots import Scene, Task
 from inspect_robots import eval as rl_eval
-from kitchenbench.tasks import stack
+from inspect_robots.scorer import operator_scorer
 
 from inspect_robots_yam.config import MolmoActConfig, YamConfig
 from inspect_robots_yam.embodiment import YAMEmbodiment
 from inspect_robots_yam.operator import OperatorIO
 from inspect_robots_yam.policy import MolmoAct2Policy
+
+
+def stack() -> Task:
+    """A one-scene stacking task judged by the operator, with an 80-step horizon."""
+    return Task(
+        name="stack",
+        scenes=[Scene(id="stack-0", instruction="Stack the bowls on the table.", init_seed=0)],
+        scorer=operator_scorer(name="task_success"),
+        max_steps=80,
+    )
 
 
 class _FakeDriver:
@@ -81,7 +90,7 @@ def test_timer_runout_parks_at_init_pose_on_close() -> None:
         clock=lambda: 0.0,
     )
 
-    logs = rl_eval("kitchenbench/stack", policy, embodiment, sinks=[], seed=0)
+    logs = rl_eval(stack(), policy, embodiment, sinks=[], seed=0)
 
     assert logs[0].status == "success"
     assert embodiment.num_steps == 80  # the task horizon ended the trial, not the operator
@@ -103,9 +112,7 @@ def test_eval_scores_success_end_to_end() -> None:
         clock=lambda: 0.0,
     )
 
-    logs = rl_eval(
-        "kitchenbench/stack", policy, embodiment, sinks=[], seed=0, before_scoring=_grade_yes
-    )
+    logs = rl_eval(stack(), policy, embodiment, sinks=[], seed=0, before_scoring=_grade_yes)
 
     assert len(logs) == 1
     log = logs[0]
@@ -166,7 +173,7 @@ def test_overheat_termination_parks_before_grading_end_to_end() -> None:
     )
 
     logs = rl_eval(
-        replace(stack(), scenes=stack().scenes[:1], epochs=1),
+        stack(),
         policy,
         embodiment,
         sinks=[],
@@ -218,7 +225,7 @@ def test_ungraded_unattended_overheat_parks_to_rest_end_to_end() -> None:
     )
 
     logs = rl_eval(
-        replace(stack(), scenes=stack().scenes[:1], epochs=1),
+        stack(),
         policy,
         embodiment,
         sinks=[],

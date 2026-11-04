@@ -21,8 +21,8 @@ Run [Inspect Robots](https://github.com/robocurve/inspect-robots) evals on real
 
 Inspect Robots has two swappable inputs: a `Policy` (the VLA brain) and an
 `Embodiment` (the robot body + world). This package provides both for the
-YAM + MolmoAct2 stack, so any embodiment-agnostic Inspect Robots task (e.g. all of
-[KitchenBench](https://github.com/robocurve/kitchenbench)) runs on real arms:
+YAM + MolmoAct2 stack, so any embodiment-agnostic Inspect Robots task runs on real
+arms:
 
 - **`molmoact2` policy**: a thin client for MolmoAct2's first-party bimanual-YAM
   `/act` server (the model owns the GPU + weights in its own process).
@@ -36,7 +36,7 @@ compatibility check passes with zero errors and zero warnings. This is
 verifiable before any motion.
 
 ```bash
-inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2 --embodiment yam_arms
+inspect-robots run --task <your-task> --policy molmoact2 --embodiment yam_arms
 ```
 
 > **Note:** cameras are configured with one plain source per slot
@@ -141,7 +141,7 @@ inspect-robots-yam-preflight
 Also check a specific task's scenes are realizable:
 
 ```bash
-inspect-robots-yam-preflight --task kitchenbench/pour_pasta
+inspect-robots-yam-preflight --task <your-task>
 ```
 
 Affirm that no motion will occur:
@@ -469,7 +469,7 @@ emb = YAMEmbodiment(YamConfig(left_channel="can0", right_channel="can1"),
                     camera_reader=my_camera_reader)
 pol = MolmoAct2Policy(server_url="http://127.0.0.1:8202")
 
-(log,) = eval("kitchenbench/pour_pasta", pol, emb,
+(log,) = eval("<your-task>", pol, emb,
               guard=ClampGuard(emb.info.action_space))  # defense in depth
 print(log.status, log.results.metrics)
 ```
@@ -481,8 +481,8 @@ On CLI runs (inspect-robots ≥ 0.25), the framework then asks once per trial:
 The bare `eval()` call above never prompts: pass
 `before_scoring=` a callable that sets `record.operator_judgement` (grade
 live, or from your own UI) when driving the Python API directly.
-Score attended runs with the `operator` scorer (reads the recorded judgement);
-KitchenBench's `task_success` reads it too. `success_at_end` only counts
+Score attended runs with the `operator` scorer (reads the recorded judgement).
+`success_at_end` only counts
 embodiment-detected success terminations, so it scores operator-graded runs as
 failures — don't pair it with attended yam runs.
 The operator prompts need an interactive terminal: a dead stdin raises
@@ -1005,7 +1005,7 @@ duration is not knowable in advance, and settling makes steps run long (#64).
 > one-click releases) are documented in [`CLAUDE.md`](CLAUDE.md).
 
 ```bash
-uv venv && uv pip install -e ".[dev]"     # inspect_robots + kitchenbench from PyPI
+uv venv && uv pip install -e ".[dev]"     # inspect_robots from PyPI
 uv run pre-commit install
 uv run pytest --cov                        # 100% coverage required
 uv run ruff check . && uv run mypy

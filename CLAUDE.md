@@ -1,7 +1,6 @@
 # inspect-robots-yam — agent guide
 
-Inspect Robots adapters that let evals (e.g. [KitchenBench](https://github.com/robocurve/kitchenbench))
-run on real **I2RT YAM bimanual arms** driven by `/act`-served policies. This is a
+Inspect Robots adapters that let evals run on real **I2RT YAM bimanual arms** driven by `/act`-served policies. This is a
 **plugin package** in the Inspect Robots ecosystem — the framework lives in
 [inspect-robots](https://github.com/robocurve/inspect-robots); benchmarks are separate repos
 indexed by [WorldEvals](https://github.com/robocurve/worldevals).
@@ -40,11 +39,9 @@ because absolute joint conformance permits only one 14-D state field.
 
 - Dev loop: `uv venv && uv pip install -e ".[dev]"`, `uv run pre-commit install`,
   then `uv run pytest --cov`.
-- **Local install gotcha:** `uv pip install -e ".[dev]"` resolves inspect-robots +
-  kitchenbench from git tags. To work against sibling checkouts instead:
-  `uv pip install -e ../inspect-robots && uv pip install --no-deps -e ../kitchenbench`
-  (the `--no-deps` avoids an inspect-robots URL conflict with kitchenbench's own
-  `tool.uv.sources`).
+- **Local install:** `uv pip install -e ".[dev]"` resolves inspect-robots from
+  PyPI. To work against a sibling checkout instead:
+  `uv pip install -e ../inspect-robots`.
 - Gates (all blocking in CI): `ruff check .`, `ruff format --check .`,
   `mypy` (strict), `pytest --cov` at **100%**.
   Every public module, class, and function needs a docstring, enforced by Ruff
@@ -71,7 +68,7 @@ because absolute joint conformance permits only one 14-D state field.
   hardware clamp, and compatibility checking verifies the declared mode pairing.
 - The end-episode keypress terminates with `termination_reason="operator_end"`;
   the framework prompt then records `operator_judgement`, which is what
-  judgement-reading scorers (`operator`, KitchenBench `task_success`) score.
+  judgement-reading scorers (such as `operator`) score.
   When the framework console owns stdin, yam never reads the keypress. The
   console terminates the trial and may carry a verdict that suppresses the
   prompt.

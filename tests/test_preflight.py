@@ -41,8 +41,20 @@ def test_run_preflight_default_is_compatible() -> None:
     assert report.warnings == []  # the whole point: clean compat by construction
 
 
-def test_run_preflight_with_kitchenbench_task() -> None:
-    report = preflight.run_preflight("kitchenbench/stack")
+def test_run_preflight_with_a_registered_task() -> None:
+    from inspect_robots import Scene, Task
+    from inspect_robots.registry import _FACTORIES, task
+    from inspect_robots.scorer import operator_scorer
+
+    @task("yam-test/stack")
+    def _stack() -> Task:
+        scene = Scene(id="stack-0", instruction="Stack the bowls on the table.", init_seed=0)
+        return Task(name="stack", scenes=[scene], scorer=operator_scorer(), max_steps=80)
+
+    try:
+        report = preflight.run_preflight("yam-test/stack")
+    finally:
+        _FACTORIES["task"].pop("yam-test/stack", None)
     assert report.ok is True
     assert report.errors == []
 
