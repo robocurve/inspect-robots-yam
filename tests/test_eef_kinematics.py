@@ -368,3 +368,117 @@ def test_wrap_yaw_pi_boundary_maps_to_positive_pi() -> None:
     assert _ArmKinematics._wrap_yaw(-np.pi) == pytest.approx(np.pi)
     assert _ArmKinematics._wrap_yaw(np.pi) == pytest.approx(np.pi)
     assert _ArmKinematics._wrap_yaw(3 * np.pi) == pytest.approx(np.pi)
+
+
+# --- solve diagnostics ---------------------------------------------------------
+
+
+def _reporting_wrapper(raw: FakeRawKinematics, **overrides: object) -> _ArmKinematics:
+    kin = _wrapper(raw, **overrides)
+    kin.seed(np.zeros(6))
+    kin.capture_yaw_reference(np.zeros(6))
+    return kin
+
+
+def test_report_measures_solution_command_and_tracking_errors() -> None:
+    # FK call order: yaw reference, then report(): command, measured, solution.
+    raw = FakeRawKinematics(
+        fk_poses=[
+            _pose(),
+            _pose(position=(0.31, 0.0, 0.2)),
+            _pose(position=(0.31, 0.0, 0.23)),
+            _pose(rotation=_rz(0.5)),
+        ],
+        ik_results=[(True, np.zeros(8))],
+    )
+    kin = _reporting_wrapper(raw)
+    command = kin.solve(np.array([0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0]), np.zeros(6))
+    kin.update_sent(command)
+
+    report = kin.report(command, np.zeros(6))
+
+    assert report.converged is True
+    assert not (report.held or report.resynced or report.nonfinite or report.rate_limited)
+    assert report.limited_joints == ()
+    assert report.solution_position_error == pytest.approx(0.0)
+    assert report.solution_orientation_error == pytest.approx(0.5)
+    assert report.command_position_error == pytest.approx(0.01)
+    assert report.command_orientation_error == pytest.approx(0.0)
+    assert report.tracking_position_error == pytest.approx(0.03)
+    assert report.tracking_orientation_error == pytest.approx(0.0)
+
+
+def test_report_flags_joint_limits_rate_limiting_and_nonconvergence() -> None:
+    raw = FakeRawKinematics(
+        ik_results=[(False, np.array([2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]))]
+    )
+    kin = _reporting_wrapper(raw, config_high=np.array([0.5, 1.0, 1.0, 1.0, 1.0, 1.0]))
+    command = kin.solve(np.array([0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0]), np.zeros(6))
+
+    report = kin.report(command, np.zeros(6))
+
+    assert command[0] == pytest.approx(0.2)  # rate clamp toward the clipped 0.5 solution
+    assert report.converged is False
+    assert report.limited_joints == (0,)
+    assert report.rate_limited is True
+
+
+def test_report_marks_hold_steps_and_omits_solution_errors_on_them() -> None:
+    swing = [np.array([sign * 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]) for sign in (1, -1, 1, -1)]
+    raw = FakeRawKinematics(ik_results=[(True, q) for q in swing])
+    kin = _reporting_wrapper(raw)
+    target = np.array([0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0])
+    reports = []
+    for _ in range(5):
+        command = kin.solve(target, np.zeros(6))
+        kin.update_sent(command)
+        reports.append(kin.report(command, np.zeros(6)))
+
+    assert [report.held for report in reports] == [False, False, False, True, True]
+    assert reports[3].hold_remaining == 10 and reports[4].hold_remaining == 9
+    # The triggering step still solved; the hold step that follows did not.
+    assert reports[3].solution_position_error == pytest.approx(0.0)
+    assert reports[3].converged is True
+    assert reports[4].solution_position_error is None
+    assert reports[4].solution_orientation_error is None
+    assert reports[4].converged is None
+
+
+def test_report_marks_nonfinite_solves_and_resyncs() -> None:
+    raw = FakeRawKinematics(ik_results=[(True, np.full(8, np.nan))])
+    kin = _reporting_wrapper(raw)
+    command = kin.solve(np.array([0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0]), np.full(6, 0.9))
+
+    report = kin.report(command, np.zeros(6))
+
+    assert report.nonfinite is True
+    assert report.resynced is True
+    assert report.converged is None
+    assert report.solution_position_error is None
+
+
+def test_report_requires_a_prior_solve_and_forgets_it_on_seed_and_clear() -> None:
+    raw = FakeRawKinematics()
+    kin = _reporting_wrapper(raw)
+    with pytest.raises(RuntimeError, match="no solve to report on"):
+        kin.report(np.zeros(6), np.zeros(6))
+
+    kin.solve(np.array([0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0]), np.zeros(6))
+    kin.report(np.zeros(6), np.zeros(6))
+    kin.seed(np.zeros(6))
+    with pytest.raises(RuntimeError, match="no solve to report on"):
+        kin.report(np.zeros(6), np.zeros(6))
+
+    kin.solve(np.array([0.3, 0.0, 0.2, 0.0, 0.0, 0.0, 1.0]), np.zeros(6))
+    kin.clear()
+    with pytest.raises(RuntimeError, match="no solve to report on"):
+        kin.report(np.zeros(6), np.zeros(6))
+
+
+def test_pose_errors_are_a_distance_and_a_geodesic_angle() -> None:
+    assert _ArmKinematics._pose_errors(_pose(), _pose()) == (0.0, 0.0)
+    distance, angle = _ArmKinematics._pose_errors(
+        _pose(position=(0.0, 0.0, 0.0)), _pose(rotation=_rz(np.pi), position=(3.0, 4.0, 0.0))
+    )
+    assert distance == pytest.approx(5.0)
+    assert angle == pytest.approx(np.pi)

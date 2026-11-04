@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import numpy as np
 import pytest
-from inspect_robots.approver import ChainApprover, ClampApprover, DeltaLimitApprover
+from inspect_robots.guard import ClampGuard, DeltaLimitGuard, GuardChain
 from inspect_robots.scene import Scene
 from inspect_robots.types import Observation
 from inspect_robots_agent import LLMAgentPolicy
@@ -91,10 +91,10 @@ def test_public_agent_policy_advertises_and_executes_guardrail_clean_eef_move() 
     x_values = np.asarray([action.data[0] for action in chunk.actions])
     assert np.all(np.diff(x_values) > 0)
 
-    approver = ChainApprover(
-        ClampApprover(embodiment.info.action_space),
-        DeltaLimitApprover(embodiment.info.action_space),
+    guard = GuardChain(
+        ClampGuard(embodiment.info.action_space),
+        DeltaLimitGuard(embodiment.info.action_space),
     )
     store: dict[str, Any] = {}
     for action in chunk.actions:
-        assert approver.review(action, store) is action
+        assert guard.review(action, store) is action

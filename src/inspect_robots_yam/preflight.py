@@ -3,7 +3,7 @@
 ``inspect-robots-yam-preflight`` constructs the policy and embodiment (no hardware
 connection, no server call — only their declared ``.info``), runs Inspect Robots's
 compatibility check, prints the report, and exits non-zero on any error. Pass
-``--task kitchenbench/pour_pasta`` to also verify every scene is realizable.
+``--task <task>`` to also verify every scene is realizable.
 
 This is the "is it safe to move?" one-liner: a green preflight means dims,
 control mode, cameras, and state keys all line up. (Absolute-vs-delta joint

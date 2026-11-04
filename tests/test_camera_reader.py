@@ -92,6 +92,56 @@ def test_buffersize_is_capped_first_and_the_rest_of_the_negotiation_survives() -
     ]
 
 
+HUB = "http://hub.test/api/stream.mjpeg?src=top"
+
+
+def test_stream_urls_open_on_ffmpeg_with_timeouts_and_no_v4l2_negotiation() -> None:
+    # A hub URL is not a device node: V4L2 cannot capture by name, and the hub
+    # has fixed the format and size already, so the only negotiation is the
+    # timeouts, which FFmpeg accepts solely as open-time params.
+    caps = {HUB: FakeCapture(), "/dev/cam1": FakeCapture(), "/dev/cam2": FakeCapture()}
+    cv2 = FakeCv2(caps)
+    reader = _OpenCVCameraReader(
+        {"top_cam": HUB, "left_cam": "/dev/cam1", "right_cam": "/dev/cam2"}, cv2_module=cv2
+    )
+    _OPENED.append(reader)
+
+    frames = reader(YamConfig())
+
+    assert cv2.opens[0] == (
+        HUB,
+        FakeCv2.CAP_FFMPEG,
+        [FakeCv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000, FakeCv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000],
+    )
+    assert cv2.opens[1] == ("/dev/cam1", FakeCv2.CAP_V4L2, None)
+    assert [call for call in caps[HUB].calls if call[0] == "set"] == []
+    assert frames["top_cam"].shape == (224, 224, 3)
+
+
+def test_a_stream_that_cannot_open_fails_like_a_device() -> None:
+    cv2 = FakeCv2({HUB: FakeCapture(opened=False)})
+    reader = _OpenCVCameraReader({"top_cam": HUB}, cv2_module=cv2)
+    _OPENED.append(reader)
+
+    with pytest.raises(RuntimeError, match=r"cannot open top_cam at http://"):
+        reader(YamConfig())
+
+
+def test_a_stream_served_at_another_size_fails_with_hub_guidance() -> None:
+    # The V4L2 advice (v4l2-ctl, YUYV) is meaningless for a hub stream; the fix
+    # is on the hub or in the configured capture size.
+    cap = FakeCapture(delivered=(1280.0, 720.0))
+    cv2 = FakeCv2({HUB: cap})
+    reader = _OpenCVCameraReader({"top_cam": HUB}, cv2_module=cv2)
+    _OPENED.append(reader)
+
+    with pytest.raises(RuntimeError, match=r"serve the stream at that size") as excinfo:
+        reader(YamConfig())
+
+    assert "v4l2-ctl" not in str(excinfo.value)
+    assert cap.released
+
+
 def test_every_property_is_set_before_the_first_read() -> None:
     # Streaming starts at the first grab, so a property written after it is
     # silently dropped by the driver.
@@ -551,3 +601,66 @@ def test_a_later_camera_failing_the_size_check_releases_the_earlier_ones() -> No
     assert caps["/dev/cam0"].released
     assert caps["/dev/cam1"].released
     assert reader._caps == {}
+
+
+def test_read_failures_redact_stream_credentials() -> None:
+    from inspect_robots_yam.config import YamConfig
+
+    with pytest.raises(ValueError) as raised:
+        YamConfig(
+            top_cam_device="rtsp://user:secret@10.0.0.5/cam",
+            left_cam_device="rtsp://user:secret@10.0.0.5/cam",
+            right_cam_device="rtsp://user:secret@10.0.0.5/right",
+        )
+    assert "secret" not in str(raised.value)
+    assert "<redacted>@10.0.0.5" in str(raised.value)
+
+
+def test_a_stalled_stream_does_not_print_its_credentials() -> None:
+    url = "rtsp://user:secret@10.0.0.5:554/cam"
+    devices = {**DEVICES, "top_cam": url}
+
+    def reader_for(clock: Clock) -> tuple[_OpenCVCameraReader, FakeCv2]:
+        cv2 = FakeCv2({device: FakeCapture() for device in devices.values()})
+        reader = _OpenCVCameraReader(devices, cv2_module=cv2, sleep_fn=lambda _s: None, clock=clock)
+        _OPENED.append(reader)
+        return reader, cv2
+
+    clock = Clock()
+    reader, cv2 = reader_for(clock)
+    drive(reader, "top_cam", FakeCapture([(True, frame(1))], idle_from=None), iterations=1)
+    clock.advance(_OpenCVCameraReader.MAX_FRAME_AGE_S + 0.01)
+    with pytest.raises(RuntimeError, match="frame read failed") as stalled:
+        reader._latest(cv2, "top_cam", YamConfig())
+    assert "secret" not in str(stalled.value) and "<redacted>@10.0.0.5" in str(stalled.value)
+
+    reader, cv2 = reader_for(Clock())
+    faulting = FakeCapture([(True, frame(1))], raise_at=2, idle_from=None)
+    drive(reader, "top_cam", faulting, iterations=3)
+    with pytest.raises(RuntimeError, match="stopped reading") as faulted:
+        reader._latest(cv2, "top_cam", YamConfig())
+    assert "secret" not in str(faulted.value) and "<redacted>@10.0.0.5" in str(faulted.value)
+
+
+def test_a_leaked_stream_is_logged_without_its_credentials(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    url = "rtsp://user:secret@10.0.0.5:554/cam"
+    devices = {**DEVICES, "top_cam": url}
+    block = threading.Event()
+    caps = {device: FakeCapture() for device in devices.values()}
+    caps[url] = FakeCapture(block=block)
+    reader = _OpenCVCameraReader(
+        devices, cv2_module=FakeCv2(caps), sleep_fn=lambda _s: None, clock=Clock()
+    )
+    _OPENED.append(reader)
+    reader(YamConfig())
+    _OpenCVCameraReader.JOIN_TIMEOUT_S = 0.05
+    try:
+        with caplog.at_level("WARNING"):
+            reader.close()
+    finally:
+        _OpenCVCameraReader.JOIN_TIMEOUT_S = 2.0
+        block.set()
+    assert "is still reading" in caplog.text
+    assert "secret" not in caplog.text and "<redacted>@10.0.0.5" in caplog.text

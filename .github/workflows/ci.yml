@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Lint + strict typing, once. mypy targets the 3.10 floor via pyproject; running
+  # Lint + strict typing, once. mypy targets the 3.11 floor via pyproject; running
   # it on 3.11 avoids NumPy's 3.12-only stub syntax.
   quality:
     name: lint · type

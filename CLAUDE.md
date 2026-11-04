@@ -1,7 +1,6 @@
 # inspect-robots-yam — agent guide
 
-Inspect Robots adapters that let evals (e.g. [KitchenBench](https://github.com/robocurve/kitchenbench))
-run on real **I2RT YAM bimanual arms** driven by `/act`-served policies. This is a
+Inspect Robots adapters that let evals run on real **I2RT YAM bimanual arms** driven by `/act`-served policies. This is a
 **plugin package** in the Inspect Robots ecosystem — the framework lives in
 [inspect-robots](https://github.com/robocurve/inspect-robots); benchmarks are separate repos
 indexed by [WorldEvals](https://github.com/robocurve/worldevals).
@@ -40,16 +39,14 @@ because absolute joint conformance permits only one 14-D state field.
 
 - Dev loop: `uv venv && uv pip install -e ".[dev]"`, `uv run pre-commit install`,
   then `uv run pytest --cov`.
-- **Local install gotcha:** `uv pip install -e ".[dev]"` resolves inspect-robots +
-  kitchenbench from git tags. To work against sibling checkouts instead:
-  `uv pip install -e ../inspect-robots && uv pip install --no-deps -e ../kitchenbench`
-  (the `--no-deps` avoids an inspect-robots URL conflict with kitchenbench's own
-  `tool.uv.sources`).
+- **Local install:** `uv pip install -e ".[dev]"` resolves inspect-robots from
+  PyPI. To work against a sibling checkout instead:
+  `uv pip install -e ../inspect-robots`.
 - Gates (all blocking in CI): `ruff check .`, `ruff format --check .`,
   `mypy` (strict), `pytest --cov` at **100%**.
   Every public module, class, and function needs a docstring, enforced by Ruff
   D1; state the contract instead of restating the symbol name.
-- **mypy + numpy:** numpy 2.5's stubs use 3.12-only syntax that mypy (py3.10
+- **mypy + numpy:** numpy 2.5's stubs use 3.12-only syntax that mypy (py3.11
   target) rejects; the dev extra pins `numpy<2.5` and CI runs mypy on 3.11.
 - **No torch.** Models live in external `/act` servers. The base dependencies
   include `requests`, `json_numpy`, and OpenCV, but those modules remain lazily
@@ -60,7 +57,7 @@ because absolute joint conformance permits only one 14-D state field.
 ## Safety invariants (do not weaken)
 
 - `YAMEmbodiment.step()` **always clamps** to `YamConfig.joint_low/high` before
-  commanding, independent of any `Approver`. This is the last line of defense.
+  commanding, independent of any `Guard`. This is the last line of defense.
 - Thermal trips end trials with the non-definitive `"overheat"` reason so the
   park-for-grading ramp and operator verdict remain reachable. The trip parks
   to rest from inside `step()` before terminating, in every mode. Never make
@@ -71,7 +68,7 @@ because absolute joint conformance permits only one 14-D state field.
   hardware clamp, and compatibility checking verifies the declared mode pairing.
 - The end-episode keypress terminates with `termination_reason="operator_end"`;
   the framework prompt then records `operator_judgement`, which is what
-  judgement-reading scorers (`operator`, KitchenBench `task_success`) score.
+  judgement-reading scorers (such as `operator`) score.
   When the framework console owns stdin, yam never reads the keypress. The
   console terminates the trial and may carry a verdict that suppresses the
   prompt.

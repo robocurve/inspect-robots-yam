@@ -1,30 +1,18 @@
-"""Goal-closing test: Inspect Robots + KitchenBench are provably compatible with
-YAM arms + MolmoAct2 — zero errors, zero warnings, all 10 tasks realizable."""
+"""Goal-closing test: Inspect Robots is provably compatible with YAM arms +
+MolmoAct2 — zero errors, zero warnings, and a task's scenes are realizable."""
 
 from __future__ import annotations
 
-import pytest
 from inspect_robots.compat import check_compatibility
 from inspect_robots.policy import PolicyConfig, PolicyInfo
-from inspect_robots.registry import resolve
+from inspect_robots.scene import Scene
+from inspect_robots.scorer import operator_scorer
 from inspect_robots.spaces import ActionSemantics, Box
+from inspect_robots.task import Task
 
 from inspect_robots_yam.config import action_box, observation_space
 from inspect_robots_yam.embodiment import YAMEmbodiment
 from inspect_robots_yam.policy import MolmoAct2Policy
-
-KITCHENBENCH_TASKS = [
-    "kitchenbench/place_cutlery",
-    "kitchenbench/stack",
-    "kitchenbench/place_in_rack",
-    "kitchenbench/pour_pasta",
-    "kitchenbench/open_container",
-    "kitchenbench/fold_cloth",
-    "kitchenbench/seal_container",
-    "kitchenbench/handoff",
-    "kitchenbench/sort_cutlery",
-    "kitchenbench/scoop_pasta",
-]
 
 
 def test_molmoact2_yam_compatible_no_errors_no_warnings() -> None:
@@ -34,9 +22,13 @@ def test_molmoact2_yam_compatible_no_errors_no_warnings() -> None:
     assert report.warnings == []
 
 
-@pytest.mark.parametrize("task_name", KITCHENBENCH_TASKS)
-def test_every_kitchenbench_task_is_realizable(task_name: str) -> None:
-    task = resolve("task", task_name)
+def test_a_task_is_realizable() -> None:
+    task = Task(
+        name="stack",
+        scenes=[Scene(id="stack-0", instruction="Stack the bowls on the table.", init_seed=0)],
+        scorer=operator_scorer(),
+        max_steps=80,
+    )
     report = check_compatibility(MolmoAct2Policy(), YAMEmbodiment(), task)
     assert report.ok is True, [i.message for i in report.errors]
     assert report.errors == []

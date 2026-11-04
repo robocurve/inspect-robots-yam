@@ -8,6 +8,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Evaluation interface:** the embodiment offers core's `health()` and `park()`
+  and names its platform (`morphology="yam-bimanual"`). `health()` checks motors,
+  motor temperatures and cameras before each trial without moving; a latched
+  motor fault is raised as `EmbodimentFault`, so a task set stops. `park()`
+  moves to `rest_pose` (or the pose captured at reset) after each trial and
+  holds it, so the scene can be reset by hand.
+
+- With `motor_temp_limit` set, every observation carries
+  `extra["motor_temps"]`: per arm the hottest motor and its temperature
+  against the limit, plus `lines` written for the policy (a warning line
+  inside `motor_temp_warn_margin` telling it to move the arm to its start
+  pose and sleep), the same convention as the motion report.
+  The built-in agent docs gain a matching paragraph. No extra CAN traffic:
+  it is the reading the guardrail already takes each step
+  ([plan 0035](plans/0035-motor-temps-observation.md)).
+
+- `*_cam_device` accepts a stream URL (`http://`, `https://`, `rtsp://`,
+  `rtsps://`) and reads it through OpenCV's FFmpeg backend, so a camera hub
+  such as go2rtc can own the device and serve the eval, a live view, and the
+  judge's stills from one capture. The hub fixes the format and size, so only
+  the open and read timeouts are negotiated; the delivered size is still
+  checked against the configured capture size, with hub-specific guidance on
+  a mismatch. The health montage and `--watch` take the same URLs.
+
+- **Motion report:** every stepped observation carries `extra["motion_report"]`,
+  a per-arm diagnosis of the step just played. Under `eef_pos` the IK wrapper
+  now exposes a `SolveReport` per solve (solution, command, and tracking pose
+  errors, joints on a limit, rate limiting, oscillation hold, resync, and
+  non-finite flags), rolled up over a window that closes on an action carrying
+  `meta["chunk_final"]` so the observation ending an agent move summarizes the
+  whole move, with a `cause` label (`ik_failed`, `oscillation_hold`,
+  `unreachable`, `unfinished`, `behind`, `on_target`) and plain-language
+  `lines` for the policy. Under joint control it names joints more than
+  0.1 rad behind their command. The built-in agent docs describe the report.
 - `capture_width` / `capture_height` (default 640 × 480, unchanged behaviour)
   set the native size requested from the cameras on both the RealSense and the
   V4L2 paths, with intrinsics scaled from that size. Rigs that need every pixel
@@ -53,6 +87,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The real-hardware driver raises `EmbodimentFault` as soon as a motor
+  control loop has stopped or joint feedback turns non-finite, and surfaces a
+  teardown error instead of swallowing it, so the framework halts the trial
+  rather than stepping a dead arm.
+
 - The operator status line now compares motion-budget seconds with the
   estimated motion horizon and shows elapsed wall time as a separate labeled
   value. Slow policy calls therefore remain visible without making the budget
@@ -70,6 +109,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   deadline (#64).
 
 ### Changed
+
+- KitchenBench is retired, so it is no longer a dev dependency. The tests that
+  ran its tasks now use an equivalent task defined in the tests, and the README
+  examples use `<your-task>`.
+
+- **Breaking:** follows inspect-robots' paper vocabulary. `CollisionApprover` is
+  `CollisionGuard`, the embodiment implements `contribute_guards()` and returns a
+  `GuardContribution` (field `guards`), and the README and examples import
+  `ClampGuard`, `DeltaLimitGuard` and `GuardChain` from `inspect_robots.guard`.
+  Requires inspect-robots 1.0, the release that renames them.
+
+- **Breaking:** requires `inspect-robots>=1.0` and Python 3.11 or newer,
+  matching the core release, which drops Python 3.10. Ruff and mypy target
+  3.11.
 
 - `uv.lock` now pins certifi 2026.10.23, which drops the emSign root CAs with
   compromised intermediate keys (GHSA-6q48-6c7w-9gw2). The same refresh moves

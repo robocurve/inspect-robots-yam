@@ -10,17 +10,17 @@ from typing import Any
 
 import numpy as np
 import pytest
-from inspect_robots.approver import ChainApprover, ClampApprover, DeltaLimitApprover
 from inspect_robots.errors import SafetyAbort
+from inspect_robots.guard import ClampGuard, DeltaLimitGuard, GuardChain
 from inspect_robots.spaces import ActionSemantics, Box
 from inspect_robots.types import Action
 
 from inspect_robots_yam import collision
 from inspect_robots_yam import embodiment as embodiment_module
 from inspect_robots_yam.collision import (
-    CollisionApprover,
     CollisionChecker,
     CollisionConfig,
+    CollisionGuard,
     build_yam_guardrails,
 )
 from inspect_robots_yam.config import (
@@ -334,7 +334,7 @@ def test_approver_rejects_non_absolute_fourteen_dimensional_spaces(
     space: Box,
 ) -> None:
     with pytest.raises(ValueError, match=r"Plan 0011.*14-D.*joint_pos"):
-        CollisionApprover(checker, HOME, action_space=space)
+        CollisionGuard(checker, HOME, action_space=space)
 
 
 def test_approver_rejects_bad_mode_start_shape_nonfinite_and_collision(
@@ -342,33 +342,33 @@ def test_approver_rejects_bad_mode_start_shape_nonfinite_and_collision(
     joint_space: Box,
 ) -> None:
     with pytest.raises(ValueError, match="on_violation"):
-        CollisionApprover(checker, HOME, action_space=joint_space, on_violation="stop")  # type: ignore[arg-type]
+        CollisionGuard(checker, HOME, action_space=joint_space, on_violation="stop")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="expected a 14-D vector"):
-        CollisionApprover(checker, np.zeros(13), action_space=joint_space)
+        CollisionGuard(checker, np.zeros(13), action_space=joint_space)
     bad = HOME.copy()
     bad[0] = np.nan
     with pytest.raises(ValueError, match="finite"):
-        CollisionApprover(checker, bad, action_space=joint_space)
+        CollisionGuard(checker, bad, action_space=joint_space)
     with pytest.raises(
         ValueError,
         match=r"already in collision.*collision_guardrail=false.*collision_\* geometry",
     ):
-        CollisionApprover(checker, REACH_DOWN, action_space=joint_space)
+        CollisionGuard(checker, REACH_DOWN, action_space=joint_space)
 
 
 def test_safe_pass_through_preserves_identity_and_updates_last_safe(
     checker: CollisionChecker,
     joint_space: Box,
 ) -> None:
-    approver = CollisionApprover(checker, HOME, action_space=joint_space)
+    guard = CollisionGuard(checker, HOME, action_space=joint_space)
     target = _pose(left_j0=0.01)
     action = Action(target, meta={"source": "policy"})
     store: dict[str, Any] = {}
-    assert approver.review(action, store) is action
+    assert guard.review(action, store) is action
     assert store["yam_collision:last_safe"] == pytest.approx(target)
 
     next_action = Action(_pose(left_j0=0.02))
-    assert approver.review(next_action, store) is next_action
+    assert guard.review(next_action, store) is next_action
     assert store["yam_collision:last_safe"] == pytest.approx(next_action.data)
 
 
@@ -377,18 +377,18 @@ def test_hold_uses_last_safe_meta_and_reanchors_delta_limiter(
     joint_space: Box,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    approver = CollisionApprover(checker, HOME, action_space=joint_space)
+    guard = CollisionGuard(checker, HOME, action_space=joint_space)
     store: dict[str, Any] = {"yam_collision:last_safe": HOME.copy()}
-    DeltaLimitApprover(joint_space).review(Action(REACH_DOWN), store)
+    DeltaLimitGuard(joint_space).review(Action(REACH_DOWN), store)
     rewinds: list[np.ndarray] = []
-    rewind_reference = DeltaLimitApprover.rewind_reference
+    rewind_reference = DeltaLimitGuard.rewind_reference
 
     def record_rewind(target_store: dict[str, Any], pose: np.ndarray) -> None:
         rewinds.append(pose.copy())
         rewind_reference(target_store, pose)
 
     monkeypatch.setattr(
-        DeltaLimitApprover,
+        DeltaLimitGuard,
         "rewind_reference",
         staticmethod(record_rewind),
     )
@@ -400,7 +400,7 @@ def test_hold_uses_last_safe_meta_and_reanchors_delta_limiter(
             "delta_clamped": True,
         },
     )
-    held = approver.review(action, store)
+    held = guard.review(action, store)
     assert held is not action
     assert held.data == pytest.approx(HOME)
     assert held.meta["source"] == "policy"
@@ -414,7 +414,7 @@ def test_hold_uses_last_safe_meta_and_reanchors_delta_limiter(
     assert store["yam_collision:last_safe"] == pytest.approx(HOME)
 
     no_delta_store: dict[str, Any] = {"yam_collision:last_safe": HOME.copy()}
-    approver.review(Action(REACH_DOWN), no_delta_store)
+    guard.review(Action(REACH_DOWN), no_delta_store)
     assert len(rewinds) == 2
     assert rewinds[1] == pytest.approx(HOME)
 
@@ -423,7 +423,7 @@ def test_strict_mode_and_nonfinite_action_abort(
     checker: CollisionChecker,
     joint_space: Box,
 ) -> None:
-    strict = CollisionApprover(
+    strict = CollisionGuard(
         checker,
         HOME,
         action_space=joint_space,
@@ -441,14 +441,14 @@ def test_resolution_derived_substeps_clamp_at_one_and_sixty_four(
     checker: CollisionChecker,
     joint_space: Box,
 ) -> None:
-    approver = CollisionApprover(checker, HOME, action_space=joint_space)
-    assert approver._substep_count(HOME, HOME) == 1
+    guard = CollisionGuard(checker, HOME, action_space=joint_space)
+    assert guard._substep_count(HOME, HOME) == 1
     gripper_only = HOME.copy()
     gripper_only[DIM_LABELS.index("left_gripper")] = 0.0
-    assert approver._substep_count(HOME, gripper_only) == 1
+    assert guard._substep_count(HOME, gripper_only) == 1
     far = HOME.copy()
     far[DIM_LABELS.index("left_j0")] = 100.0
-    assert approver._substep_count(HOME, far) == 64
+    assert guard._substep_count(HOME, far) == 64
 
 
 def test_first_action_sweep_blocks_cross_arm_collision_between_safe_endpoints() -> None:
@@ -504,10 +504,10 @@ def test_first_action_sweep_blocks_cross_arm_collision_between_safe_endpoints() 
         collision_table=False,
     )
     embodiment = YAMEmbodiment(yam_config)
-    contribution = embodiment.contribute_guardrails(embodiment.info.action_space)
-    name, approver = contribution.approvers[0]
+    contribution = embodiment.contribute_guards(embodiment.info.action_space)
+    name, guard = contribution.guards[0]
     assert name == "yam-collision"
-    held = approver.review(Action(target), {})
+    held = guard.review(Action(target), {})
     assert held.data == pytest.approx(start)
     assert held.meta["collision_blocked"] is True
     detail = held.meta["collision_detail"]
@@ -528,11 +528,11 @@ def test_build_guardrails_order_and_clamped_default_home(joint_space: Box) -> No
     high[DIM_LABELS.index("right_gripper")] = 0.5
     config = YamConfig(joint_high=tuple(high), home_pose=None)
     chain = build_yam_guardrails(joint_space, config)
-    clamp, delta, collision_approver = chain._approvers
-    assert isinstance(chain, ChainApprover)
-    assert isinstance(clamp, ClampApprover)
-    assert isinstance(delta, DeltaLimitApprover)
-    assert isinstance(collision_approver, CollisionApprover)
+    clamp, delta, collision_approver = chain.guards
+    assert isinstance(chain, GuardChain)
+    assert isinstance(clamp, ClampGuard)
+    assert isinstance(delta, DeltaLimitGuard)
+    assert isinstance(collision_approver, CollisionGuard)
     expected = np.clip(HOME, config.low, config.high)
     assert collision_approver._start_pose == pytest.approx(expected)
 
@@ -547,7 +547,7 @@ def test_build_guardrails_uses_custom_home_and_integrates_chain(joint_space: Box
         collision_config,
         on_violation="hold",
     )
-    collision_approver = chain._approvers[-1]
+    collision_approver = chain.guards[-1]
     assert collision_approver._start_pose == pytest.approx(home)
     assert collision_approver._checker.config is collision_config
     action = Action(_pose(left_j0=0.02))
@@ -557,9 +557,9 @@ def test_build_guardrails_uses_custom_home_and_integrates_chain(joint_space: Box
 def test_contribution_ladder_off_warns_to_measure_geometry(joint_space: Box) -> None:
     embodiment = YAMEmbodiment(YamConfig(collision_guardrail=False))
 
-    contribution = embodiment.contribute_guardrails(joint_space)
+    contribution = embodiment.contribute_guards(joint_space)
 
-    assert contribution.approvers == ()
+    assert contribution.guards == ()
     assert contribution.warnings == (
         "collision guardrail disabled by config; set collision_guardrail=true "
         "after measuring collision_*_base_pos",
@@ -583,18 +583,18 @@ def test_contribution_ladder_skips_non_absolute_joint_modes(
 ) -> None:
     embodiment = YAMEmbodiment(config)
 
-    contribution = embodiment.contribute_guardrails(embodiment.info.action_space)
+    contribution = embodiment.contribute_guards(embodiment.info.action_space)
 
-    assert contribution.approvers == ()
+    assert contribution.guards == ()
     assert contribution.warnings == expected_warnings
 
 
 def test_eef_pinned_warning_follows_guardrail_disabled_path_warning() -> None:
     embodiment = YAMEmbodiment(YamConfig(control_interface="eef_pos", collision_guardrail=False))
 
-    contribution = embodiment.contribute_guardrails(embodiment.info.action_space)
+    contribution = embodiment.contribute_guards(embodiment.info.action_space)
 
-    assert contribution.approvers == ()
+    assert contribution.guards == ()
     assert contribution.warnings == (_EEF_DISABLED_WARNING, _EEF_PINNED_WARNING)
 
 
@@ -614,7 +614,7 @@ def test_eef_orientation_notice_precedes_z_floor_warning_without_pin_warning(
         )
     )
 
-    contribution = embodiment.contribute_guardrails(embodiment.info.action_space)
+    contribution = embodiment.contribute_guards(embodiment.info.action_space)
 
     assert contribution.warnings == (
         path_warning,
@@ -634,7 +634,7 @@ def test_eef_warning_order_includes_notice_pin_and_z_floor_after_path() -> None:
         eef_high=tuple(high),
     )
 
-    contribution = YAMEmbodiment(config).contribute_guardrails(action_box())
+    contribution = YAMEmbodiment(config).contribute_guards(action_box())
 
     assert contribution.warnings == (
         _EEF_SKIP_WARNING,
@@ -649,13 +649,11 @@ def test_eef_orientation_notice_is_absent_when_flag_is_off_or_mode_is_joints() -
     eef = YAMEmbodiment(YamConfig(control_interface="eef_pos"))
     joints = YAMEmbodiment(YamConfig(eef_orientation=True, collision_guardrail=False))
 
-    assert eef.contribute_guardrails(eef.info.action_space).warnings == (
+    assert eef.contribute_guards(eef.info.action_space).warnings == (
         _EEF_SKIP_WARNING,
         _EEF_PINNED_WARNING,
     )
-    assert joints.contribute_guardrails(joints.info.action_space).warnings == (
-        _EEF_DISABLED_WARNING,
-    )
+    assert joints.contribute_guards(joints.info.action_space).warnings == (_EEF_DISABLED_WARNING,)
 
 
 def test_eef_z_floor_warning_clears_after_both_arms_raise_their_floor() -> None:
@@ -668,7 +666,7 @@ def test_eef_z_floor_warning_clears_after_both_arms_raise_their_floor() -> None:
         eef_low=tuple(low),
     )
 
-    contribution = YAMEmbodiment(config).contribute_guardrails(action_box())
+    contribution = YAMEmbodiment(config).contribute_guards(action_box())
 
     assert contribution.warnings == (_EEF_SKIP_WARNING, _EEF_ORIENTATION_WARNING)
 
@@ -680,7 +678,7 @@ def test_eef_z_floor_warning_couples_open_tilt_to_the_same_arm() -> None:
     low[4], high[4] = -0.2, 0.2
     config = YamConfig(control_interface="eef_pos", eef_low=tuple(low), eef_high=tuple(high))
 
-    contribution = YAMEmbodiment(config).contribute_guardrails(action_box())
+    contribution = YAMEmbodiment(config).contribute_guards(action_box())
 
     assert contribution.warnings == (
         _EEF_SKIP_WARNING,
@@ -700,7 +698,7 @@ def test_eef_z_floor_warning_fires_for_open_right_tilt_at_default_or_lowered_z(
     low[12], high[12] = -0.2, 0.2
     config = YamConfig(control_interface="eef_pos", eef_low=tuple(low), eef_high=tuple(high))
 
-    contribution = YAMEmbodiment(config).contribute_guardrails(action_box())
+    contribution = YAMEmbodiment(config).contribute_guards(action_box())
 
     assert contribution.warnings[-1] == _EEF_Z_FLOOR_WARNING
 
@@ -708,7 +706,7 @@ def test_eef_z_floor_warning_fires_for_open_right_tilt_at_default_or_lowered_z(
 def test_joints_mode_has_no_eef_warnings_even_with_open_orientation_tuples() -> None:
     config = YamConfig(eef_orientation=True, collision_guardrail=False)
 
-    contribution = YAMEmbodiment(config).contribute_guardrails(action_box())
+    contribution = YAMEmbodiment(config).contribute_guards(action_box())
 
     assert contribution.warnings == (_EEF_DISABLED_WARNING,)
 
@@ -725,12 +723,12 @@ def test_contribution_ladder_reports_missing_mujoco_before_construction(
         raise AssertionError("collision construction must not run")
 
     monkeypatch.setattr(embodiment_module.importlib.util, "find_spec", lambda _name: None)
-    monkeypatch.setattr(collision, "_collision_approver", fail_if_constructed)
+    monkeypatch.setattr(collision, "_collision_guard", fail_if_constructed)
 
-    contribution = YAMEmbodiment().contribute_guardrails(joint_space)
+    contribution = YAMEmbodiment().contribute_guards(joint_space)
 
     assert not constructed
-    assert contribution.approvers == ()
+    assert contribution.guards == ()
     assert contribution.warnings == (
         "collision guardrail skipped: MuJoCo is unavailable; install it with: "
         'pip install "inspect-robots-yam[collision]"',
@@ -740,13 +738,13 @@ def test_contribution_ladder_reports_missing_mujoco_before_construction(
 def test_contribution_happy_path_is_named_hold_with_default_geometry_warning(
     joint_space: Box,
 ) -> None:
-    contribution = YAMEmbodiment().contribute_guardrails(joint_space)
+    contribution = YAMEmbodiment().contribute_guards(joint_space)
 
-    assert len(contribution.approvers) == 1
-    name, approver = contribution.approvers[0]
+    assert len(contribution.guards) == 1
+    name, guard = contribution.guards[0]
     assert name == "yam-collision"
-    assert isinstance(approver, CollisionApprover)
-    assert approver._on_violation == "hold"
+    assert isinstance(guard, CollisionGuard)
+    assert guard._on_violation == "hold"
     assert contribution.warnings == (
         "collision guardrail uses library-default geometry fields: "
         "collision_left_base_pos, collision_right_base_pos, "
@@ -766,7 +764,7 @@ def test_contribution_propagates_malformed_model(
     )
 
     with pytest.raises(ValueError, match="malformed or incompatible"):
-        YAMEmbodiment().contribute_guardrails(joint_space)
+        YAMEmbodiment().contribute_guards(joint_space)
 
 
 def test_contribution_propagates_colliding_home_with_remedies(joint_space: Box) -> None:
@@ -782,7 +780,7 @@ def test_contribution_propagates_colliding_home_with_remedies(joint_space: Box) 
         ValueError,
         match=r"start_pose is already in collision.*collision_guardrail=false.*collision_\*",
     ):
-        embodiment.contribute_guardrails(joint_space)
+        embodiment.contribute_guards(joint_space)
 
 
 def test_contribution_maps_configured_geometry_to_checker(joint_space: Box) -> None:
@@ -795,10 +793,10 @@ def test_contribution_maps_configured_geometry_to_checker(joint_space: Box) -> N
         collision_penetration_threshold=0.004,
     )
 
-    contribution = YAMEmbodiment(config).contribute_guardrails(joint_space)
-    _, approver = contribution.approvers[0]
-    assert isinstance(approver, CollisionApprover)
-    assert approver._checker.config == CollisionConfig(
+    contribution = YAMEmbodiment(config).contribute_guards(joint_space)
+    _, guard = contribution.guards[0]
+    assert isinstance(guard, CollisionGuard)
+    assert guard._checker.config == CollisionConfig(
         left_base_pos=(0.0, 0.31, 0.02),
         right_base_pos=(0.0, -0.32, 0.03),
         left_base_yaw=0.1,
@@ -817,25 +815,23 @@ def test_contribution_delegates_geometry_validation_to_collision_config(
     config = YamConfig.from_kwargs(collision_left_base_pos=position)
 
     with pytest.raises(ValueError, match="left_base_pos must contain three finite coordinates"):
-        YAMEmbodiment(config).contribute_guardrails(joint_space)
+        YAMEmbodiment(config).contribute_guards(joint_space)
 
 
 def test_collision_table_false_removes_table_from_contributed_checker(
     joint_space: Box,
 ) -> None:
-    contribution = YAMEmbodiment(YamConfig(collision_table=False)).contribute_guardrails(
-        joint_space
-    )
-    _, approver = contribution.approvers[0]
-    assert isinstance(approver, CollisionApprover)
-    assert approver._checker.config.table_height is None
+    contribution = YAMEmbodiment(YamConfig(collision_table=False)).contribute_guards(joint_space)
+    _, guard = contribution.guards[0]
+    assert isinstance(guard, CollisionGuard)
+    assert guard._checker.config.table_height is None
     geom_names = {
-        approver._checker._mujoco.mj_id2name(
-            approver._checker._model,
-            approver._checker._mujoco.mjtObj.mjOBJ_GEOM,
+        guard._checker._mujoco.mj_id2name(
+            guard._checker._model,
+            guard._checker._mujoco.mjtObj.mjOBJ_GEOM,
             index,
         )
-        for index in range(approver._checker._model.ngeom)
+        for index in range(guard._checker._model.ngeom)
     }
     assert "table" not in geom_names
     assert "collision_table_height" not in contribution.warnings[0]
@@ -849,7 +845,7 @@ def test_geometry_warning_stands_with_one_base_position_and_lifts_with_both(
             collision_left_base_pos=(0.0, 0.3, 0.0),
             collision_table_height=0.0,
         )
-    ).contribute_guardrails(joint_space)
+    ).contribute_guards(joint_space)
     assert one_position.warnings == (
         "collision guardrail uses library-default geometry fields: "
         "collision_right_base_pos, collision_left_base_yaw, "
@@ -858,7 +854,7 @@ def test_geometry_warning_stands_with_one_base_position_and_lifts_with_both(
 
     one_position_default_table = YAMEmbodiment(
         YamConfig(collision_left_base_pos=(0.0, 0.3, 0.0))
-    ).contribute_guardrails(joint_space)
+    ).contribute_guards(joint_space)
     assert one_position_default_table.warnings == (
         "collision guardrail uses library-default geometry fields: "
         "collision_right_base_pos, collision_left_base_yaw, "
@@ -871,11 +867,11 @@ def test_geometry_warning_stands_with_one_base_position_and_lifts_with_both(
             collision_left_base_pos=(0.0, 0.3, 0.0),
             collision_right_base_pos=(0.0, -0.3, 0.0),
         )
-    ).contribute_guardrails(joint_space)
+    ).contribute_guards(joint_space)
     assert both_positions.warnings == ()
 
 
-def test_build_and_contribution_collision_approvers_are_equivalent(joint_space: Box) -> None:
+def test_build_and_contribution_collision_guards_are_equivalent(joint_space: Box) -> None:
     config = YamConfig(
         home_pose=tuple(_pose(left_j0=0.01)),
         collision_left_base_pos=(0.0, 0.3, 0.0),
@@ -883,11 +879,11 @@ def test_build_and_contribution_collision_approvers_are_equivalent(joint_space: 
         collision_table=False,
     )
 
-    built = build_yam_guardrails(joint_space, config)._approvers[-1]
-    _, contributed = YAMEmbodiment(config).contribute_guardrails(joint_space).approvers[0]
+    built = build_yam_guardrails(joint_space, config).guards[-1]
+    _, contributed = YAMEmbodiment(config).contribute_guards(joint_space).guards[0]
 
-    assert isinstance(built, CollisionApprover)
-    assert isinstance(contributed, CollisionApprover)
+    assert isinstance(built, CollisionGuard)
+    assert isinstance(contributed, CollisionGuard)
     assert built._start_pose == pytest.approx(contributed._start_pose)
     assert built._checker.config == contributed._checker.config
     assert built._on_violation == contributed._on_violation == "hold"

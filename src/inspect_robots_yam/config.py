@@ -256,7 +256,9 @@ class YamConfig(_FromKwargs):
     # release.
     max_steps_hint: int | None = None
     # Builtin OpenCV camera sources: set a slot to its V4L2 color node (stable
-    # udev paths recommended; /dev/videoN reshuffles on replug).
+    # udev paths recommended; /dev/videoN reshuffles on replug) or to a stream
+    # URL (http://, https://, rtsp://, rtsps://) served by a camera hub that owns
+    # the device; URLs are read through OpenCV's FFmpeg backend.
     # Plain strings, so `-E top_cam_device=...` and config.ini can carry them.
     # Uses the base opencv-python-headless dependency.
     top_cam_device: str | None = None
@@ -580,7 +582,8 @@ class YamConfig(_FromKwargs):
             previous = cam_device_fields.get(device)
             if previous is not None:
                 raise ValueError(
-                    f"{previous} and {field} must be different; duplicate camera device {device!r}"
+                    f"{previous} and {field} must be different; duplicate camera device "
+                    f"{_redact_userinfo(device)!r}"
                 )
             cam_device_fields[device] = field
         depth_serial_fields: dict[str, str] = {}
@@ -884,3 +887,17 @@ def observation_space(
         state_keys=state.keys,
         state=state,
     )
+
+
+def _redact_userinfo(device: str) -> str:
+    """``device`` with any ``user:password@`` in a URL replaced, for messages and logs."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(device)
+    except ValueError:  # malformed (e.g. an unclosed IPv6 bracket): hide what may be secret
+        return "<unparseable URL>" if "@" in device else device
+    if not parts.scheme or "@" not in parts.netloc:
+        return device
+    host = parts.netloc.rsplit("@", 1)[1]
+    return urlunsplit(parts._replace(netloc=f"<redacted>@{host}"))

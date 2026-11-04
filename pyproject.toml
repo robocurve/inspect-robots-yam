@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "inspect-robots-yam"
 dynamic = ["version", "readme"]
 description = "Inspect Robots adapters for I2RT YAM bimanual arms driven by /act-served policies (MolmoAct2, GR00T)."
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "RoboCurve" }]
@@ -20,7 +20,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "inspect-robots>=0.58",  # NumberSlot wizard declarations used by thermal setup (plan 0030)
+    # 1.0 is the paper-architecture release: Guard/GuardContribution, the evaluation
+    # interface (health, park) and log schema 3. It also drops Python 3.10.
+    "inspect-robots>=1.0",
     "numpy>=1.24",
     "requests>=2.31",
     "json-numpy>=2.1",
@@ -42,12 +44,9 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.11",
-    # pre-commit pulls filelock via virtualenv; every patched filelock (4.2.1+)
-    # needs Python 3.11, so keep the hook runner off the 3.10 floor.
-    "pre-commit>=3.5; python_version >= '3.11'",
-    "kitchenbench",
+    "pre-commit>=3.5",
     "inspect-robots-agent>=0.26.0",
-    # numpy 2.5.0's type stubs use 3.12-only syntax that mypy (python_version 3.10)
+    # numpy 2.5.0's type stubs use 3.12-only syntax that mypy (python_version 3.11)
     # rejects; pin the 2.4.x line for a deterministic dev/CI gate (runtime is free).
     "numpy<2.5",
     "mujoco>=3.3.1",
@@ -90,7 +89,7 @@ fallback_version = "0.0.0"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
@@ -104,7 +103,7 @@ ignore = ["D105", "D107"]
 known-first-party = ["inspect_robots_yam"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 strict = true
 files = ["src/inspect_robots_yam"]
 

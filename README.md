@@ -21,8 +21,8 @@ Run [Inspect Robots](https://github.com/robocurve/inspect-robots) evals on real
 
 Inspect Robots has two swappable inputs: a `Policy` (the VLA brain) and an
 `Embodiment` (the robot body + world). This package provides both for the
-YAM + MolmoAct2 stack, so any embodiment-agnostic Inspect Robots task (e.g. all of
-[KitchenBench](https://github.com/robocurve/kitchenbench)) runs on real arms:
+YAM + MolmoAct2 stack, so any embodiment-agnostic Inspect Robots task runs on real
+arms:
 
 - **`molmoact2` policy**: a thin client for MolmoAct2's first-party bimanual-YAM
   `/act` server (the model owns the GPU + weights in its own process).
@@ -36,11 +36,13 @@ compatibility check passes with zero errors and zero warnings. This is
 verifiable before any motion.
 
 ```bash
-inspect-robots run --task kitchenbench/pour_pasta --policy molmoact2 --embodiment yam_arms
+inspect-robots run --task <your-task> --policy molmoact2 --embodiment yam_arms
 ```
 
 > **Note:** cameras are configured with one plain source per slot
-> (`*_cam_device` or `*_depth_serial`), so the whole rig is drivable from
+> (`*_cam_device`, a V4L2 node or a camera-hub stream URL such as a go2rtc
+> MJPEG stream `http://<hub>/api/stream.mjpeg?src=<name>`, or `*_depth_serial`),
+> so the whole rig is drivable from
 > config.ini or `-E key=value` flags with no custom code. A Python
 > `camera_reader` remains available for exotic camera stacks. With no sources
 > configured, `yam_arms` fails fast with a `ConfigError` at `reset()`, before
@@ -139,7 +141,7 @@ inspect-robots-yam-preflight
 Also check a specific task's scenes are realizable:
 
 ```bash
-inspect-robots-yam-preflight --task kitchenbench/pour_pasta
+inspect-robots-yam-preflight --task <your-task>
 ```
 
 Affirm that no motion will occur:
@@ -153,6 +155,12 @@ state keys all line up. It does not prove the joint values are interpreted the
 same way. See *Safety* below.
 
 ## Health check: verify the idle rig
+
+During a run, `eval()` checks the rig before every trial without moving it:
+the cameras deliver a fresh frame, and once connected, the motor control loops
+are running and no motor is over `motor_temp_limit`. A failed check stops the
+run before the arms move, with the failing check as the run's error. The
+standalone tool below checks an idle rig in more depth.
 
 Check that all three cameras deliver fresh, non-uniform frames and that both
 arms report finite joint positions within the configured limits:
@@ -184,12 +192,12 @@ config one camera slot at a time. For health, the `--no-config` bypass also
 applies when the wizard file is malformed and restores flag-only behavior.
 
 > [!NOTE]
-> The health tool can check and watch only V4L2 `*_cam_device` sources. It
-> reports configured `*_depth_serial` slots as unchecked; they do not pass or
-> fail camera health. On an all-depth rig, camera checks are skipped while
-> motors are still checked, and `--watch` errors because there are no streams
-> this tool can serve. On a mixed rig, the montage and watch page contain only
-> the V4L2 slots.
+> The health tool can check and watch only `*_cam_device` sources (V4L2
+> nodes or hub stream URLs). It reports configured `*_depth_serial` slots as
+> unchecked; they do not pass or fail camera health. On an all-depth rig,
+> camera checks are skipped while motors are still checked, and `--watch`
+> errors because there are no streams this tool can serve. On a mixed rig, the
+> montage and watch page contain only the `*_cam_device` slots.
 
 > [!WARNING]
 > Run the health check only while the rig is idle, with both arms at rest or
@@ -454,15 +462,15 @@ a custom `camera_reader` returning
 
 ```python
 from inspect_robots import eval
-from inspect_robots.approver import ClampApprover
+from inspect_robots.guard import ClampGuard
 from inspect_robots_yam import MolmoAct2Policy, YAMEmbodiment, YamConfig
 
 emb = YAMEmbodiment(YamConfig(left_channel="can0", right_channel="can1"),
                     camera_reader=my_camera_reader)
 pol = MolmoAct2Policy(server_url="http://127.0.0.1:8202")
 
-(log,) = eval("kitchenbench/pour_pasta", pol, emb,
-              approver=ClampApprover(emb.info.action_space))  # defense in depth
+(log,) = eval("<your-task>", pol, emb,
+              guard=ClampGuard(emb.info.action_space))  # defense in depth
 print(log.status, log.results.metrics)
 ```
 
@@ -473,8 +481,8 @@ On CLI runs (inspect-robots ≥ 0.25), the framework then asks once per trial:
 The bare `eval()` call above never prompts: pass
 `before_scoring=` a callable that sets `record.operator_judgement` (grade
 live, or from your own UI) when driving the Python API directly.
-Score attended runs with the `operator` scorer (reads the recorded judgement);
-KitchenBench's `task_success` reads it too. `success_at_end` only counts
+Score attended runs with the `operator` scorer (reads the recorded judgement).
+`success_at_end` only counts
 embodiment-detected success terminations, so it scores operator-graded runs as
 failures — don't pair it with attended yam runs.
 The operator prompts need an interactive terminal: a dead stdin raises
@@ -490,7 +498,7 @@ With the [inspect-robots-agent](https://github.com/robocurve/inspect-robots/tree
 plugin installed, a frontier LLM can drive the arms directly: it sees the
 cameras and the labeled 14-D state, and moves joints by name
 (`left_j0`..`left_gripper`, `right_j0`..`right_gripper`) through smooth,
-approver-checked motions.
+guard-checked motions.
 
 Put a `.env` with your API key in the working directory, reusing one you already have or copying the [.env.example](.env.example) template (the CLI loads it automatically; real environment variables take precedence over its values):
 
@@ -585,6 +593,28 @@ but they are a conservative box rather than an exact reachable set. `eef_low`
 and `eef_high` override all fourteen bounds. The observation keeps the 14-D
 `joint_pos` field for logging and adds the command-aligned 14-D `eef_state`
 field.
+
+#### Motion report
+
+Every stepped observation also carries `extra["motion_report"]`, a diagnosis
+of the step just played that an agent policy renders back to the model
+(`inspect-robots-agent` 0.30.0 or newer prints its `lines`). Under
+`eef_pos` the report rolls the IK wrapper's per-step diagnostics up over a
+window that closes on an action carrying `meta["chunk_final"]`, which the
+agent policy sets on the last waypoint of every move, so the observation that
+ends a move summarizes that whole move. Per arm it records the error between
+the target and the best joint solution the IK found (`solution_*`, large when
+the target cannot be posed as requested), between the target and the command
+actually sent (`command_*`, the motion still in flight), and between the
+command and the measured pose (`tracking_*`, the arm held off its setpoint),
+plus which joints sit on a limit, whether the step was rate-limited, and the
+window's oscillation-hold, resync, non-finite, and non-converged step counts.
+A `cause` label summarizes them in priority order: `ik_failed`,
+`oscillation_hold`, `unreachable` (solution error over 1 cm or 0.1 rad),
+`unfinished` (still rate-limited), `behind` (measured pose over 2 cm from the
+command), else `on_target`. Under joint control the report names joints more
+than 0.1 rad behind their command. The built-in agent docs tell the model to
+trust the report over its own guesses about why a move fell short.
 
 > [!WARNING]
 > The z floor (`z >= 0.03`) protects *fingertips* assuming a gripper-down
@@ -709,7 +739,7 @@ under the effective geometry. Correct the `collision_*` geometry fields or set
 `collision_guardrail=false` after verifying that an opt-out is appropriate.
 
 The guardrail supports only 14-D absolute `joint_pos` actions. It refuses EEF
-and `joint_delta` spaces because an approver sees Cartesian targets or deltas
+and `joint_delta` spaces because a guard sees Cartesian targets or deltas
 before the embodiment converts them. Those modes continue with a skip warning.
 
 The checker models commanded poses, not measured arm motion. Physical motion can
@@ -725,12 +755,12 @@ motions, or replace the operator and physical e-stop.
 ## Safety
 
 - **Hard clamp backstop.** Every command is clipped to `YamConfig.joint_low/high`
-  *inside* `step()`, independent of any Inspect Robots `Approver`: unclamped model
+  *inside* `step()`, independent of any Inspect Robots `Guard`: unclamped model
   outputs can never reach the motors. **Set the arm slots to your real YAM joint
   limits** (the defaults are conservative placeholders: joints ±π, gripper 0–1).
   But note the limits are in *policy units* per the table below: gripper slots 6
   and 13 stay normalized 0–1, only slots 0–5 and 7–12 are radians.
-- **Use `ClampApprover`** on hardware for a second layer.
+- **Use `ClampGuard`** on hardware for a second layer.
 - **Zero-gravity handoff jump.** The arms connect in zero-gravity mode by default
   (`YamConfig(zero_gravity_mode=True)`, passed through to the i2rt driver).
   Homing and rest-pose motions ramp at `control_hz`, but the first *policy*
@@ -768,6 +798,11 @@ motions, or replace the operator and physical e-stop.
   motion and there is no stand-clear gate. Tasks whose success state is the
   gripper holding an object must set `park_before_grade=false` so the grader
   uses the last step's frames instead.
+  Under `inspect-robots run` and `eval()`, the arms also park after every
+  trial, once it is scored, and hold the rest pose with torque on while the
+  scene is reset; the next trial homes from there. This park is skipped when
+  the arms are already at rest (for example after the grading park), and it
+  also has no stand-clear gate.
   Override both `home_pose` and `rest_pose` on rigs whose joint limits exclude
   zero, since both targets are clamped through the same per-joint box as every
   command.
@@ -970,7 +1005,7 @@ duration is not knowable in advance, and settling makes steps run long (#64).
 > one-click releases) are documented in [`CLAUDE.md`](CLAUDE.md).
 
 ```bash
-uv venv && uv pip install -e ".[dev]"     # inspect_robots + kitchenbench from PyPI
+uv venv && uv pip install -e ".[dev]"     # inspect_robots from PyPI
 uv run pre-commit install
 uv run pytest --cov                        # 100% coverage required
 uv run ruff check . && uv run mypy

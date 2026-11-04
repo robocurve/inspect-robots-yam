@@ -373,6 +373,7 @@ class FakeCv2:
     """
 
     CAP_V4L2 = 200
+    CAP_FFMPEG = 1900
     CAP_PROP_BUFFERSIZE = 38
     CAP_PROP_FOURCC = 6
     CAP_PROP_FRAME_WIDTH = 3
@@ -393,15 +394,18 @@ class FakeCv2:
     def __init__(self, caps: dict[str, FakeCapture] | None = None) -> None:
         self.caps = {} if caps is None else caps
         self.opened: list[str] = []
+        #: (device, api, open-time params) per VideoCapture call, in order.
+        self.opens: list[tuple[str, int, list[Any] | None]] = []
         self.put_text_calls: list[tuple[str, bool]] = []
         self.writes: list[tuple[str, npt.NDArray[np.uint8]]] = []
         self.encodes: list[tuple[str, npt.NDArray[np.uint8]]] = []
         self.write_ok = True
         self.encode_ok = True
 
-    def VideoCapture(self, device: str, api: int) -> FakeCapture:
-        """Hand back the scripted capture for a device path."""
+    def VideoCapture(self, device: str, api: int, params: list[Any] | None = None) -> FakeCapture:
+        """Hand back the scripted capture for a device path or stream URL."""
         self.opened.append(device)
+        self.opens.append((device, api, params))
         return self.caps[device]
 
     def cvtColor(self, src: Any, code: int) -> Any:
