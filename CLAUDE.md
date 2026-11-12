@@ -14,7 +14,8 @@ body + world). We ship both sides for the YAM stack:
   `/act` servers, with distinct defaults and honest eval-log names. Models run
   in their own processes (GPU + weights); the installable package never imports
   torch.
-- **`yam_arms` embodiment** — the i2rt joint-position driver.
+- **`yam_arms` embodiment** — the i2rt joint-position driver, for I2RT YAM
+  and Anvil OpenYAM arms (`arm_model=openyam`, plan 0036).
 
 Both declare the **same 14-D `joint_pos` contract** (2 arms × [6 joints +
 gripper], cameras `top/left/right`, packed `joint_pos` state). That makes

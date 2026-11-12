@@ -273,6 +273,35 @@ calibrations.
 > ready on the e-stop. The straight-line joint interpolation checks configured
 > joint limits, but it does not perform collision checking.
 
+## Anvil OpenYAM arms
+
+OpenYAM arms use the same Damiao arm motors as the I2RT YAM, so `yam_arms`
+drives them through i2rt with one difference: the gripper motor answers on CAN
+ID 0x08 instead of 0x07. Select it with `-E arm_model=openyam` (or
+`arm_model = openyam` in config.ini). `-E gripper_can_id=0x..` overrides the ID
+for either model. This is written from public sources and has not run on an
+OpenYAM yet; see [plans/0036-openyam.md](plans/0036-openyam.md).
+
+Before the first bring-up, run the read-only motor survey with the arms resting
+or supported and Anvil's own software stopped:
+
+```bash
+inspect-robots-yam-motors -E arm_model=openyam
+```
+
+It sends only the Damiao status query, so nothing is enabled or moved. It
+reports, per channel, which motor IDs answer, whether any motor is already
+enabled by another controller, faults, positions and temperatures, then READY
+or NOT READY. If the gripper answers on another ID it says which
+`gripper_can_id` to set.
+
+Then follow the usual health check and first run with `-E arm_model=openyam`
+added. Bring-up runs i2rt's gripper calibration (a small test torque to find
+the jaw's end stops; nothing is written to the motors). To skip it, pass
+`-E gripper_limits=CLOSED,OPEN` in motor radians, measured since the last
+power cycle. Disabling the motors removes torque, so support the arms before
+closing.
+
 ## Run on hardware
 
 Write your defaults once. The interactive wizard interviews this plugin's

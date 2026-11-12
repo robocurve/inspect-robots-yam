@@ -29,6 +29,11 @@ _YAM_DEVICE_KEYS = frozenset(
         "right_depth_serial",
         "left_channel",
         "right_channel",
+        # Which arm hardware the channels hold (plan 0036): every CLI that
+        # connects must agree with the embodiment on the gripper's CAN ID.
+        "arm_model",
+        "gripper_can_id",
+        "gripper_limits",
     }
 )
 

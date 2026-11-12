@@ -37,6 +37,16 @@ _T = TypeVar("_T", bound="_FromKwargs")
 # ``i2rt.robots.utils.GripperType`` enum *names* (the enum values are lowercase).
 SUPPORTED_GRIPPER_TYPES = frozenset({"CRANK_4310", "LINEAR_3507", "LINEAR_4310", "FLEXIBLE_4310"})
 
+# Arm hardware this adapter drives through i2rt. ``openyam`` is Anvil's OpenYAM:
+# the same Damiao arm motors, IDs and gains as the I2RT YAM, but its gripper motor
+# answers on CAN ID 0x08 instead of i2rt's hardcoded 0x07 (see
+# plans/0036-openyam.md).
+ARM_MODELS = frozenset({"yam", "openyam"})
+I2RT_GRIPPER_CAN_ID = 0x07
+OPENYAM_GRIPPER_CAN_ID = 0x08
+#: Damiao CAN IDs of the six arm motors, shared by YAM and OpenYAM.
+ARM_MOTOR_CAN_IDS = (0x01, 0x02, 0x03, 0x04, 0x05, 0x06)
+
 # Conservative default action limits: revolute joints in [-pi, pi], gripper in
 # [0, 1]. These are SAFETY limits — override with the real YAM joint limits before
 # trusting them on hardware.
@@ -136,12 +146,24 @@ class YamConfig(_FromKwargs):
             "step_limits",
             "collision_left_base_pos",
             "collision_right_base_pos",
+            "gripper_limits",
         }
     )
 
     left_channel: str = "can0"
     right_channel: str = "can1"
     gripper_type: str = "LINEAR_4310"
+    # ``yam`` (I2RT YAM) or ``openyam`` (Anvil OpenYAM); see ARM_MODELS.
+    arm_model: str = "yam"
+    # Damiao CAN ID of each arm's gripper motor. None means the arm model's
+    # default: 0x07 for yam, 0x08 for openyam.
+    gripper_can_id: int | None = None
+    # (closed, open) gripper motor positions in radians, as the driver reads
+    # them. When set, i2rt skips its gripper hard-stop calibration and maps
+    # this range to 0-1. The motor's turn count resets at power-off, so a
+    # measured range holds only until the next power cycle; leave it unset to
+    # calibrate on every bring-up as usual.
+    gripper_limits: tuple[float, ...] | None = None
     control_hz: float = 10.0
     gripper_stroke_s: float = 1.0
     cam_height: int = 224
@@ -337,6 +359,15 @@ class YamConfig(_FromKwargs):
         ):
             if flag in flat and not isinstance(flat[flag], bool):
                 raise ValueError(f"{flag} must be true or false, got {flat[flag]!r}")
+        can_id = flat.get("gripper_can_id")
+        if isinstance(can_id, str):
+            # config.ini and -E carry hex as text: accept "0x08" as well as "8".
+            try:
+                flat["gripper_can_id"] = int(can_id, 0)
+            except ValueError:
+                raise ValueError(
+                    f"gripper_can_id must be an integer such as 0x08, got {can_id!r}"
+                ) from None
         if "collision_table_height" in flat and flat["collision_table_height"] is None:
             raise ValueError(
                 "collision_table_height cannot be none; use collision_table=false "
@@ -350,6 +381,13 @@ class YamConfig(_FromKwargs):
                 "height or set collision_table=true"
             )
         return super().from_kwargs(**flat)
+
+    @property
+    def effective_gripper_can_id(self) -> int:
+        """The gripper motor's CAN ID: the explicit setting, else the arm model's default."""
+        if self.gripper_can_id is not None:
+            return self.gripper_can_id
+        return OPENYAM_GRIPPER_CAN_ID if self.arm_model == "openyam" else I2RT_GRIPPER_CAN_ID
 
     @property
     def depth_capture_size(self) -> tuple[int, int] | None:
@@ -400,6 +438,32 @@ class YamConfig(_FromKwargs):
                 f"gripper_type {self.gripper_type!r} is not supported; expected one of "
                 f"{sorted(SUPPORTED_GRIPPER_TYPES)} (i2rt GripperType enum names)"
             )
+        if self.arm_model not in ARM_MODELS:
+            raise ValueError(
+                f"arm_model {self.arm_model!r} is not supported; expected one of "
+                f"{sorted(ARM_MODELS)}"
+            )
+        if self.gripper_can_id is not None and (
+            isinstance(self.gripper_can_id, bool)
+            or not isinstance(self.gripper_can_id, int)
+            or not 0 < self.gripper_can_id <= 0x0F
+            or self.gripper_can_id in ARM_MOTOR_CAN_IDS
+        ):
+            raise ValueError(
+                f"gripper_can_id must be a Damiao motor ID from 0x07 to 0x0F that no arm "
+                f"joint uses; got {self.gripper_can_id!r}"
+            )
+        if self.gripper_limits is not None:
+            limits = self.gripper_limits
+            if (
+                len(limits) != 2
+                or not all(np.isfinite(limit) for limit in limits)
+                or limits[0] == limits[1]
+            ):
+                raise ValueError(
+                    "gripper_limits must be two finite, distinct motor positions in "
+                    f"radians (closed,open); got {limits!r}"
+                )
         if not np.isfinite(self.gripper_stroke_s) or self.gripper_stroke_s <= 0:
             raise ValueError("gripper_stroke_s must be finite and > 0")
         if self.motor_temp_limit is not None and (
