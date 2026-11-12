@@ -55,6 +55,7 @@ from inspect_robots_yam._i2rt import (
     _load_i2rt,
     _load_i2rt_kinematics,
     close_robot_safely,
+    gripper_can_id,
     start_arms_concurrently,
 )
 from inspect_robots_yam.config import (
@@ -283,26 +284,32 @@ class _CaptureTransport(Protocol):
 
 def _default_driver_factory(cfg: YamConfig) -> BimanualDriver:  # pragma: no cover - real hardware
     get_yam_robot, GripperType = _load_i2rt()
+    import i2rt.robots.get_robot as i2rt_get_robot
 
     # NAME lookup (GripperType["LINEAR_4310"]) — the enum *values* are lowercase
     # strings, so GripperType(...)/from_string_name would reject the config names.
     # YamConfig.__post_init__ already validated the name against the supported set.
     gripper = GripperType[cfg.gripper_type]
+    # Explicit limits skip i2rt's gripper hard-stop calibration (always on OpenYAM).
+    limits = None if cfg.gripper_limits is None else np.asarray(cfg.gripper_limits, dtype=float)
 
     def _make_arm(channel: str) -> Any:
         return get_yam_robot(
             channel=channel,
             gripper_type=gripper,
             zero_gravity_mode=cfg.zero_gravity_mode,
+            gripper_limits_override=limits,
         )
 
     # Both arms are independent hardware (own CAN channel, own control
     # thread) and each pays a multi-second gripper calibration on every
     # boot (encoder frame resets at power-off), so bring them up together.
-    left, right = start_arms_concurrently(
-        lambda: _make_arm(cfg.left_channel),
-        lambda: _make_arm(cfg.right_channel),
-    )
+    # The gripper CAN ID patch is held across both bring-ups (OpenYAM: 0x08).
+    with gripper_can_id(i2rt_get_robot, cfg.effective_gripper_can_id):
+        left, right = start_arms_concurrently(
+            lambda: _make_arm(cfg.left_channel),
+            lambda: _make_arm(cfg.right_channel),
+        )
 
     class _Real:
         # A motor control loop that has stopped (CAN fault, driver thread death)

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, wait
 from typing import Any
 
@@ -157,6 +158,40 @@ def _close_after_failed_bring_up(side: str, robot: Any) -> None:
         close_robot_safely(robot)
     except Exception:
         logger.warning("closing the %s arm after a failed bring-up failed", side, exc_info=True)
+
+
+@contextlib.contextmanager
+def gripper_can_id(get_robot_module: Any, can_id: int) -> Iterator[None]:
+    """Make i2rt's ``get_yam_robot`` address the gripper motor at ``can_id``.
+
+    i2rt hardcodes the YAM gripper at CAN ID 0x07 when it builds the arm's
+    motor chain. Anvil's OpenYAM answers on 0x08. While this context is open,
+    the module's ``DMChainCanInterface`` is wrapped so that a chain whose last
+    motor sits on 0x07 after the six arm motors (the arm-plus-gripper chain)
+    gets ``can_id`` there instead; i2rt derives the reply ID (``can_id + 0x10``)
+    from it. Nothing else changes. Hold the context across the whole bring-up
+    (both arms) and restore the original on exit. 0x07 is a no-op.
+    """
+    if can_id == _I2RT_GRIPPER_CAN_ID:
+        yield
+        return
+    original = get_robot_module.DMChainCanInterface
+
+    def remapped(motor_list: Any, *args: Any, **kwargs: Any) -> Any:
+        motors = [list(motor) for motor in motor_list]
+        if len(motors) == _ARM_PLUS_GRIPPER_MOTORS and motors[-1][0] == _I2RT_GRIPPER_CAN_ID:
+            motors[-1][0] = can_id
+        return original(motors, *args, **kwargs)
+
+    get_robot_module.DMChainCanInterface = remapped
+    try:
+        yield
+    finally:
+        get_robot_module.DMChainCanInterface = original
+
+
+_I2RT_GRIPPER_CAN_ID = 0x07
+_ARM_PLUS_GRIPPER_MOTORS = 7
 
 
 def _load_i2rt() -> tuple[Any, Any]:
