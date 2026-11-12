@@ -21,11 +21,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from inspect_robots._dotenv import init_dotenv
+
+from inspect_robots_yam._user_config import load_yam_defaults
 from inspect_robots_yam.config import ARM_MOTOR_CAN_IDS, YamConfig
 
 QUERY_ARBITRATION_ID = 0x7FF
@@ -234,8 +239,20 @@ def _parse_options(items: Sequence[str]) -> dict[str, Any]:
     return options
 
 
-def main(argv: Sequence[str] | None = None, *, opener: CanOpener | None = None) -> int:
-    """Survey each configured channel and print the report; 1 if not ready."""
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    opener: CanOpener | None = None,
+) -> int:
+    """Survey each configured channel and print the report; 1 if not ready.
+
+    Like the other YAM CLIs, the wizard config's channels and arm settings
+    (``arm_model``, ``gripper_can_id``) apply unless ``--no-config`` is given;
+    ``-E`` values override them.
+    """
+    if env is None:
+        init_dotenv(os.environ)
     parser = argparse.ArgumentParser(
         prog="inspect-robots-yam-motors",
         description=(
@@ -257,8 +274,21 @@ def main(argv: Sequence[str] | None = None, *, opener: CanOpener | None = None) 
         help="survey only this CAN channel (repeatable); default left_channel and right_channel",
     )
     parser.add_argument("--json", action="store_true", help="print the findings as JSON")
+    parser.add_argument(
+        "--no-config",
+        action="store_true",
+        help="ignore the wizard config and use only -E values and builtins",
+    )
     args = parser.parse_args(argv)
-    options = _parse_options(args.options)
+    options: dict[str, Any] = {}
+    if not args.no_config:
+        defaults = load_yam_defaults(os.environ if env is None else env)
+        options.update(defaults.args)
+        if defaults.source is not None:
+            print(
+                f"settings: from {defaults.source} (embodiment {defaults.owner})", file=sys.stderr
+            )
+    options.update(_parse_options(args.options))
     if "gripper_can_id" in options and options["gripper_can_id"].lower() in ("", "none"):
         del options["gripper_can_id"]
     try:
@@ -284,7 +314,7 @@ def main(argv: Sequence[str] | None = None, *, opener: CanOpener | None = None) 
             try:
                 link.close()
             except Exception as exc:
-                print(f"warning: closing {channel} failed: {exc!r}")
+                print(f"warning: closing {channel} failed: {exc!r}", file=sys.stderr)
     if args.json:
         payload = [{"channel": f.channel, "level": f.level, "detail": f.detail} for f in findings]
         print(json.dumps(payload, indent=2))

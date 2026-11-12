@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -200,7 +202,7 @@ def test_assess_without_a_unique_gripper_hint_and_with_no_replies() -> None:
 
 def test_main_reports_each_channel(capsys: pytest.CaptureFixture[str]) -> None:
     links = {"can0": FakeLink(OPENYAM_BUS), "can1": FakeLink(OPENYAM_BUS)}
-    assert main(["-E", "arm_model=openyam"], opener=links.__getitem__) == 0
+    assert main(["-E", "arm_model=openyam"], env={}, opener=links.__getitem__) == 0
     out = capsys.readouterr().out
     assert "can0" in out and "can1" in out and "READY" in out
     assert all(link.closed for link in links.values())
@@ -218,28 +220,53 @@ def test_main_json_channel_override_and_failures(capsys: pytest.CaptureFixture[s
         return FakeLink(OPENYAM_BUS)
 
     args = ["--json", "--channel", "bad", "--channel", "broken", "--channel", "ok"]
-    args += ["-E", "arm_model=openyam", "-E", "gripper_can_id=none"]
+    args += ["-E", "arm_model=openyam", "-E", "gripper_can_id=none", "--no-config"]
     assert main(args, opener=opener) == 1
-    out = capsys.readouterr().out
-    payload = out[out.index("[") :]
-    import json
-
-    rows = json.loads(payload)
+    captured = capsys.readouterr()
+    rows = json.loads(captured.out)  # the whole of stdout is valid JSON
     assert rows[0] == {
         "channel": "bad",
         "level": "fail",
         "detail": "could not open the channel: OSError('No such device')",
     }
     assert rows[1]["channel"] == "broken" and "survey failed" in rows[1]["detail"]
-    assert "warning: closing broken failed" in out
+    assert "warning: closing broken failed" in captured.err
     assert all(row["level"] == "ok" for row in rows[2:])
+
+
+def test_main_uses_saved_channels_and_arm_model(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "inspect-robots" / "config.ini"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "[defaults]\nembodiment = yam_arms\n[embodiment.args]\n"
+        "left_channel = can_l\nright_channel = can_r\narm_model = openyam\n",
+        encoding="utf-8",
+    )
+    env = {"XDG_CONFIG_HOME": str(tmp_path)}
+    opened: list[str] = []
+
+    def opener(channel: str) -> FakeLink:
+        opened.append(channel)
+        return FakeLink(OPENYAM_BUS)
+
+    assert main([], env=env, opener=opener) == 0
+    assert opened == ["can_l", "can_r"]
+    assert f"settings: from {path}" in capsys.readouterr().err
+    opened.clear()
+    assert main(["-E", "right_channel=can9"], env=env, opener=opener) == 0
+    assert opened == ["can_l", "can9"]
+    opened.clear()
+    assert main(["--no-config"], env=env, opener=opener) == 1  # YAM gripper 0x07 is absent
+    assert opened == ["can0", "can1"]
 
 
 def test_main_rejects_bad_options() -> None:
     with pytest.raises(SystemExit, match="key=value"):
-        main(["-E", "arm_model"], opener=lambda _: FakeLink({}))
+        main(["-E", "arm_model"], env={}, opener=lambda _: FakeLink({}))
     with pytest.raises(SystemExit):
-        main(["-E", "arm_model=nope"], opener=lambda _: FakeLink({}))
+        main(["-E", "arm_model=nope"], env={}, opener=lambda _: FakeLink({}))
 
 
 def test_finding_is_plain_data() -> None:
