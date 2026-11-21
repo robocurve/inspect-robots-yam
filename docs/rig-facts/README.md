@@ -9,6 +9,8 @@ already been measured about the rig instead of re-deriving it.
 | [facts.md](facts.md) | always | kinematic constants, gripper and camera behaviour, workspace, controller behaviour (verified numbers only) |
 | [advice-eef.md](advice-eef.md) | `control_interface=eef_pos` (`move_to`) | how to reach, grasp, place and verify with absolute Cartesian targets |
 | [advice-joints.md](advice-joints.md) | `control_interface=joints` (`move_joints`) | the same under joint-space control, including the planar FK/IK and its biases |
+| [ir-plus/facts.md](ir-plus/facts.md) | IR+ (`-P toolset=plus`), in place of facts.md | facts.md without the Cartesian box and the 10 Hz playback, which IR+ doesn't have |
+| [ir-plus/advice.md](ir-plus/advice.md) | IR+, in place of the advice | working with `go` (IK on i2rt's model, joints eased), `grip`, `park`, `look` and `sequence` |
 
 Together they are ~9–10 KB (≈2.5k tokens), sent once per trial in the
 cached system prefix.
@@ -29,6 +31,21 @@ cached system prefix.
 - The workspace box itself is not repeated here: the `move_to` tool
   description lists the configured bounds. Set them per rig in
   `config.ini` (`eef_low`/`eef_high`).
+
+## IR+: a mode of its own
+
+IR+ (inspect-robots-agent `-P toolset=plus`) runs on `control_interface=joints`
+but solves the IK itself, so the joint advice (hand-solved planar IK, its
+biases, re-issuing undershooting moves) contradicts it. Its docs live in
+`ir-plus/`; `ir-plus/advice-joints.md` links to `advice.md` so a runner that
+picks `advice-<interface>.md` from a docs directory finds it there:
+
+```bash
+docs="$(cat ir-plus/facts.md ir-plus/advice.md)"
+inspect-robots run --policy agent -E control_interface=joints -E control_hz=40 \
+  -E "docs_extra=$docs" -P toolset=plus \
+  -P kinematics=inspect_robots_yam.ir_plus:i2rt_kinematics ...
+```
 
 ## Feeding the docs to a run
 
